@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from enum import StrEnumd
+from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
@@ -93,7 +93,7 @@ class TraceEvent(BaseModel):
     task_id: str
     stage: str
     owner: Owner | None = None
-    decision: strd
+    decision: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
