@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "entries": {
+    "GLOBAL": {
+      "revision": "UNSET",
+      "path": "authority/current/GLOBAL.md"
+    },
+    "SALES_HUMAN": {
+      "revision": "UNSET",
+      "path": "authority/current/SALES_HUMAN.md"
+    },
+    "LIBRARY_FACT": {
+      "revision": "UNSET",
+      "path": "authority/current/LIBRARY_FACT.md"
+    },
+    "VISUAL": {
+      "revision": "UNSET",
+      "path": "authority/current/VISUAL.md"
+    },
+    "EXECUTION": {
+      "revision": "UNSET",
+      "path": "authority/current/EXECUTION.md"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: global-hybrid-mcp-v2
+    runtime: docker
+    region: singapore
+    rootDir: .
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: GLOBAL_MODEL
+        value: gpt-5.6-sol
+      - key: GLOBAL_AUTHORITY_REGISTRY
+        value: /app/authority/current/registry.json
+      - key: GLOBAL_LIVE_EXECUTION
+        value: "false"
