@@ -1,6 +1,6 @@
 {
-"schema_version": 1,
-"key_id": "owner-main-20260902",
-"signature_algorithm": "ed25519",
-"signature": "5O4Rr8INKH8awpPewBplNzIITPMtY6oTaC46EfyAtRNyKWoR9YKiBqc6+r9mJZT7sxNgvhPg9DmSP19kiQwqBA=="
+  "schema_version": 1,
+  "key_id": "owner-main-20260902",
+  "signature_algorithm": "ed25519",
+  "signature": "504Rr8INKH8awpPewBplNzIITPMtY6oTaC46EfyAtRNykWoR9YKiBqc6+r9mJZT7sxNgvhPg9DmSPl9kiQwqBA=="
 }
