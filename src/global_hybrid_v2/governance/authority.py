@@ -27,7 +27,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 class AuthorityResolver:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
     REQUIRED = (
         Owner.GLOBAL,
         Owner.SALES_HUMAN,
@@ -86,15 +86,21 @@ class AuthorityResolver:
                 raise AuthorityError(f"invalid authority document entry: {name}")
 
             raw_role = item.get("role")
+            raw_identity = item.get("identity")
             raw_revision = item.get("revision")
             raw_path = item.get("path")
             role = raw_role.strip() if isinstance(raw_role, str) else ""
+            identity = raw_identity.strip() if isinstance(raw_identity, str) else ""
             revision = raw_revision.strip() if isinstance(raw_revision, str) else ""
             path = raw_path.strip() if isinstance(raw_path, str) else ""
             if role != expected_role.value:
                 raise AuthorityError(f"authority document role mismatch: {name}")
             if not revision or revision.upper() == "UNSET":
                 raise AuthorityError(f"authority document revision unset: {name}")
+            if not identity or identity.upper() == "UNSET":
+                raise AuthorityError(f"authority document identity unset: {name}")
+            if revision != identity:
+                raise AuthorityError(f"authority document revision does not match identity: {name}")
             if not path:
                 raise AuthorityError(f"authority document path unset: {name}")
 
@@ -110,6 +116,7 @@ class AuthorityResolver:
             documents[name] = AuthorityDocument(
                 name=name,
                 role=expected_role,
+                identity=identity,
                 revision=revision,
                 path=path,
             )

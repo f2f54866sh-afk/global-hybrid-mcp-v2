@@ -49,13 +49,14 @@ def _authority_tree(tmp_path: Path, *, revision: str = "rev-1") -> tuple[Path, d
         )
         documents[name] = {
             "role": role,
+            "identity": revision,
             "revision": revision,
             "path": f"authority/current/{name}.md",
         }
 
     registry = current / "registry.json"
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "documents": documents,
         "entries": json.loads(json.dumps(BINDINGS)),
     }
@@ -115,6 +116,29 @@ def test_document_revision_must_match_registry(tmp_path):
         AuthorityResolver(registry).resolve()
 
 
+def test_document_identity_must_be_set_before_activation(tmp_path):
+    registry, payload = _authority_tree(tmp_path)
+    payload["documents"]["VISUAL"]["identity"] = "UNSET"
+    registry.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(AuthorityError, match="document identity unset: VISUAL"):
+        AuthorityResolver(registry).resolve()
+
+
+def test_document_revision_must_match_identity(tmp_path):
+    registry, payload = _authority_tree(tmp_path)
+    payload["documents"]["GLOBAL"]["revision"] = "different-revision"
+    path = tmp_path / "authority" / "current" / "GLOBAL.md"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("REVISION: rev-1", "REVISION: different-revision"),
+        encoding="utf-8",
+    )
+    registry.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(AuthorityError, match="revision does not match identity: GLOBAL"):
+        AuthorityResolver(registry).resolve()
+
+
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
@@ -146,7 +170,7 @@ def test_document_path_must_map_to_named_file(tmp_path):
 def test_registry_rejects_duplicate_document(tmp_path):
     registry, _ = _authority_tree(tmp_path)
     registry.write_text(
-        '{"schema_version": 2, "documents": {"GLOBAL": {}, "GLOBAL": {}}, "entries": {}}',
+        '{"schema_version": 3, "documents": {"GLOBAL": {}, "GLOBAL": {}}, "entries": {}}',
         encoding="utf-8",
     )
 
@@ -157,12 +181,13 @@ def test_registry_rejects_duplicate_document(tmp_path):
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda payload: payload.update(schema_version=3), "unsupported authority registry schema"),
+        (lambda payload: payload.update(schema_version=4), "unsupported authority registry schema"),
         (lambda payload: payload["documents"].pop("SALES"), "missing authority documents: SALES"),
         (
             lambda payload: payload["documents"].update(
                 UNKNOWN={
                     "role": "LIVE_AUTHORITY",
+                    "identity": "rev-1",
                     "revision": "rev-1",
                     "path": "authority/current/UNKNOWN.md",
                 }
@@ -218,7 +243,7 @@ def test_document_role_cannot_be_promoted_by_registry(tmp_path):
 def test_checked_in_registry_declares_expected_bindings():
     payload = json.loads(Path("authority/current/registry.json").read_text(encoding="utf-8"))
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["entries"] == BINDINGS
     assert set(payload["entries"]) == {owner.value for owner in Owner}
     assert {
@@ -240,3 +265,19 @@ def test_checked_in_document_structures_match_registry():
         assert lines[0] == f"# {name}"
         assert lines[1] == f"ROLE: {role}"
         assert lines[4] == section
+
+
+def test_checked_in_registry_declares_expected_identities():
+    payload = json.loads(Path("authority/current/registry.json").read_text(encoding="utf-8"))
+
+    assert {
+        name: item["identity"] for name, item in payload["documents"].items()
+    } == {
+        "GLOBAL": "GLOBAL_CANONICAL_20260901_HUMAN_READABLE_WITNESS_EGRESS",
+        "SALES": "SALES_CANONICAL_20260901_SINGLE_LIVE_RUNNER_CONTRACT_NORMALIZATION",
+        "SALES_HUMAN": "SALES_HUMAN_CANONICAL_20260901_REFERENCE_ONLY_CONSTRAINT_COMPACTION",
+        "LIBRARY_FACT": "VEHICLE_KNOWLEDGE_BASE_20260901_SCHEMA_DATA_SEPARATION",
+        "VISUAL": "UNSET",
+        "EXECUTION": "UNSET",
+        "REAL_CAR": "REAL_CAR_20260901_TYPED_VISUAL_EXECUTION_CONTRACT",
+    }

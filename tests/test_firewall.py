@@ -18,6 +18,7 @@ def _snapshot():
                 live_authority=AuthorityDocument(
                     name=owner.value,
                     role=AuthorityDocumentRole.LIVE_AUTHORITY,
+                    identity=f"{owner.value}-1",
                     revision=f"{owner.value}-1",
                     path=f"{owner.value}.md",
                 ),

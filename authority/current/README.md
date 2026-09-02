@@ -26,9 +26,11 @@ REVISION: <exact revision>
 <current authoritative content>
 ```
 
-Registry schema v2 將 Owner 與 document 分開：
+Registry schema v3 將 Owner 與 document 分開，並鎖定可匯入的 authority identity：
 
-- `documents` 保存 document role、exact revision 與 current path。
+- `documents` 保存 document role、authority identity、啟用 revision 與 current path。
+- `identity` 是允許接入的精確 authority identity；它本身不會啟用 document。
+- 正式啟用時，registry `revision` 與 file `REVISION` 都必須完全等於 `identity`。
 - `entries` 只保存既有五個 Owner 的 binding。
 - `SALES_HUMAN` Owner 的 `live_authority` 是 `SALES`；`SALES_HUMAN` document 只在
   `references` 中以 `REFERENCE_ONLY` 綁定。
@@ -38,8 +40,9 @@ Registry schema v2 將 Owner 與 document 分開：
 安全啟用順序：
 
 1. 保持 registry revision 為 `UNSET`。
-2. 寫入所有已綁定 document，將 status 設為 `CURRENT`，並填入 exact revision。
-3. 確認 document role、revision、path、binding 與內容完整後，最後才更新 registry revision。
+2. 確認 registry 已登記核准的 exact `identity`。
+3. 寫入所有已綁定 document，將 status 設為 `CURRENT`，並以該 identity 填入 file revision。
+4. 確認 document role、identity、revision、path、binding 與內容完整後，最後才更新 registry revision。
 
-file 與 registry 的 revision 必須完全相同；任一 role、status、revision、content、path
-或 binding 未設定或不一致時，resolver 必須 fail-close。
+file revision、registry revision 與 identity 必須完全相同；任一 role、status、identity、revision、
+content、path 或 binding 未設定或不一致時，resolver 必須 fail-close。
