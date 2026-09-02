@@ -91,9 +91,19 @@ python -m global_hybrid_v2.adapters.mcp_server
 預設：
 
 - MCP: `/mcp`
-- Health: `/health`
+- Liveness: `/health`
+- Authority readiness: `/ready`
 - Transport: Streamable HTTP
 - Stateless HTTP: enabled
+
+`/health` 只表示 process 與 MCP HTTP service 存活。`/ready` 會使用 production
+composition root 的 `AuthorityResolver` 實際解析 current registry；revision、hash、path、
+status 或 binding 不一致時回 HTTP 503。MCP `dispatch_task` 會將 `TaskRequest` 交給同一個
+`Dispatcher`，不在 adapter 複製 governance flow。
+
+`AUTHORITY_READY != DOMAIN_EXECUTION_CONFIGURED`：目前五個 Owner 都仍使用既有
+`NotConfiguredDomain`。因此 authority readiness 可以通過，而安全 dispatch 的最終 domain
+結果可以是 `BLOCKED_NOT_CONFIGURED`。
 
 ## 目前狀態
 
