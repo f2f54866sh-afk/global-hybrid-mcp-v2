@@ -1,7 +1,7 @@
 # Current Authority
 
-這個目錄只放 current authority registry 與其綁定的 current documents；其中包含 live authority、
-reference-only 與 shared canonical，但只有 `LIVE_AUTHORITY` 可作為 Owner 的 live authority。
+這個目錄只放 current authority registry。Registry 綁定的 current documents 位於專案根目錄；
+其中包含 live authority、reference-only 與可由多個 partition 共用的 canonical。
 
 禁止：
 
@@ -26,16 +26,20 @@ REVISION: <exact revision>
 <current authoritative content>
 ```
 
-Registry schema v3 將 Owner 與 document 分開，並鎖定可匯入的 authority identity：
+Registry schema v4 將 runtime Owner、normative document 與 authority partition 分開，並鎖定
+可匯入的 authority identity：
 
 - `documents` 保存 document role、authority identity、啟用 revision 與 current path。
 - `identity` 是允許接入的精確 authority identity；它本身不會啟用 document。
 - 正式啟用時，registry `revision` 與 file `REVISION` 都必須完全等於 `identity`。
-- `entries` 只保存既有五個 Owner 的 binding。
-- `SALES_HUMAN` Owner 的 `live_authority` 是 `SALES`；`SALES_HUMAN` document 只在
-  `references` 中以 `REFERENCE_ONLY` 綁定。
-- `VISUAL` 與 `EXECUTION` 各自綁定自己的 live authority，並分別透過 `canonicals`
-  引用同一個 `REAL_CAR` canonical；canonical binding 不合併 Owner 或 effect 權限。
+- `entries` 只保存既有五個 Owner 的 `normative_authority`、`authority_partition`
+  與 reference binding。
+- `SALES_HUMAN` Owner 的 normative authority 是 `SALES`；`SALES_HUMAN_REFERENCE`
+  只能以 `REFERENCE_ONLY` 綁定，不能成為 live authority。
+- `VISUAL` 與 `EXECUTION` 的 normative authority 都是同一份 `REAL_CAR` canonical，
+  但 partition 分別是 `VISUAL_JUDGE` 與 `EXECUTION_LAB`。共用 document 與 revision
+  不會合併 Owner 或 effect 權限。
+- Registry 不接受獨立的 `VISUAL` 或 `EXECUTION` authority document。
 
 安全啟用順序：
 

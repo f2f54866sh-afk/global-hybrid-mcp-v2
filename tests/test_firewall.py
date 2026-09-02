@@ -15,7 +15,7 @@ def _snapshot():
         entries={
             owner: AuthorityEntry(
                 owner=owner,
-                live_authority=AuthorityDocument(
+                normative_authority=AuthorityDocument(
                     name=owner.value,
                     role=AuthorityDocumentRole.LIVE_AUTHORITY,
                     identity=f"{owner.value}-1",

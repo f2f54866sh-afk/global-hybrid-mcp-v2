@@ -78,11 +78,13 @@ Authority 與 runtime code 分離。
 `authority/current/registry.json` 保存 document pointer 與 Owner binding：
 
 - document name / role / approved authority identity / activated revision / current file path
-- 既有 Owner 對 live authority document 的唯一 binding
-- reference-only 與 shared canonical binding
+- 既有 Owner 對 normative authority document 的唯一 binding
+- reference-only binding 與 shared canonical 的 partition binding
 
-Document binding 不建立新 Owner，也不合併 Owner 權限。reference-only document 不可成為 live
-authority；共享 canonical 只共享 canonical state，不共享 domain authority 或 effect capability。
+Document binding 不建立新 Owner，也不合併 Owner 權限。`SALES_HUMAN_REFERENCE`
+不可成為 live authority。`VISUAL` 與 `EXECUTION` 共用同一份 `REAL_CAR`
+canonical 與 exact revision，卻分別以 `VISUAL_JUDGE` 與 `EXECUTION_LAB` partition
+消費；Owner 與 effect capability 仍互相隔離。
 
 Approved identity 不等於啟用狀態。只有 registry revision 與 authority file revision 都精確等於
 approved identity，且 document status 為 `CURRENT` 時，該 document 才可被解析。

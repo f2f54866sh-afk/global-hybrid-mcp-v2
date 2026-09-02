@@ -76,17 +76,17 @@ class AuthorityDocument(BaseModel):
 
 class AuthorityEntry(BaseModel):
     owner: Owner
-    live_authority: AuthorityDocument
+    normative_authority: AuthorityDocument
+    authority_partition: str | None = None
     references: list[AuthorityDocument] = Field(default_factory=list)
-    canonicals: list[AuthorityDocument] = Field(default_factory=list)
 
     @property
     def revision(self) -> str:
-        return self.live_authority.revision
+        return self.normative_authority.revision
 
     @property
     def path(self) -> str:
-        return self.live_authority.path
+        return self.normative_authority.path
 
 
 class AuthoritySnapshot(BaseModel):

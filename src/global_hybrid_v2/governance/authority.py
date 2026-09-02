@@ -27,7 +27,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 class AuthorityResolver:
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
     REQUIRED = (
         Owner.GLOBAL,
         Owner.SALES_HUMAN,
@@ -36,20 +36,38 @@ class AuthorityResolver:
         Owner.EXECUTION,
     )
     DOCUMENTS = {
-        "GLOBAL": (AuthorityDocumentRole.LIVE_AUTHORITY, "## Current Authority"),
-        "SALES": (AuthorityDocumentRole.LIVE_AUTHORITY, "## Current Authority"),
-        "SALES_HUMAN": (AuthorityDocumentRole.REFERENCE_ONLY, "## Reference Content"),
-        "LIBRARY_FACT": (AuthorityDocumentRole.LIVE_AUTHORITY, "## Current Authority"),
-        "VISUAL": (AuthorityDocumentRole.LIVE_AUTHORITY, "## Current Authority"),
-        "EXECUTION": (AuthorityDocumentRole.LIVE_AUTHORITY, "## Current Authority"),
-        "REAL_CAR": (AuthorityDocumentRole.CANONICAL, "## Canonical Content"),
+        "GLOBAL": (
+            AuthorityDocumentRole.LIVE_AUTHORITY,
+            "## Current Authority",
+            Path("GLOBAL_WINDOW_CANONICAL.md"),
+        ),
+        "SALES": (
+            AuthorityDocumentRole.LIVE_AUTHORITY,
+            "## Current Authority",
+            Path("SALES_CANONICAL.md"),
+        ),
+        "SALES_HUMAN_REFERENCE": (
+            AuthorityDocumentRole.REFERENCE_ONLY,
+            "## Reference Content",
+            Path("SALES_HUMAN_CANONICAL.md"),
+        ),
+        "LIBRARY": (
+            AuthorityDocumentRole.LIVE_AUTHORITY,
+            "## Current Authority",
+            Path("VEHICLE_KNOWLEDGE_BASE.md"),
+        ),
+        "REAL_CAR": (
+            AuthorityDocumentRole.CANONICAL,
+            "## Canonical Content",
+            Path("REAL_CAR_統一正式指令.md"),
+        ),
     }
     BINDINGS = {
-        Owner.GLOBAL: ("GLOBAL", (), ()),
-        Owner.SALES_HUMAN: ("SALES", ("SALES_HUMAN",), ()),
-        Owner.LIBRARY_FACT: ("LIBRARY_FACT", (), ()),
-        Owner.VISUAL: ("VISUAL", (), ("REAL_CAR",)),
-        Owner.EXECUTION: ("EXECUTION", (), ("REAL_CAR",)),
+        Owner.GLOBAL: ("GLOBAL", None, ()),
+        Owner.SALES_HUMAN: ("SALES", None, ("SALES_HUMAN_REFERENCE",)),
+        Owner.LIBRARY_FACT: ("LIBRARY", None, ()),
+        Owner.VISUAL: ("REAL_CAR", "VISUAL_JUDGE", ()),
+        Owner.EXECUTION: ("REAL_CAR", "EXECUTION_LAB", ()),
     }
 
     def __init__(self, registry_path: str | Path):
@@ -80,10 +98,15 @@ class AuthorityResolver:
 
         registry_root = self.registry_path.resolve().parents[2]
         documents: dict[str, AuthorityDocument] = {}
-        for name, (expected_role, section) in self.DOCUMENTS.items():
+        for name, (expected_role, section, expected_path) in self.DOCUMENTS.items():
             item = raw_documents.get(name)
             if not isinstance(item, dict):
                 raise AuthorityError(f"invalid authority document entry: {name}")
+            self._validate_exact_names(
+                f"authority document fields for {name}",
+                {"role", "identity", "revision", "path"},
+                set(item),
+            )
 
             raw_role = item.get("role")
             raw_identity = item.get("identity")
@@ -104,13 +127,12 @@ class AuthorityResolver:
             if not path:
                 raise AuthorityError(f"authority document path unset: {name}")
 
-            expected_path = Path("authority") / "current" / f"{name}.md"
             configured_path = Path(path)
             if configured_path.is_absolute() or configured_path != expected_path:
                 raise AuthorityError(f"authority document path mismatch: {name}")
             resolved_path = (registry_root / expected_path).resolve()
-            if resolved_path.parent != self.registry_path.resolve().parent:
-                raise AuthorityError(f"authority document path escapes current directory: {name}")
+            if resolved_path.parent != registry_root:
+                raise AuthorityError(f"authority document path escapes repository root: {name}")
 
             self._validate_authority_file(resolved_path, name, expected_role, revision, section)
             documents[name] = AuthorityDocument(
@@ -135,38 +157,40 @@ class AuthorityResolver:
             item = raw_entries.get(owner.value)
             if not isinstance(item, dict):
                 raise AuthorityError(f"invalid current authority entry: {owner.value}")
+            self._validate_exact_names(
+                f"current authority binding fields for {owner.value}",
+                {"normative_authority", "authority_partition", "references"},
+                set(item),
+            )
 
-            live = item.get("live_authority")
+            normative = item.get("normative_authority")
+            partition = item.get("authority_partition")
             references = item.get("references")
-            canonicals = item.get("canonicals")
-            if not isinstance(live, str) or not self._is_string_list(references):
+            if not isinstance(normative, str) or not self._is_string_list(references):
                 raise AuthorityError(f"invalid current authority binding: {owner.value}")
-            if not self._is_string_list(canonicals):
+            if partition is not None and not isinstance(partition, str):
                 raise AuthorityError(f"invalid current authority binding: {owner.value}")
 
-            expected_live, expected_references, expected_canonicals = self.BINDINGS[owner]
-            if live != expected_live:
-                raise AuthorityError(f"live authority binding mismatch: {owner.value}")
+            expected_normative, expected_partition, expected_references = self.BINDINGS[owner]
+            if normative != expected_normative:
+                raise AuthorityError(f"normative authority binding mismatch: {owner.value}")
+            if partition != expected_partition:
+                raise AuthorityError(f"authority partition binding mismatch: {owner.value}")
             if tuple(references) != expected_references:
                 raise AuthorityError(f"reference binding mismatch: {owner.value}")
-            if tuple(canonicals) != expected_canonicals:
-                raise AuthorityError(f"canonical binding mismatch: {owner.value}")
 
-            live_document = documents[live]
+            normative_document = documents[normative]
             reference_documents = [documents[name] for name in references]
-            canonical_documents = [documents[name] for name in canonicals]
-            if live_document.role is not AuthorityDocumentRole.LIVE_AUTHORITY:
-                raise AuthorityError(f"live authority role invalid: {owner.value}")
+            if normative_document.role is AuthorityDocumentRole.REFERENCE_ONLY:
+                raise AuthorityError(f"normative authority role invalid: {owner.value}")
             if any(item.role is not AuthorityDocumentRole.REFERENCE_ONLY for item in reference_documents):
                 raise AuthorityError(f"reference role invalid: {owner.value}")
-            if any(item.role is not AuthorityDocumentRole.CANONICAL for item in canonical_documents):
-                raise AuthorityError(f"canonical role invalid: {owner.value}")
 
             entries[owner] = AuthorityEntry(
                 owner=owner,
-                live_authority=live_document,
+                normative_authority=normative_document,
+                authority_partition=partition,
                 references=reference_documents,
-                canonicals=canonical_documents,
             )
 
         return AuthoritySnapshot(entries=entries)

@@ -68,6 +68,9 @@ MCP / HTTP Adapter
 請把真正 current authority documents 的 exact revision / path 與 Owner bindings 準備完成後，
 才允許 live run。
 
+VISUAL 與 EXECUTION 不各自複製 authority document；兩者共用同一份 REAL_CAR
+canonical，並透過不同 authority partition 維持 Owner 與 effect 權限隔離。
+
 ## 本機
 
 ```bash

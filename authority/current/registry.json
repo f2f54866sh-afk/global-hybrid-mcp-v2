@@ -1,74 +1,62 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "documents": {
     "GLOBAL": {
       "role": "LIVE_AUTHORITY",
-      "identity": "GLOBAL_CANONICAL_20260901_HUMAN_READABLE_WITNESS_EGRESS",
+      "identity": "GLOBAL_CANONICAL_20260902_REPAIR_RESEARCH_EGRESS_MEDIATION",
       "revision": "UNSET",
-      "path": "authority/current/GLOBAL.md"
+      "path": "GLOBAL_WINDOW_CANONICAL.md"
     },
     "SALES": {
       "role": "LIVE_AUTHORITY",
       "identity": "SALES_CANONICAL_20260901_SINGLE_LIVE_RUNNER_CONTRACT_NORMALIZATION",
       "revision": "UNSET",
-      "path": "authority/current/SALES.md"
+      "path": "SALES_CANONICAL.md"
     },
-    "SALES_HUMAN": {
+    "SALES_HUMAN_REFERENCE": {
       "role": "REFERENCE_ONLY",
       "identity": "SALES_HUMAN_CANONICAL_20260901_REFERENCE_ONLY_CONSTRAINT_COMPACTION",
       "revision": "UNSET",
-      "path": "authority/current/SALES_HUMAN.md"
+      "path": "SALES_HUMAN_CANONICAL.md"
     },
-    "LIBRARY_FACT": {
+    "LIBRARY": {
       "role": "LIVE_AUTHORITY",
       "identity": "VEHICLE_KNOWLEDGE_BASE_20260901_SCHEMA_DATA_SEPARATION",
       "revision": "UNSET",
-      "path": "authority/current/LIBRARY_FACT.md"
-    },
-    "VISUAL": {
-      "role": "LIVE_AUTHORITY",
-      "identity": "UNSET",
-      "revision": "UNSET",
-      "path": "authority/current/VISUAL.md"
-    },
-    "EXECUTION": {
-      "role": "LIVE_AUTHORITY",
-      "identity": "UNSET",
-      "revision": "UNSET",
-      "path": "authority/current/EXECUTION.md"
+      "path": "VEHICLE_KNOWLEDGE_BASE.md"
     },
     "REAL_CAR": {
       "role": "CANONICAL",
-      "identity": "REAL_CAR_20260901_TYPED_VISUAL_EXECUTION_CONTRACT",
+      "identity": "REAL_CAR_20260902_TEST_CIRCUIT_BREAKER_END_TO_END_RELEVANCE_GATE",
       "revision": "UNSET",
-      "path": "authority/current/REAL_CAR.md"
+      "path": "REAL_CAR_統一正式指令.md"
     }
   },
   "entries": {
     "GLOBAL": {
-      "live_authority": "GLOBAL",
-      "references": [],
-      "canonicals": []
+      "normative_authority": "GLOBAL",
+      "authority_partition": null,
+      "references": []
     },
     "SALES_HUMAN": {
-      "live_authority": "SALES",
-      "references": ["SALES_HUMAN"],
-      "canonicals": []
+      "normative_authority": "SALES",
+      "authority_partition": null,
+      "references": ["SALES_HUMAN_REFERENCE"]
     },
     "LIBRARY_FACT": {
-      "live_authority": "LIBRARY_FACT",
-      "references": [],
-      "canonicals": []
+      "normative_authority": "LIBRARY",
+      "authority_partition": null,
+      "references": []
     },
     "VISUAL": {
-      "live_authority": "VISUAL",
-      "references": [],
-      "canonicals": ["REAL_CAR"]
+      "normative_authority": "REAL_CAR",
+      "authority_partition": "VISUAL_JUDGE",
+      "references": []
     },
     "EXECUTION": {
-      "live_authority": "EXECUTION",
-      "references": [],
-      "canonicals": ["REAL_CAR"]
+      "normative_authority": "REAL_CAR",
+      "authority_partition": "EXECUTION_LAB",
+      "references": []
     }
   }
 }
