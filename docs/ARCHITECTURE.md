@@ -72,6 +72,11 @@ TaskRequest
 
 監察官平行觀察每個 stage。
 
+每次 dispatch 建立獨立 `TASK_TRACE_ID`。GLOBAL control span 與實際 routed Owner span
+共享該 trace，Witness 使用獨立 read-only logical span。Trace 只保存 contract id、exact authority
+revision、action class、consumed field ids、output/evidence pointer、status 與 failure locus；不保存 request
+全文、hidden reasoning 或任務外歷史。
+
 ## 4. Authority
 
 Authority 與 runtime code 分離。
@@ -144,9 +149,10 @@ MCP 是 remote adapter，不是 application core。
 
 只暴露：
 
-- inspect_task
-- health
-- 後續可加 run_task
+- `validate_task`
+- `dispatch_task`（走同一 composition root 與 Dispatcher）
+- `/health` process liveness
+- `/ready` exact authority readiness
 
 不暴露：
 
@@ -169,6 +175,7 @@ GLOBAL 本身應保持 deterministic。
 
 - trace_id
 - task_id
+- span_id / parent_span_id / span_owner
 - stage
 - owner
 - decision
@@ -177,6 +184,38 @@ GLOBAL 本身應保持 deterministic。
 
 應輸出 structured stdout。
 正式 production 可接 OpenTelemetry exporter。
+
+## 9A. Current architecture map
+
+| Owner/scope | Current authority binding | Runtime interface | Hard boundary |
+|---|---|---|---|
+| GLOBAL | `GLOBAL` / `GLOBAL_WINDOW_CANONICAL.md` | AuthorityResolver, Router, Firewall, gates, closure | read-only effect scope; no domain work |
+| SALES_HUMAN | normative `SALES` + `SALES_HUMAN_REFERENCE` | TaskContract / DomainContract | reference-only document cannot become normative |
+| LIBRARY_FACT | `LIBRARY` / `VEHICLE_KNOWLEDGE_BASE.md` | projection, fact-need signal, Library boundary | only LIBRARY_FACT can commit fact values |
+| VISUAL | `REAL_CAR` / `VISUAL_JUDGE` | TaskContract / DomainContract | no external-write effect |
+| EXECUTION | `REAL_CAR` / `EXECUTION_LAB` | sealed governed execution path | separate Owner/effect scope from VISUAL |
+| WITNESS | no authority and not an Owner | immutable TraceEvent copy | read-only, no tool or mutation API |
+
+`DomainContract` is the only cross-owner envelope. Its provider retains payload semantics; GLOBAL validates
+identity, exact source revision, currentness, required/used/blocked fields and provenance. Stable production
+handoffs use `SERVICE`; `TEMPORARY_COLLABORATION` is bounded to interface discovery and unresolved defects.
+
+Library uses a minimal read/write split, not event sourcing: consumers receive named projections or send
+fact-need signals, while only LIBRARY_FACT can commit a fact. Search score and source freshness never grant
+fact authority.
+
+## 9B. Architecture fitness and proportional risk
+
+The composition root evaluates executable system fitness checks for exact five-owner topology, attached
+read-only Witness, GLOBAL's thin effect boundary, and VISUAL/EXECUTION effect isolation. Authority fitness
+separately checks exact owner entries, shared REAL_CAR revision with distinct partitions, and Sales human
+reference-only binding. Domain-specific quality semantics stay with their existing Canonicals and are not
+duplicated into GLOBAL runtime code.
+
+Risk classification applies only an observable effect floor: R0 read-only, R1 model inference, R2 external
+read, R3 image generation, and R4 external/file/protected persistence write. It labels the governed
+path; existing task-specific gates remain the enforcement source, so low-risk work does not inherit every
+high-risk gate.
 
 ## 10. Failure policy
 

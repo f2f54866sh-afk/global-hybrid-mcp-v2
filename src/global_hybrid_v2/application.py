@@ -8,6 +8,8 @@ from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.governance.authority import AuthorityResolver
+from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
+from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.research import (
     ResearchExecutor,
     ResearchPort,
@@ -27,6 +29,7 @@ class Application:
     runtime_identity: RuntimeIdentity
     trace: TraceBus
     dispatcher: Dispatcher
+    composition_fitness: FitnessReport | None = None
 
 
 def create_application(
@@ -53,12 +56,24 @@ def create_application(
         trusted_public_key=runtime_settings.authority_trusted_public_key,
     )
     runtime_trace = trace or TraceBus()
+    runtime_trace.attach_witness(ReadOnlyWitness())
     research_port = research if research is not None else configured_research_port(runtime_settings)
     research_executor = ResearchExecutor(research_port)
     domains: dict[Owner, DomainPort] = {
         owner: NotConfiguredDomain(owner)
         for owner in Owner
     }
+    composition_fitness = SystemFitnessFunctions.evaluate_composition(
+        domains=domains,
+        trace=runtime_trace,
+    )
+    if not composition_fitness.passed:
+        blockers = ", ".join(
+            check.blocker or check.name
+            for check in composition_fitness.checks
+            if not check.passed
+        )
+        raise RuntimeError(f"runtime composition fitness failed: {blockers}")
     dispatcher = Dispatcher(
         authority=authority,
         domains=domains,
@@ -73,4 +88,5 @@ def create_application(
         runtime_identity=runtime_identity or read_runtime_identity(),
         trace=runtime_trace,
         dispatcher=dispatcher,
+        composition_fitness=composition_fitness,
     )

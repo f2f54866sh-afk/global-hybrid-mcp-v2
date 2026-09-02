@@ -33,6 +33,38 @@ class EffectType(StrEnum):
     IMAGE_GENERATE = "image_generate"
 
 
+class RiskClass(StrEnum):
+    R0 = "R0"
+    R1 = "R1"
+    R2 = "R2"
+    R3 = "R3"
+    R4 = "R4"
+
+
+class DomainInteractionMode(StrEnum):
+    SERVICE = "SERVICE"
+    TEMPORARY_COLLABORATION = "TEMPORARY_COLLABORATION"
+
+
+class DomainContractStatus(StrEnum):
+    DRAFT = "DRAFT"
+    PASS = "PASS"
+    HOLD = "HOLD"
+    REJECTED = "REJECTED"
+
+
+class ContractCurrentness(StrEnum):
+    CURRENT = "CURRENT"
+    STALE = "STALE"
+    UNKNOWN = "UNKNOWN"
+
+
+class LibraryAccessKind(StrEnum):
+    READ_PROJECTION = "READ_PROJECTION"
+    FACT_NEED_SIGNAL = "FACT_NEED_SIGNAL"
+    COMMIT_FACT = "COMMIT_FACT"
+
+
 class OutputClassification(StrEnum):
     DIAGNOSIS_ONLY = "DIAGNOSIS_ONLY"
     STATIC_KNOWLEDGE = "STATIC_KNOWLEDGE"
@@ -200,6 +232,7 @@ class TaskRequest(BaseModel):
     effects: list[EffectType] = Field(default_factory=lambda: [EffectType.READ_ONLY])
     context: list[ContextItem] = Field(default_factory=list)
     retry_context: RetryContext | None = None
+    risk_class: RiskClass | None = None
 
 
 class AuthorityDocument(BaseModel):
@@ -231,8 +264,80 @@ class AuthoritySnapshot(BaseModel):
     entries: dict[Owner, AuthorityEntry]
 
 
+class DomainContract(BaseModel):
+    """Owner-neutral envelope for an explicit cross-domain handoff.
+
+    The payload remains provider-owned.  GLOBAL validates only this envelope and
+    the fields the consumer declares that it consumed.
+    """
+
+    task_trace_id: str = Field(min_length=1)
+    contract_id: str = Field(default_factory=lambda: str(uuid4()))
+    schema_version: int = Field(default=1, ge=1)
+    provider_owner: Owner
+    consumer_owner: Owner
+    task_scope: str = Field(min_length=1)
+    source_authority_revision: str = Field(min_length=1)
+    requirement_ids: list[str] = Field(min_length=1)
+    required_fields: set[str] = Field(default_factory=set)
+    optional_fields: set[str] = Field(default_factory=set)
+    used_fields: set[str] = Field(default_factory=set)
+    blocked_foreign_fields: set[str] = Field(default_factory=set)
+    currentness: ContractCurrentness
+    provenance: list[str] = Field(min_length=1)
+    status: DomainContractStatus = DomainContractStatus.DRAFT
+    interaction_mode: DomainInteractionMode = DomainInteractionMode.SERVICE
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_cross_domain_envelope(self) -> DomainContract:
+        if self.provider_owner is self.consumer_owner:
+            raise ValueError("cross-domain contract requires distinct provider and consumer")
+
+        field_groups = {
+            "required_fields": self.required_fields,
+            "optional_fields": self.optional_fields,
+            "used_fields": self.used_fields,
+            "blocked_foreign_fields": self.blocked_foreign_fields,
+        }
+        for label, values in field_groups.items():
+            if any(not value.strip() for value in values):
+                raise ValueError(f"{label} cannot contain blank field names")
+
+        if self.required_fields & self.optional_fields:
+            raise ValueError("required and optional contract fields must be disjoint")
+        if (self.required_fields | self.optional_fields) & self.blocked_foreign_fields:
+            raise ValueError("allowed and blocked foreign fields must be disjoint")
+
+        declared = self.required_fields | self.optional_fields
+        if not self.used_fields <= declared:
+            raise ValueError("consumer used undeclared contract fields")
+        if self.used_fields & self.blocked_foreign_fields:
+            raise ValueError("consumer used blocked foreign fields")
+        if not self.used_fields <= set(self.payload):
+            raise ValueError("consumer used fields absent from payload")
+
+        if self.status is DomainContractStatus.PASS:
+            if not self.required_fields <= set(self.payload):
+                raise ValueError("passing contract is missing required fields")
+            if self.currentness is not ContractCurrentness.CURRENT:
+                raise ValueError("passing contract must be current")
+            if not all(item.strip() for item in self.provenance):
+                raise ValueError("passing contract requires non-blank provenance")
+        return self
+
+
+class LibraryAccessRequest(BaseModel):
+    actor_owner: Owner
+    access_kind: LibraryAccessKind
+    task_scope: str = Field(min_length=1)
+    projection: str | None = None
+
+
 class TaskContract(BaseModel):
     task_id: str = Field(default_factory=lambda: str(uuid4()))
+    task_trace_id: str = Field(default_factory=lambda: str(uuid4()))
+    contract_id: str = Field(default_factory=lambda: str(uuid4()))
     request_text: str
     intent: Intent
     owner: Owner
@@ -241,6 +346,7 @@ class TaskContract(BaseModel):
     context: list[ContextItem]
     context_admission_receipts: list[ContextAdmissionReceipt] = Field(default_factory=list)
     retry_context: RetryContext | None = None
+    risk_class: RiskClass = RiskClass.R0
     research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
     research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)
 
@@ -368,6 +474,9 @@ class DomainResult(BaseModel):
 class TraceEvent(BaseModel):
     trace_id: str
     task_id: str
+    span_id: str | None = None
+    parent_span_id: str | None = None
+    span_owner: str | None = None
     stage: str
     owner: Owner | None = None
     decision: str

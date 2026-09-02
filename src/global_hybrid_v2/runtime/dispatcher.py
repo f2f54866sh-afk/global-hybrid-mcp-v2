@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from global_hybrid_v2.contracts import (
     AuthoritySnapshot,
@@ -29,6 +30,7 @@ from global_hybrid_v2.governance.repeat_action import (
     REPEAT_BLOCKED_NO_NEW_EVIDENCE,
     RepeatActionGate,
 )
+from global_hybrid_v2.governance.risk import TaskRiskClassifier
 from global_hybrid_v2.governance.router import OwnerRouter
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
 from global_hybrid_v2.runtime.trace import TraceBus
@@ -59,6 +61,7 @@ class Dispatcher:
         egress: ResponseEgressValidator | None = None,
         repeat_action_gate: RepeatActionGate | None = None,
         research_executor: ResearchExecutor | None = None,
+        risk_classifier: TaskRiskClassifier | None = None,
     ):
         self.authority = authority
         self.domains = domains
@@ -67,6 +70,7 @@ class Dispatcher:
         self.router = router or OwnerRouter()
         self.effect_gate = effect_gate or EffectGate()
         self.repeat_action_gate = repeat_action_gate or RepeatActionGate()
+        self.risk_classifier = risk_classifier or TaskRiskClassifier()
         self.research_executor = research_executor or ResearchExecutor(
             UnavailableResearchPort()
         )
@@ -78,13 +82,35 @@ class Dispatcher:
         )
 
     def dispatch(self, request: TaskRequest):
-        snapshot = self.authority.resolve()
+        task_id = str(uuid4())
+        task_trace_id = self.trace.start_task(task_id)
+        contract_id = str(uuid4())
+        try:
+            snapshot = self.authority.resolve()
+        except Exception as exc:
+            self.trace.emit(
+                task_id=task_id,
+                stage="authority_resolution",
+                decision="DENY",
+                span_owner="GLOBAL",
+                metadata={
+                    "input_contract_id": contract_id,
+                    "failure_locus": "AUTHORITY",
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
 
         owner = self.router.route(request.intent)
+        authority_entry = snapshot.entries.get(owner)
+        risk_class = self.risk_classifier.classify(request)
         context_admission = self.firewall.evaluate(request.context, snapshot)
         safe_context = context_admission.admitted
 
         contract = TaskContract(
+            task_id=task_id,
+            task_trace_id=task_trace_id,
+            contract_id=contract_id,
             request_text=request.request_text,
             intent=request.intent,
             owner=owner,
@@ -93,6 +119,7 @@ class Dispatcher:
             context=safe_context,
             context_admission_receipts=context_admission.receipts,
             retry_context=request.retry_context,
+            risk_class=risk_class,
         )
 
         self.trace.emit(
@@ -100,7 +127,9 @@ class Dispatcher:
             stage="firewall",
             decision="PASS",
             owner=owner,
+            span_owner="GLOBAL",
             metadata={
+                "input_contract_id": contract.contract_id,
                 "accepted_context": len(safe_context),
                 "received_context": len(request.context),
                 "admission_receipts": [
@@ -110,14 +139,20 @@ class Dispatcher:
         )
 
         try:
-            self.effect_gate.authorize(owner, request.effects)
+            effect_decision = self.effect_gate.authorize(owner, request.effects)
         except Exception as exc:
             self.trace.emit(
                 task_id=contract.task_id,
                 stage="effect_gate",
                 decision="DENY",
                 owner=owner,
-                metadata={"error": str(exc)},
+                span_owner="GLOBAL",
+                metadata={
+                    "input_contract_id": contract.contract_id,
+                    "error": str(exc),
+                    "failure_locus": "GOVERNANCE",
+                    "enforcement_point": "DISPATCHER_PRE_DOMAIN",
+                },
             )
             raise
 
@@ -126,7 +161,13 @@ class Dispatcher:
             stage="effect_gate",
             decision="PASS",
             owner=owner,
-            metadata={"effects": [effect.value for effect in request.effects]},
+            span_owner="GLOBAL",
+            metadata={
+                "input_contract_id": contract.contract_id,
+                "effects": [effect.value for effect in request.effects],
+                "policy_decision_point": effect_decision.policy_decision_point,
+                "enforcement_point": effect_decision.enforcement_point,
+            },
         )
 
         repeat_admission = self.repeat_action_gate.evaluate(
@@ -155,7 +196,16 @@ class Dispatcher:
                 stage="closure",
                 decision=result.status,
                 owner=owner,
-                metadata={"evidence": result.evidence},
+                metadata={
+                    "input_contract_id": contract.contract_id,
+                    "authority_revision": authority_entry.revision if authority_entry else None,
+                    "action_class": request.intent.value,
+                    "consumed_fields": [item.id for item in safe_context],
+                    "output_id": f"{contract.task_id}:{result.status}",
+                    "evidence_pointer": sorted(result.evidence),
+                    "status": result.status,
+                    "failure_locus": "GOVERNANCE",
+                },
             )
             return result
 
@@ -163,7 +213,8 @@ class Dispatcher:
         if domain is None:
             raise RuntimeError(f"domain adapter missing: {owner.value}")
 
-        result = self._validate_egress(contract, domain.run(contract))
+        domain_result = domain.run(contract)
+        result = self._validate_egress(contract, domain_result)
         if result.status == RUN_REQUIRED_RESEARCH:
             result = self._run_research_loop(
                 contract=contract,
@@ -188,7 +239,18 @@ class Dispatcher:
             stage="closure",
             decision=result.status,
             owner=owner,
-            metadata={"evidence": result.evidence},
+            metadata={
+                "input_contract_id": contract.contract_id,
+                "authority_revision": authority_entry.revision if authority_entry else None,
+                "action_class": request.intent.value,
+                "consumed_fields": [item.id for item in safe_context],
+                "output_id": f"{contract.task_id}:{result.status}",
+                "evidence_pointer": sorted(result.evidence),
+                "status": result.status,
+                "failure_locus": (
+                    None if result.status in {"DONE", "PASS"} else owner.value
+                ),
+            },
         )
         return result
 
