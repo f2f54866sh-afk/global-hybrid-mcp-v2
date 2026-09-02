@@ -73,6 +73,19 @@ path、status 或 binding 不一致都會 fail-close。Canonical 不加 wrapper�
 VISUAL 與 EXECUTION 不各自複製 authority document；兩者共用同一份 REAL_CAR
 canonical，並透過不同 authority partition 維持 Owner 與 effect 權限隔離。
 
+## Bounded automatic research
+
+`Dispatcher` 在 response egress 判定 `RUN_REQUIRED_RESEARCH` 時，會先抑制實質輸出，
+再透過 task-local `ResearchPort` 執行 bounded research、把結果轉成既有
+`ResearchEvidence / ResearchAdmissionReceipt`，並以同一 `task_id` resume 原任務。
+同一 scope/semantic keys 最多兩次；第二次沒有 material query/source/provider/strategy
+變更時 fail-close，不會重跑相同研究。
+
+Research provider 是工具 port，不是 Owner，也不能修改 authority。目前 production
+composition 明確使用 `UnavailableResearchPort`：production install 未安裝 `ai` extra，且沒有
+API key 或 provider/model 設定，因此不假裝可執行 web research。Callable provider 只可透過
+明確配置／注入接入；deterministic fake provider 僅供 tests 驗證完整 loop。
+
 ## 本機
 
 ```bash

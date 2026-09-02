@@ -7,6 +7,11 @@ from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.governance.authority import AuthorityResolver
+from global_hybrid_v2.research import (
+    ResearchExecutor,
+    ResearchPort,
+    UnavailableResearchPort,
+)
 from global_hybrid_v2.runtime.deployment import RuntimeIdentity, read_runtime_identity
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
 from global_hybrid_v2.runtime.trace import TraceBus
@@ -18,6 +23,7 @@ class Application:
     repo_root: Path
     settings: Settings
     authority: AuthorityResolver
+    research_executor: ResearchExecutor
     runtime_identity: RuntimeIdentity
     trace: TraceBus
     dispatcher: Dispatcher
@@ -28,6 +34,7 @@ def create_application(
     repo_root: str | Path | None = None,
     settings: Settings | None = None,
     trace: TraceBus | None = None,
+    research: ResearchPort | None = None,
     runtime_identity: RuntimeIdentity | None = None,
 ) -> Application:
     root = (
@@ -46,6 +53,8 @@ def create_application(
         trusted_public_key=runtime_settings.authority_trusted_public_key,
     )
     runtime_trace = trace or TraceBus()
+    research_port = research or UnavailableResearchPort()
+    research_executor = ResearchExecutor(research_port)
     domains: dict[Owner, DomainPort] = {
         owner: NotConfiguredDomain(owner)
         for owner in Owner
@@ -54,11 +63,13 @@ def create_application(
         authority=authority,
         domains=domains,
         trace=runtime_trace,
+        research_executor=research_executor,
     )
     return Application(
         repo_root=root,
         settings=runtime_settings,
         authority=authority,
+        research_executor=research_executor,
         runtime_identity=runtime_identity or read_runtime_identity(),
         trace=runtime_trace,
         dispatcher=dispatcher,

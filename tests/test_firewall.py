@@ -17,6 +17,7 @@ from global_hybrid_v2.contracts import (
     TaskRequest,
 )
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
+from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.firewall import TaskFirewall
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
 from global_hybrid_v2.runtime.trace import TraceBus
@@ -273,7 +274,10 @@ def test_reference_pointer_is_retrieval_hint_not_fact_evidence():
     assert receipt.reason_code is ContextAdmissionReason.REFERENCE_POINTER_ACCEPTED
 
 
-class _StaticAuthority:
+class _StaticAuthority(AuthorityResolver):
+    def __init__(self):
+        pass
+
     def resolve(self):
         return _snapshot()
 

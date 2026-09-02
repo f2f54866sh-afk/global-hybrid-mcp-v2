@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from global_hybrid_v2.contracts import (
@@ -171,6 +171,7 @@ class ResponseEgressValidator:
             output_classifications=classifications,
             research_scope=result.research_scope,
             research_admission_receipts=result.research_admission_receipts,
+            research_execution_receipts=result.research_execution_receipts,
             retrieval_key=result.retrieval_key,
             retrieval_receipts=result.retrieval_receipts,
             retrieval_false_negative_evidence=result.retrieval_false_negative_evidence,
@@ -257,6 +258,7 @@ class ResponseEgressValidator:
             output_classifications=classifications,
             research_scope=result.research_scope,
             research_admission_receipts=result.research_admission_receipts,
+            research_execution_receipts=result.research_execution_receipts,
             retrieval_key=result.retrieval_key,
             retrieval_receipts=result.retrieval_receipts,
             retrieval_false_negative_evidence=result.retrieval_false_negative_evidence,
@@ -367,6 +369,39 @@ class ResponseEgressValidator:
             if receipt.issued_at <= now < receipt.valid_until:
                 return True
         return False
+
+    def admit_research_evidence(
+        self,
+        *,
+        semantic_keys: list[OutputClassification],
+        scope: str,
+        evidence: list[ResearchEvidence],
+        valid_for: timedelta = timedelta(minutes=15),
+    ) -> tuple[list[ResearchAdmissionReceipt], list[OutputClassification]]:
+        now = self.clock()
+        admitted: list[ResearchAdmissionReceipt] = []
+        missing: list[OutputClassification] = []
+        if not scope or now.tzinfo is None or valid_for <= timedelta(0):
+            return admitted, list(semantic_keys)
+
+        for semantic_key in semantic_keys:
+            matching = [
+                item for item in evidence if self._admissible_evidence(item, semantic_key)
+            ]
+            if not matching:
+                missing.append(semantic_key)
+                continue
+            admitted.append(
+                ResearchAdmissionReceipt(
+                    status=ResearchAdmissionStatus.PASS,
+                    semantic_key=semantic_key,
+                    scope=scope,
+                    issued_at=now,
+                    valid_until=now + valid_for,
+                    evidence=matching,
+                )
+            )
+        return admitted, missing
 
     @classmethod
     def _admissible_evidence(

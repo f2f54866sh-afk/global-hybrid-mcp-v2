@@ -4,6 +4,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from global_hybrid_v2.contracts import (
+    AuthorityDocument,
+    AuthorityDocumentRole,
+    AuthorityEntry,
     AuthoritySnapshot,
     DomainResult,
     Intent,
@@ -25,7 +28,7 @@ from global_hybrid_v2.governance.egress import (
     UNKNOWN_WITH_EXACT_BLOCKER,
     ResponseEgressValidator,
 )
-from global_hybrid_v2.runtime.dispatcher import Dispatcher
+from global_hybrid_v2.runtime.dispatcher import RESEARCH_PROVIDER_UNAVAILABLE, Dispatcher
 from global_hybrid_v2.runtime.trace import TraceBus
 
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
@@ -439,7 +442,20 @@ class _StaticAuthority(AuthorityResolver):
         pass
 
     def resolve(self) -> AuthoritySnapshot:
-        return AuthoritySnapshot(entries={})
+        document = AuthorityDocument(
+            name="GLOBAL",
+            role=AuthorityDocumentRole.LIVE_AUTHORITY,
+            revision="GLOBAL_TEST_REVISION",
+            path="GLOBAL_WINDOW_CANONICAL.md",
+        )
+        return AuthoritySnapshot(
+            entries={
+                Owner.GLOBAL: AuthorityEntry(
+                    owner=Owner.GLOBAL,
+                    normative_authority=document,
+                )
+            }
+        )
 
 
 class _AssumptionDomain:
@@ -464,10 +480,13 @@ def test_dispatcher_enforces_evidence_admission_before_closure(capsys):
     result = dispatcher.dispatch(TaskRequest(request_text="repair architecture", intent=Intent.GOVERNANCE))
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
 
-    assert result.status == RUN_REQUIRED_RESEARCH
-    assert [event["stage"] for event in events[-2:]] == ["response_egress", "closure"]
-    assert events[-2]["decision"] == "BLOCK"
-    assert CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE in events[-2]["metadata"][
+    assert result.status == UNKNOWN_WITH_EXACT_BLOCKER
+    assert result.output["blocker"] == RESEARCH_PROVIDER_UNAVAILABLE
+    assert CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE in events[3]["metadata"][
         "finding_codes"
     ]
-    assert events[-1]["decision"] == RUN_REQUIRED_RESEARCH
+    assert [event["stage"] for event in events[-3:]] == [
+        "research_request_created",
+        "research_loop_closed",
+        "closure",
+    ]

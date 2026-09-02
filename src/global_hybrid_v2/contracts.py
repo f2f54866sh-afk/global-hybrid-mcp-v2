@@ -59,6 +59,16 @@ class ResearchEvidenceSource(StrEnum):
     CURRENT_USER_PROVIDED_OBSERVATION = "CURRENT_USER_PROVIDED_OBSERVATION"
 
 
+class ResearchProviderAvailability(StrEnum):
+    CALLABLE = "CALLABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class ResearchExecutionStatus(StrEnum):
+    PASS = "PASS"
+    FAILED = "FAILED"
+
+
 class MaterialChangeReason(StrEnum):
     CODE_CHANGED = "CODE_CHANGED"
     CONFIG_CHANGED = "CONFIG_CHANGED"
@@ -231,6 +241,8 @@ class TaskContract(BaseModel):
     context: list[ContextItem]
     context_admission_receipts: list[ContextAdmissionReceipt] = Field(default_factory=list)
     retry_context: RetryContext | None = None
+    research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
+    research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)
 
 
 class ResearchEvidence(BaseModel):
@@ -246,6 +258,60 @@ class ResearchAdmissionReceipt(BaseModel):
     issued_at: datetime
     valid_until: datetime
     evidence: list[ResearchEvidence] = Field(min_length=1)
+
+
+class ResearchCoverage(BaseModel):
+    complete: bool = False
+    covered_semantic_keys: set[OutputClassification] = Field(default_factory=set)
+    unresolved_gaps: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_complete_coverage(self) -> ResearchCoverage:
+        if self.complete and self.unresolved_gaps:
+            raise ValueError("complete research coverage cannot contain unresolved gaps")
+        return self
+
+
+class ResearchRequest(BaseModel):
+    request_id: str = Field(default_factory=lambda: str(uuid4()))
+    task_id: str = Field(min_length=1)
+    original_owner: Owner
+    original_task_scope: str = Field(min_length=1)
+    research_scope: str = Field(min_length=1)
+    required_semantic_keys: list[OutputClassification] = Field(min_length=1)
+    queries: list[str] = Field(min_length=1)
+    allowed_source_classes: list[ResearchEvidenceSource] = Field(min_length=1)
+    authority_revision: str = Field(min_length=1)
+    attempt: int = Field(ge=1)
+    retrieval_strategy: str = Field(min_length=1)
+
+
+class ResearchExecutionReceipt(BaseModel):
+    request_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    started_at: datetime
+    completed_at: datetime
+    status: ResearchExecutionStatus
+    queries_executed: list[str] = Field(default_factory=list)
+    source_references: list[str] = Field(default_factory=list)
+    evidence: list[ResearchEvidence] = Field(default_factory=list)
+    coverage: ResearchCoverage = Field(default_factory=ResearchCoverage)
+    error: str | None = None
+    blocker: str | None = None
+
+    @model_validator(mode="after")
+    def validate_execution_receipt(self) -> ResearchExecutionReceipt:
+        if self.started_at.tzinfo is None or self.completed_at.tzinfo is None:
+            raise ValueError("research execution timestamps must be timezone-aware")
+        if self.completed_at < self.started_at:
+            raise ValueError("research execution completion precedes start")
+        if self.status is ResearchExecutionStatus.PASS and (
+            not self.queries_executed or not self.evidence
+        ):
+            raise ValueError("successful research execution requires queries and evidence")
+        if self.status is ResearchExecutionStatus.FAILED and not (self.error or self.blocker):
+            raise ValueError("failed research execution requires an error or blocker")
+        return self
 
 
 class RetrievalReceipt(BaseModel):
@@ -291,6 +357,7 @@ class DomainResult(BaseModel):
     output_classifications: set[OutputClassification] = Field(default_factory=set)
     research_scope: str | None = None
     research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
+    research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)
     retrieval_key: str | None = None
     retrieval_receipts: list[RetrievalReceipt] = Field(default_factory=list)
     retrieval_false_negative_evidence: list[RetrievalFalseNegativeEvidence] = Field(
@@ -313,3 +380,6 @@ class WitnessFinding(BaseModel):
     severity: str
     code: str
     message: str
+
+
+TaskContract.model_rebuild()
