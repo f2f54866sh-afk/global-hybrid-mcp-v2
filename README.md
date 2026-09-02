@@ -97,13 +97,41 @@ python -m global_hybrid_v2.adapters.mcp_server
 - Stateless HTTP: enabled
 
 `/health` 只表示 process 與 MCP HTTP service 存活。`/ready` 會使用 production
-composition root 的 `AuthorityResolver` 實際解析 current registry；revision、hash、path、
-status 或 binding 不一致時回 HTTP 503。MCP `dispatch_task` 會將 `TaskRequest` 交給同一個
-`Dispatcher`，不在 adapter 複製 governance flow。
+composition root 的 `AuthorityResolver` 實際驗證 owner activation signature，再解析 current
+registry；signature、revision、hash、path、status 或 binding 不一致時回 HTTP 503。MCP
+`dispatch_task` 會將 `TaskRequest` 交給同一個 `Dispatcher`，不在 adapter 複製 governance
+flow。
+
+`/ready` 的 readiness 只代表 authority / governance runtime 可解析。它會附加僅從
+`RENDER / RENDER_GIT_COMMIT / RENDER_GIT_BRANCH / RENDER_GIT_REPO_SLUG` 讀取的非敏感
+deployment attestation；local 明確標記 `LOCAL_OR_UNKNOWN`，identity incomplete 不會改變
+authority readiness。`render.yaml` 使用 `/ready` 作 deploy health check，並維持
+`GLOBAL_LIVE_EXECUTION=false`。
 
 `AUTHORITY_READY != DOMAIN_EXECUTION_CONFIGURED`：目前五個 Owner 都仍使用既有
 `NotConfiguredDomain`。因此 authority readiness 可以通過，而安全 dispatch 的最終 domain
 結果可以是 `BLOCKED_NOT_CONFIGURED`。
+
+## Authority promotion
+
+Canonical 與 registry 的變更只是 `CANDIDATE_CHANGE`。成為 current authority 還需要 owner review、
+owner-held Ed25519 private key直接簽署 `registry.json` exact bytes、寫入
+`authority/current/activation.json`，以及 resolver 全部驗證成功。可信 key ID 與 public key 由
+runtime environment 在 repository write boundary 外設定；`authority/trust/` 只保留說明文件。
+Private key 不得進入 repository、tests fixture、Codex/ChatGPT workspace 或 Render，也沒有
+fallback 自動簽章或 production bypass。
+
+Production endpoint 由明確的 `PRODUCTION_BASE_URL` 綁定。部署完成後，手動執行
+`.github/workflows/production-smoke.yml`，由 workflow dispatch 輸入 exact URL 與預期 commit；
+也可直接執行：
+
+```bash
+EXPECTED_GIT_COMMIT="$GITHUB_SHA" python -m global_hybrid_v2.production_verifier
+```
+
+URL 未綁定會 hard-fail `PRODUCTION_IDENTITY_UNBOUND`，而 `/ready` attested SHA 不符會 hard-fail
+`PRODUCTION_COMMIT_MISMATCH`；不需要 Render API key 或 service ID。Core CI 不執行 production
+verification，避免與 Render auto-deploy 競速。
 
 ## 目前狀態
 

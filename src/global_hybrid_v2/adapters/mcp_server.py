@@ -6,7 +6,7 @@ from starlette.responses import JSONResponse
 
 from global_hybrid_v2.application import Application, create_application
 from global_hybrid_v2.contracts import TaskRequest
-from global_hybrid_v2.governance.authority import AuthorityError
+from global_hybrid_v2.governance.authority import AUTHORITY_ACTIVATION_INVALID, AuthorityError
 
 
 def create_mcp_server(application: Application) -> MCPServer:
@@ -26,11 +26,16 @@ def create_mcp_server(application: Application) -> MCPServer:
     async def ready(_: Request) -> JSONResponse:
         try:
             snapshot = application.authority.resolve()
-        except AuthorityError:
+        except AuthorityError as exc:
+            failure_code = (
+                AUTHORITY_ACTIVATION_INVALID
+                if str(exc) == AUTHORITY_ACTIVATION_INVALID
+                else "AUTHORITY_RESOLUTION_FAILED"
+            )
             return JSONResponse(
                 {
                     "ready": False,
-                    "failure_code": "AUTHORITY_RESOLUTION_FAILED",
+                    "failure_code": failure_code,
                 },
                 status_code=503,
             )
@@ -38,6 +43,7 @@ def create_mcp_server(application: Application) -> MCPServer:
             {
                 "ready": True,
                 "resolved_owners": [owner.value for owner in snapshot.entries],
+                "runtime": application.runtime_identity.model_dump(),
             }
         )
 

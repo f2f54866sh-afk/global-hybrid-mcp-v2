@@ -12,6 +12,11 @@ COPY src ./src
 RUN pip install .
 
 COPY authority ./authority
+COPY GLOBAL_WINDOW_CANONICAL.md ./
+COPY SALES_CANONICAL.md ./
+COPY SALES_HUMAN_CANONICAL.md ./
+COPY VEHICLE_KNOWLEDGE_BASE.md ./
+COPY REAL_CAR_統一正式指令.md ./
 
 EXPOSE 8000
 

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
 from pathlib import Path
 from typing import Any, TypeGuard
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from global_hybrid_v2.contracts import (
     AuthorityDocument,
@@ -17,6 +22,12 @@ from global_hybrid_v2.contracts import (
 
 class AuthorityError(RuntimeError):
     pass
+
+
+AUTHORITY_ACTIVATION_INVALID = "AUTHORITY_ACTIVATION_INVALID"
+ACTIVATION_SCHEMA_VERSION = 1
+SIGNATURE_ALGORITHM = "ed25519"
+KEY_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -74,16 +85,28 @@ class AuthorityResolver:
     NATIVE_METADATA_KEYS = {"CURRENT_REVISION", "STATUS", "OWNER", "AUTHORITY_ROLE"}
     NATIVE_METADATA_PATTERN = re.compile(r"^([A-Z][A-Z0-9_]*)\s*:\s*(.+?)\s*$")
 
-    def __init__(self, registry_path: str | Path):
+    def __init__(
+        self,
+        registry_path: str | Path,
+        *,
+        trusted_key_id: str | None = None,
+        trusted_public_key: str | None = None,
+    ):
         self.registry_path = Path(registry_path)
+        self.trusted_key_id = trusted_key_id
+        self.trusted_public_key = trusted_public_key
 
     def resolve(self) -> AuthoritySnapshot:
-        if not self.registry_path.exists():
-            raise AuthorityError(f"authority registry missing: {self.registry_path}")
+        try:
+            registry_bytes = self.registry_path.read_bytes()
+        except OSError as exc:
+            raise AuthorityError(AUTHORITY_ACTIVATION_INVALID) from exc
+
+        self._verify_activation(registry_bytes)
 
         try:
             raw = json.loads(
-                self.registry_path.read_text(encoding="utf-8"),
+                registry_bytes.decode("utf-8"),
                 object_pairs_hook=_reject_duplicate_keys,
             )
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -214,6 +237,68 @@ class AuthorityResolver:
             )
 
         return AuthoritySnapshot(entries=entries)
+
+    def _verify_activation(self, registry_bytes: bytes) -> None:
+        try:
+            key_id = self.trusted_key_id or ""
+            if KEY_ID_PATTERN.fullmatch(key_id) is None:
+                raise ValueError("trusted key id is not configured")
+            public_key_bytes = self._decode_base64(
+                self.trusted_public_key,
+                expected_length=32,
+            )
+            public_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
+
+            activation_path = self.registry_path.parent / "activation.json"
+            activation = self._load_activation_json(activation_path)
+            self._validate_exact_names(
+                "authority activation fields",
+                {
+                    "schema_version",
+                    "key_id",
+                    "signature_algorithm",
+                    "signature",
+                },
+                set(activation),
+            )
+            if activation.get("schema_version") != ACTIVATION_SCHEMA_VERSION:
+                raise ValueError("unsupported activation schema")
+            if activation.get("key_id") != key_id:
+                raise ValueError("activation key id mismatch")
+            if activation.get("signature_algorithm") != SIGNATURE_ALGORITHM:
+                raise ValueError("activation signature algorithm mismatch")
+
+            signature = self._decode_base64(activation.get("signature"), expected_length=64)
+            public_key.verify(signature, registry_bytes)
+        except (
+            AuthorityError,
+            InvalidSignature,
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            ValueError,
+            binascii.Error,
+        ) as exc:
+            raise AuthorityError(AUTHORITY_ACTIVATION_INVALID) from exc
+
+    @staticmethod
+    def _load_activation_json(path: Path) -> dict[str, Any]:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+        if not isinstance(raw, dict):
+            raise ValueError("activation metadata must be an object")
+        return raw
+
+    @staticmethod
+    def _decode_base64(value: Any, *, expected_length: int) -> bytes:
+        if not isinstance(value, str):
+            raise ValueError("encoded activation value is invalid")
+        decoded = base64.b64decode(value, validate=True)
+        if len(decoded) != expected_length:
+            raise ValueError("encoded activation value length is invalid")
+        return decoded
 
     @staticmethod
     def _validate_exact_names(label: str, expected: set[str], actual: set[str]) -> None:

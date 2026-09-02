@@ -60,3 +60,25 @@ Registry schema v6 將 runtime Owner、normative document 與 authority partitio
 file `CURRENT_REVISION` 與 registry `expected_revision` 必須完全相同；任一
 role、status、revision、hash、content、path、binding 或 partition 未設定或不一致時，
 resolver 必須 fail-close。
+
+## Independent activation
+
+Resolver 在解析 registry 前，必須先驗證 `activation.json`：
+
+```json
+{
+  "schema_version": 1,
+  "key_id": "<owner-approved-key-id>",
+  "signature_algorithm": "ed25519",
+  "signature": "<base64-encoded-signature>"
+}
+```
+
+- `key_id` 必須等於 runtime 外部設定的 `GLOBAL_AUTHORITY_TRUSTED_KEY_ID`。
+- Ed25519 public key 只從 runtime 外部設定
+  `GLOBAL_AUTHORITY_TRUSTED_PUBLIC_KEY` 取得；resolver 不讀 repository 內的 key file。
+- Ed25519 signature 直接簽署 `registry.json` exact bytes，不簽摘要或另一層 payload。
+- Registry 內既有的五份 Canonical exact SHA-256 再驗證各 Canonical exact bytes。
+
+缺少外部 owner trust root、activation 或 signature 不符時，統一 fail-close
+`AUTHORITY_ACTIVATION_INVALID`。不得自動重算、fallback 簽章或跳過 activation。

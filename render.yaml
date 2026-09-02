@@ -6,12 +6,16 @@ services:
     rootDir: .
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /health
+    healthCheckPath: /ready
     autoDeployTrigger: commit
     envVars:
       - key: GLOBAL_MODEL
         value: gpt-5.6-sol
       - key: GLOBAL_AUTHORITY_REGISTRY
         value: /app/authority/current/registry.json
+      - key: GLOBAL_AUTHORITY_TRUSTED_KEY_ID
+        sync: false
+      - key: GLOBAL_AUTHORITY_TRUSTED_PUBLIC_KEY
+        sync: false
       - key: GLOBAL_LIVE_EXECUTION
         value: "false"

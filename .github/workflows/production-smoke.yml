@@ -1,0 +1,33 @@
+name: production-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      production_base_url:
+        description: Exact deployed production base URL
+        required: false
+        type: string
+      expected_git_commit:
+        description: Exact commit SHA expected from /ready
+        required: true
+        type: string
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Verify deployed production
+        env:
+          PRODUCTION_BASE_URL: ${{ inputs.production_base_url }}
+          EXPECTED_GIT_COMMIT: ${{ inputs.expected_git_commit }}
+        run: python -m global_hybrid_v2.production_verifier

@@ -9,6 +9,9 @@ from starlette.testclient import TestClient
 
 from global_hybrid_v2.adapters.mcp_server import create_mcp_server
 from global_hybrid_v2.application import create_application
+from global_hybrid_v2.runtime.deployment import read_runtime_identity
+from global_hybrid_v2.settings import Settings
+from tests._authority_signing import TEST_KEY_ID, TEST_PUBLIC_KEY, activate_registry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CANONICALS = (
@@ -31,6 +34,7 @@ def _copy_authority_repo(tmp_path: Path) -> Path:
     shutil.copy2(REPO_ROOT / "authority" / "current" / "registry.json", registry_target)
     for filename in CANONICALS:
         shutil.copy2(REPO_ROOT / filename, tmp_path / filename)
+    activate_registry(registry_target)
     return tmp_path
 
 
@@ -41,8 +45,29 @@ def _mutate_registry(repo_root: Path, document: str, field: str, value: str) -> 
     registry.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def _http_client(repo_root: Path) -> TestClient:
-    application = create_application(repo_root=repo_root)
+def _test_settings() -> Settings:
+    return Settings(
+        authority_trusted_key_id=TEST_KEY_ID,
+        authority_trusted_public_key=TEST_PUBLIC_KEY,
+    )
+
+
+def _http_client(repo_root: Path, *, render_identity: bool = False) -> TestClient:
+    runtime_identity = None
+    if render_identity:
+        runtime_identity = read_runtime_identity(
+            {
+                "RENDER": "true",
+                "RENDER_GIT_COMMIT": "candidate-sha",
+                "RENDER_GIT_BRANCH": "main",
+                "RENDER_GIT_REPO_SLUG": "f2f54866sh-afk/global-hybrid-mcp-v2",
+            }
+        )
+    application = create_application(
+        repo_root=repo_root,
+        settings=_test_settings(),
+        runtime_identity=runtime_identity,
+    )
     server = create_mcp_server(application)
     return TestClient(
         server.streamable_http_app(
@@ -53,8 +78,9 @@ def _http_client(repo_root: Path) -> TestClient:
     )
 
 
-def test_mcp_in_memory_client_lists_tools_and_dispatches_through_runtime():
-    application = create_application(repo_root=REPO_ROOT)
+def test_mcp_in_memory_client_lists_tools_and_dispatches_through_runtime(tmp_path):
+    repo_root = _copy_authority_repo(tmp_path)
+    application = create_application(repo_root=repo_root, settings=_test_settings())
     server = create_mcp_server(application)
 
     async def scenario():
@@ -74,8 +100,9 @@ def test_mcp_in_memory_client_lists_tools_and_dispatches_through_runtime():
     assert payload["owner"] == "GLOBAL"
 
 
-def test_ready_resolves_current_authority():
-    with _http_client(REPO_ROOT) as client:
+def test_ready_resolves_current_authority(tmp_path):
+    repo_root = _copy_authority_repo(tmp_path)
+    with _http_client(repo_root) as client:
         response = client.get("/ready")
 
     assert response.status_code == 200
@@ -88,6 +115,12 @@ def test_ready_resolves_current_authority():
             "VISUAL",
             "EXECUTION",
         ],
+        "runtime": {
+            "provider": "LOCAL_OR_UNKNOWN",
+            "git_commit": None,
+            "git_branch": None,
+            "repo_slug": None,
+        },
     }
 
 
@@ -104,7 +137,7 @@ def test_ready_fails_closed_on_hash_mismatch_but_health_stays_live(tmp_path):
     assert ready_response.status_code == 503
     assert ready_response.json() == {
         "ready": False,
-        "failure_code": "AUTHORITY_RESOLUTION_FAILED",
+        "failure_code": "AUTHORITY_ACTIVATION_INVALID",
     }
 
 
@@ -116,13 +149,13 @@ def test_ready_fails_closed_on_revision_mismatch(tmp_path):
         response = client.get("/ready")
 
     assert response.status_code == 503
-    assert response.json()["failure_code"] == "AUTHORITY_RESOLUTION_FAILED"
+    assert response.json()["failure_code"] == "AUTHORITY_ACTIVATION_INVALID"
 
 
 def test_dispatch_fails_closed_when_authority_is_broken(tmp_path):
     repo_root = _copy_authority_repo(tmp_path)
     _mutate_registry(repo_root, "GLOBAL", "content_sha256", "0" * 64)
-    application = create_application(repo_root=repo_root)
+    application = create_application(repo_root=repo_root, settings=_test_settings())
     server = create_mcp_server(application)
 
     async def scenario():
@@ -133,3 +166,46 @@ def test_dispatch_fails_closed_when_authority_is_broken(tmp_path):
 
     assert result.is_error is True
     assert result.structured_content is None
+
+
+def test_ready_returns_render_deployment_attestation(tmp_path):
+    repo_root = _copy_authority_repo(tmp_path)
+
+    with _http_client(repo_root, render_identity=True) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["runtime"] == {
+        "provider": "RENDER",
+        "git_commit": "candidate-sha",
+        "git_branch": "main",
+        "repo_slug": "f2f54866sh-afk/global-hybrid-mcp-v2",
+    }
+
+
+def test_ready_does_not_treat_incomplete_deployment_identity_as_authority_failure(tmp_path):
+    repo_root = _copy_authority_repo(tmp_path)
+    application = create_application(
+        repo_root=repo_root,
+        settings=_test_settings(),
+        runtime_identity=read_runtime_identity({"RENDER": "true"}),
+    )
+    server = create_mcp_server(application)
+
+    with TestClient(
+        server.streamable_http_app(
+            stateless_http=True,
+            json_response=True,
+            host="testserver",
+        )
+    ) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert response.json()["runtime"] == {
+        "provider": "RENDER",
+        "git_commit": None,
+        "git_branch": None,
+        "repo_slug": None,
+    }

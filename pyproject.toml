@@ -9,6 +9,7 @@ description = "Deterministic control-plane and MCP adapter for GLOBAL Hybrid"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "cryptography>=44,<51",
   "mcp[cli]>=2,<3",
   "pydantic>=2.7,<3",
   "pydantic-settings>=2.2,<3",

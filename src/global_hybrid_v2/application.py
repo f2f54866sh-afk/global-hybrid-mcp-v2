@@ -7,6 +7,7 @@ from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.governance.authority import AuthorityResolver
+from global_hybrid_v2.runtime.deployment import RuntimeIdentity, read_runtime_identity
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
 from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.settings import Settings
@@ -17,6 +18,7 @@ class Application:
     repo_root: Path
     settings: Settings
     authority: AuthorityResolver
+    runtime_identity: RuntimeIdentity
     trace: TraceBus
     dispatcher: Dispatcher
 
@@ -26,6 +28,7 @@ def create_application(
     repo_root: str | Path | None = None,
     settings: Settings | None = None,
     trace: TraceBus | None = None,
+    runtime_identity: RuntimeIdentity | None = None,
 ) -> Application:
     root = (
         Path(repo_root).resolve()
@@ -37,7 +40,11 @@ def create_application(
     if not registry_path.is_absolute():
         registry_path = root / registry_path
 
-    authority = AuthorityResolver(registry_path)
+    authority = AuthorityResolver(
+        registry_path,
+        trusted_key_id=runtime_settings.authority_trusted_key_id,
+        trusted_public_key=runtime_settings.authority_trusted_public_key,
+    )
     runtime_trace = trace or TraceBus()
     domains: dict[Owner, DomainPort] = {
         owner: NotConfiguredDomain(owner)
@@ -52,6 +59,7 @@ def create_application(
         repo_root=root,
         settings=runtime_settings,
         authority=authority,
+        runtime_identity=runtime_identity or read_runtime_identity(),
         trace=runtime_trace,
         dispatcher=dispatcher,
     )
