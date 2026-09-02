@@ -1,12 +1,22 @@
 from __future__ import annotations
 
-from global_hybrid_v2.contracts import TraceEvent, WitnessFinding
+from global_hybrid_v2.contracts import Owner, TraceEvent, WitnessFinding
+from global_hybrid_v2.governance.blind_spot import (
+    BlindSpotScanReceipt,
+    BlindSpotScanRequest,
+    PreIncidentBlindSpotScan,
+)
 from global_hybrid_v2.governance.egress import (
     ASSUMPTION_USED_AS_EVIDENCE,
     CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE,
     NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE,
     RESEARCH_GATE_BYPASS,
     RETRIEVAL_FALSE_NEGATIVE,
+)
+from global_hybrid_v2.governance.validation import (
+    DissimilarValidationGate,
+    FalsificationEvidence,
+    ValidationReceipt,
 )
 
 
@@ -15,6 +25,24 @@ class ReadOnlyWitness:
 
     def __init__(self):
         self._claimed_fixed_defects: set[str] = set()
+        self._validation = DissimilarValidationGate()
+        self._blind_spot_scan = PreIncidentBlindSpotScan()
+
+    def assess_validation(
+        self,
+        *,
+        primary_owner: Owner,
+        primary_conclusion: str,
+        evidence: list[FalsificationEvidence],
+    ) -> ValidationReceipt:
+        return self._validation.evaluate(
+            primary_owner=primary_owner,
+            primary_conclusion=primary_conclusion,
+            evidence=evidence,
+        )
+
+    def scan_blind_spots(self, request: BlindSpotScanRequest) -> BlindSpotScanReceipt:
+        return self._blind_spot_scan.scan(request)
 
     def observe(self, event: TraceEvent) -> WitnessFinding | None:
         if event.stage == "effect_gate" and event.decision == "DENY":

@@ -7,7 +7,9 @@ from global_hybrid_v2.contracts import (
     ContextAdmissionDecision,
     ContextAdmissionReason,
     ContextAdmissionReceipt,
+    ContextAuthorityEffect,
     ContextClass,
+    ContextContentRole,
     ContextItem,
     ContextOrigin,
 )
@@ -28,6 +30,10 @@ class TaskFirewall:
         ContextOrigin.HISTORY,
         ContextOrigin.ARCHIVE,
         ContextOrigin.MEMORY,
+    }
+    EXTERNAL_ORIGINS = {
+        ContextOrigin.CURRENT_TOOL_RESULT,
+        ContextOrigin.EXTERNAL_SOURCE,
     }
 
     def filter(self, items: list[ContextItem], authority: AuthoritySnapshot) -> list[ContextItem]:
@@ -83,6 +89,21 @@ class TaskFirewall:
                 item,
                 ContextAdmissionDecision.QUARANTINE,
                 ContextAdmissionReason.MISSING_PROVENANCE,
+            )
+        if (
+            item.origin in self.EXTERNAL_ORIGINS
+            and item.content_role is ContextContentRole.EXECUTABLE_INSTRUCTION
+        ):
+            return self._receipt(
+                item,
+                ContextAdmissionDecision.ADVISORY,
+                ContextAdmissionReason.EXTERNAL_INSTRUCTION_IGNORED,
+            )
+        if item.context_class is ContextClass.UNTRUSTED_EXTERNAL_EVIDENCE:
+            return self._receipt(
+                item,
+                ContextAdmissionDecision.ADVISORY,
+                ContextAdmissionReason.UNTRUSTED_EVIDENCE_DATA_ONLY,
             )
         if item.context_class is ContextClass.STABLE_USER_PREFERENCE:
             return self._evaluate_stable_preference(item)
@@ -146,6 +167,7 @@ class TaskFirewall:
             item,
             ContextAdmissionDecision.EXECUTABLE,
             ContextAdmissionReason.CURRENT_CONTEXT_ACCEPTED,
+            authority_effect=ContextAuthorityEffect.CURRENT_AUTHORITY,
         )
 
     def _evaluate_stable_preference(self, item: ContextItem) -> ContextAdmissionReceipt:
@@ -248,11 +270,27 @@ class TaskFirewall:
         item: ContextItem,
         decision: ContextAdmissionDecision,
         reason: ContextAdmissionReason,
+        *,
+        authority_effect: ContextAuthorityEffect | None = None,
     ) -> ContextAdmissionReceipt:
+        external = item.origin in TaskFirewall.EXTERNAL_ORIGINS
+        admitted_content_role = (
+            ContextContentRole.DATA_ONLY if external else item.content_role
+        )
+        effective_authority = authority_effect
+        if effective_authority is None:
+            effective_authority = (
+                ContextAuthorityEffect.EXPLICIT_USER_AUTHORIZATION
+                if item.origin is ContextOrigin.CURRENT_USER
+                and item.content_role is ContextContentRole.EXECUTABLE_INSTRUCTION
+                else ContextAuthorityEffect.NO_AUTHORITY_EFFECT
+            )
         return ContextAdmissionReceipt(
             context_id=item.id,
             origin=item.origin,
             context_class=item.context_class,
             decision=decision,
             reason_code=reason,
+            admitted_content_role=admitted_content_role,
+            authority_effect=effective_authority,
         )

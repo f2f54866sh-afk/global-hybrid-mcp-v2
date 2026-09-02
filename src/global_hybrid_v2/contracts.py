@@ -132,6 +132,7 @@ class ContextOrigin(StrEnum):
     HISTORY = "history"
     ARCHIVE = "archive"
     MEMORY = "memory"
+    EXTERNAL_SOURCE = "external_source"
     UNKNOWN = "unknown"
 
 
@@ -144,7 +145,19 @@ class ContextClass(StrEnum):
     CURRENT_FACT = "CURRENT_FACT"
     CURRENT_CAPABILITY_FACT = "CURRENT_CAPABILITY_FACT"
     STALE_OR_SUPERSEDED_RULE = "STALE_OR_SUPERSEDED_RULE"
+    UNTRUSTED_EXTERNAL_EVIDENCE = "UNTRUSTED_EXTERNAL_EVIDENCE"
     UNKNOWN = "UNKNOWN"
+
+
+class ContextContentRole(StrEnum):
+    DATA_ONLY = "DATA_ONLY"
+    EXECUTABLE_INSTRUCTION = "EXECUTABLE_INSTRUCTION"
+
+
+class ContextAuthorityEffect(StrEnum):
+    NO_AUTHORITY_EFFECT = "NO_AUTHORITY_EFFECT"
+    CURRENT_AUTHORITY = "CURRENT_AUTHORITY"
+    EXPLICIT_USER_AUTHORIZATION = "EXPLICIT_USER_AUTHORIZATION"
 
 
 class ContextAdmissionDecision(StrEnum):
@@ -178,6 +191,8 @@ class ContextAdmissionReason(StrEnum):
     LEGACY_FACT_RETRIEVAL_HINT = "LEGACY_FACT_RETRIEVAL_HINT"
     CURRENT_FACT_REQUIRES_VERIFIED_SOURCE = "CURRENT_FACT_REQUIRES_VERIFIED_SOURCE"
     UNSUPPORTED_CONTEXT_ORIGIN = "UNSUPPORTED_CONTEXT_ORIGIN"
+    UNTRUSTED_EVIDENCE_DATA_ONLY = "UNTRUSTED_EVIDENCE_DATA_ONLY"
+    EXTERNAL_INSTRUCTION_IGNORED = "EXTERNAL_INSTRUCTION_IGNORED"
 
 
 class RetrievalState(StrEnum):
@@ -212,6 +227,7 @@ class ContextItem(BaseModel):
     purpose: str
     task_scope: str
     payload: Any
+    content_role: ContextContentRole = ContextContentRole.DATA_ONLY
     provenance: list[str] = Field(default_factory=list)
     current_binding: bool = False
     authority_owner: Owner | None = None
@@ -224,6 +240,8 @@ class ContextAdmissionReceipt(BaseModel):
     context_class: ContextClass
     decision: ContextAdmissionDecision
     reason_code: ContextAdmissionReason
+    admitted_content_role: ContextContentRole = ContextContentRole.DATA_ONLY
+    authority_effect: ContextAuthorityEffect = ContextAuthorityEffect.NO_AUTHORITY_EFFECT
 
 
 class TaskRequest(BaseModel):
@@ -355,6 +373,7 @@ class ResearchEvidence(BaseModel):
     source: ResearchEvidenceSource
     reference: str = Field(min_length=1)
     observed_result: str = Field(min_length=1)
+    authority_effect: ContextAuthorityEffect = ContextAuthorityEffect.NO_AUTHORITY_EFFECT
 
 
 class ResearchAdmissionReceipt(BaseModel):
