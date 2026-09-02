@@ -8,19 +8,15 @@ from global_hybrid_v2.governance.authority import AuthorityError, AuthorityResol
 from global_hybrid_v2.governance.effects import EffectAuthorizationError, EffectGate
 
 DOCUMENTS = {
-    "GLOBAL": ("LIVE_AUTHORITY", "## Current Authority", "GLOBAL_WINDOW_CANONICAL.md"),
-    "SALES": ("LIVE_AUTHORITY", "## Current Authority", "SALES_CANONICAL.md"),
+    "GLOBAL": ("LIVE_AUTHORITY", "GLOBAL_WINDOW_CANONICAL.md", "GLOBAL"),
+    "SALES": ("LIVE_AUTHORITY", "SALES_CANONICAL.md", "SALES"),
     "SALES_HUMAN_REFERENCE": (
         "REFERENCE_ONLY",
-        "## Reference Content",
         "SALES_HUMAN_CANONICAL.md",
+        "SALES",
     ),
-    "LIBRARY": (
-        "LIVE_AUTHORITY",
-        "## Current Authority",
-        "VEHICLE_KNOWLEDGE_BASE.md",
-    ),
-    "REAL_CAR": ("CANONICAL", "## Canonical Content", "REAL_CAR_統一正式指令.md"),
+    "LIBRARY": ("LIVE_AUTHORITY", "VEHICLE_KNOWLEDGE_BASE.md", "LIBRARY"),
+    "REAL_CAR": ("CANONICAL", "REAL_CAR_統一正式指令.md", "REAL_CAR"),
 }
 
 BINDINGS = {
@@ -51,44 +47,59 @@ BINDINGS = {
     },
 }
 
-IDENTITIES = {
-    "GLOBAL": "GLOBAL_CANONICAL_20260902_REPAIR_RESEARCH_EGRESS_MEDIATION",
-    "SALES": "SALES_CANONICAL_20260901_SINGLE_LIVE_RUNNER_CONTRACT_NORMALIZATION",
-    "SALES_HUMAN_REFERENCE": (
-        "SALES_HUMAN_CANONICAL_20260901_REFERENCE_ONLY_CONSTRAINT_COMPACTION"
-    ),
-    "LIBRARY": "VEHICLE_KNOWLEDGE_BASE_20260901_SCHEMA_DATA_SEPARATION",
-    "REAL_CAR": (
-        "REAL_CAR_20260902_TEST_CIRCUIT_BREAKER_END_TO_END_RELEVANCE_GATE"
-    ),
-}
+
+def _native_document(
+    name: str,
+    role: str,
+    owner: str,
+    revision: str,
+    *,
+    include_optional_metadata: bool = True,
+) -> str:
+    optional = ""
+    if include_optional_metadata:
+        optional = f"OWNER: `{owner}`\nAUTHORITY_ROLE: `{role}`\n"
+    return (
+        f"# Native canonical for {name}\n\n"
+        f"CURRENT_REVISION: `{revision}`\n"
+        "STATUS: `CURRENT`\n"
+        f"{optional}"
+        "\n---\n\n"
+        "Native canonical content remains byte-for-byte owned by its source.\n"
+        "\n## Historical notes\n\n"
+        "CURRENT_REVISION: `historical-revision-that-must-not-be-read`\n"
+    )
 
 
-def _authority_tree(tmp_path: Path, *, revision: str = "rev-1") -> tuple[Path, dict]:
+def _authority_tree(
+    tmp_path: Path,
+    *,
+    revision: str = "rev-1",
+    include_optional_metadata: bool = True,
+) -> tuple[Path, dict]:
     current = tmp_path / "authority" / "current"
     current.mkdir(parents=True)
     documents = {}
-    for name, (role, section, relative_path) in DOCUMENTS.items():
-        path = tmp_path / relative_path
-        path.write_text(
-            f"# {name}\n\n"
-            f"ROLE: {role}\n"
-            f"STATUS: CURRENT\n"
-            f"REVISION: {revision}\n\n"
-            f"{section}\n\n"
-            f"test fixture content for {name}\n",
+    for name, (role, relative_path, owner) in DOCUMENTS.items():
+        (tmp_path / relative_path).write_text(
+            _native_document(
+                name,
+                role,
+                owner,
+                revision,
+                include_optional_metadata=include_optional_metadata,
+            ),
             encoding="utf-8",
         )
         documents[name] = {
             "role": role,
-            "identity": revision,
-            "revision": revision,
+            "expected_revision": revision,
             "path": relative_path,
         }
 
     registry = current / "registry.json"
     payload = {
-        "schema_version": 4,
+        "schema_version": 5,
         "documents": documents,
         "entries": json.loads(json.dumps(BINDINGS)),
     }
@@ -97,22 +108,22 @@ def _authority_tree(tmp_path: Path, *, revision: str = "rev-1") -> tuple[Path, d
 
 
 @pytest.mark.parametrize("document_name", DOCUMENTS)
-def test_unset_document_revision_fails_closed(tmp_path, document_name):
+def test_unset_expected_revision_fails_closed(tmp_path, document_name):
     registry, payload = _authority_tree(tmp_path)
-    payload["documents"][document_name]["revision"] = "UNSET"
+    payload["documents"][document_name]["expected_revision"] = "UNSET"
     registry.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(AuthorityError, match=f"document revision unset: {document_name}"):
+    with pytest.raises(AuthorityError, match=f"expected revision unset: {document_name}"):
         AuthorityResolver(registry).resolve()
 
 
-def test_shared_real_car_binding_preserves_owner_partitions(tmp_path):
+def test_native_canonical_headers_resolve_without_wrapper(tmp_path):
     registry, _ = _authority_tree(tmp_path)
 
     snapshot = AuthorityResolver(registry).resolve()
 
     assert set(snapshot.entries) == set(Owner)
-    assert "REAL_CAR" not in {owner.value for owner in Owner}
+    assert snapshot.entries[Owner.GLOBAL].revision == "rev-1"
     sales = snapshot.entries[Owner.SALES_HUMAN]
     assert sales.normative_authority.name == "SALES"
     assert sales.normative_authority.role is AuthorityDocumentRole.LIVE_AUTHORITY
@@ -127,7 +138,22 @@ def test_shared_real_car_binding_preserves_owner_partitions(tmp_path):
     assert visual.path == execution.path == "REAL_CAR_統一正式指令.md"
     assert visual.authority_partition == "VISUAL_JUDGE"
     assert execution.authority_partition == "EXECUTION_LAB"
-    assert visual.authority_partition != execution.authority_partition
+
+
+def test_optional_native_owner_and_role_can_be_absent(tmp_path):
+    registry, _ = _authority_tree(tmp_path, include_optional_metadata=False)
+
+    snapshot = AuthorityResolver(registry).resolve()
+
+    assert snapshot.entries[Owner.GLOBAL].revision == "rev-1"
+
+
+def test_later_historical_revision_does_not_override_native_header(tmp_path):
+    registry, _ = _authority_tree(tmp_path)
+
+    snapshot = AuthorityResolver(registry).resolve()
+
+    assert all(entry.revision == "rev-1" for entry in snapshot.entries.values())
 
 
 def test_shared_canonical_does_not_merge_effect_permissions(tmp_path):
@@ -140,7 +166,7 @@ def test_shared_canonical_does_not_merge_effect_permissions(tmp_path):
     EffectGate().authorize(Owner.EXECUTION, [EffectType.EXTERNAL_WRITE])
 
 
-def test_missing_shared_real_car_document_fails_closed(tmp_path):
+def test_missing_native_document_fails_closed(tmp_path):
     registry, _ = _authority_tree(tmp_path)
     (tmp_path / "REAL_CAR_統一正式指令.md").unlink()
 
@@ -148,82 +174,98 @@ def test_missing_shared_real_car_document_fails_closed(tmp_path):
         AuthorityResolver(registry).resolve()
 
 
-def test_real_car_revision_mismatch_fails_entire_snapshot_closed(tmp_path):
+def test_native_revision_must_match_expected_revision(tmp_path):
     registry, payload = _authority_tree(tmp_path)
-    payload["documents"]["REAL_CAR"]["revision"] = "different-revision"
+    payload["documents"]["REAL_CAR"]["expected_revision"] = "different-revision"
     registry.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(AuthorityError, match="revision does not match identity: REAL_CAR"):
+    with pytest.raises(AuthorityError, match="native authority revision mismatch: REAL_CAR"):
         AuthorityResolver(registry).resolve()
 
 
-def test_document_revision_must_match_registry(tmp_path):
+def test_native_status_must_be_current(tmp_path):
     registry, _ = _authority_tree(tmp_path)
-    path = tmp_path / "REAL_CAR_統一正式指令.md"
+    path = tmp_path / "GLOBAL_WINDOW_CANONICAL.md"
     path.write_text(
-        path.read_text(encoding="utf-8").replace("REVISION: rev-1", "REVISION: rev-2"),
+        path.read_text(encoding="utf-8").replace("STATUS: `CURRENT`", "STATUS: `DRAFT`"),
         encoding="utf-8",
     )
 
-    with pytest.raises(AuthorityError, match="document revision mismatch: REAL_CAR"):
+    with pytest.raises(AuthorityError, match="native authority status is not CURRENT: GLOBAL"):
         AuthorityResolver(registry).resolve()
 
 
-def test_document_identity_must_be_set_before_activation(tmp_path):
-    registry, payload = _authority_tree(tmp_path)
-    payload["documents"]["REAL_CAR"]["identity"] = "UNSET"
-    registry.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(AuthorityError, match="document identity unset: REAL_CAR"):
-        AuthorityResolver(registry).resolve()
-
-
-def test_document_revision_must_match_identity(tmp_path):
-    registry, payload = _authority_tree(tmp_path)
-    payload["documents"]["GLOBAL"]["revision"] = "different-revision"
-    path = tmp_path / "GLOBAL_WINDOW_CANONICAL.md"
+def test_native_authority_role_must_match_registry(tmp_path):
+    registry, _ = _authority_tree(tmp_path)
+    path = tmp_path / "SALES_HUMAN_CANONICAL.md"
     path.write_text(
-        path.read_text(encoding="utf-8").replace("REVISION: rev-1", "REVISION: different-revision"),
+        path.read_text(encoding="utf-8").replace(
+            "AUTHORITY_ROLE: `REFERENCE_ONLY`",
+            "AUTHORITY_ROLE: `LIVE_AUTHORITY`",
+        ),
         encoding="utf-8",
     )
-    registry.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(AuthorityError, match="revision does not match identity: GLOBAL"):
+    with pytest.raises(AuthorityError, match="native authority role mismatch: SALES_HUMAN_REFERENCE"):
         AuthorityResolver(registry).resolve()
 
 
-@pytest.mark.parametrize(
-    ("old", "new", "message"),
-    [
-        ("ROLE: LIVE_AUTHORITY", "ROLE: REFERENCE_ONLY", "file role mismatch"),
-        ("STATUS: CURRENT", "STATUS: UNSET", "status is not CURRENT"),
-        ("REVISION: rev-1", "REVISION: UNSET", "file revision unset"),
-        ("test fixture content for GLOBAL", "UNSET", "content unset"),
-        ("# GLOBAL", "# REAL_CAR", "name mismatch"),
-    ],
-)
-def test_authority_document_metadata_fails_closed(tmp_path, old, new, message):
+def test_native_authority_owner_must_match_document_binding(tmp_path):
+    registry, _ = _authority_tree(tmp_path)
+    path = tmp_path / "SALES_HUMAN_CANONICAL.md"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("OWNER: `SALES`", "OWNER: `SALES_HUMAN`"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AuthorityError, match="native authority owner mismatch: SALES_HUMAN_REFERENCE"):
+        AuthorityResolver(registry).resolve()
+
+
+def test_duplicate_native_header_metadata_fails_closed(tmp_path):
     registry, _ = _authority_tree(tmp_path)
     path = tmp_path / "GLOBAL_WINDOW_CANONICAL.md"
-    path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "STATUS: `CURRENT`",
+            "STATUS: `CURRENT`\nSTATUS: `CURRENT`",
+        ),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(AuthorityError, match=message):
+    with pytest.raises(AuthorityError, match="duplicate native authority metadata: GLOBAL.STATUS"):
+        AuthorityResolver(registry).resolve()
+
+
+def test_legacy_wrapper_is_not_accepted_as_native_canonical(tmp_path):
+    registry, _ = _authority_tree(tmp_path)
+    (tmp_path / "GLOBAL_WINDOW_CANONICAL.md").write_text(
+        "# GLOBAL\n\n"
+        "ROLE: LIVE_AUTHORITY\n"
+        "STATUS: CURRENT\n"
+        "REVISION: rev-1\n\n"
+        "## Current Authority\n\n"
+        + _native_document("GLOBAL", "LIVE_AUTHORITY", "GLOBAL", "rev-1"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AuthorityError, match="native authority CURRENT_REVISION unset: GLOBAL"):
         AuthorityResolver(registry).resolve()
 
 
 def test_document_path_must_map_to_exact_root_file(tmp_path):
     registry, payload = _authority_tree(tmp_path)
-    payload["documents"]["GLOBAL"]["path"] = "authority/current/GLOBAL.md"
+    payload["documents"]["GLOBAL"]["path"] = "authority/current/GLOBAL_WINDOW_CANONICAL.md"
     registry.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(AuthorityError, match="document path mismatch: GLOBAL"):
         AuthorityResolver(registry).resolve()
 
 
-def test_registry_rejects_duplicate_document(tmp_path):
+def test_duplicate_registry_binding_fails_closed(tmp_path):
     registry, _ = _authority_tree(tmp_path)
     registry.write_text(
-        '{"schema_version": 4, "documents": {"GLOBAL": {}, "GLOBAL": {}}, "entries": {}}',
+        '{"schema_version":5,"documents":{},"entries":{"GLOBAL":{},"GLOBAL":{}}}',
         encoding="utf-8",
     )
 
@@ -234,18 +276,22 @@ def test_registry_rejects_duplicate_document(tmp_path):
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda payload: payload.update(schema_version=3), "unsupported authority registry schema"),
+        (lambda payload: payload.update(schema_version=4), "unsupported authority registry schema"),
+        (lambda payload: payload.update(extra=True), "unexpected authority registry fields: extra"),
         (lambda payload: payload["documents"].pop("SALES"), "missing authority documents: SALES"),
         (
             lambda payload: payload["documents"].update(
                 VISUAL={
                     "role": "LIVE_AUTHORITY",
-                    "identity": "rev-1",
-                    "revision": "rev-1",
+                    "expected_revision": "rev-1",
                     "path": "VISUAL.md",
                 }
             ),
             "unexpected authority documents: VISUAL",
+        ),
+        (
+            lambda payload: payload["documents"]["GLOBAL"].update(identity="not-allowed"),
+            "unexpected authority document fields for GLOBAL: identity",
         ),
         (lambda payload: payload["entries"].pop("GLOBAL"), "missing current authority entries: GLOBAL"),
         (
@@ -260,7 +306,7 @@ def test_registry_rejects_duplicate_document(tmp_path):
         ),
     ],
 )
-def test_registry_schema_document_and_owner_sets_fail_closed(tmp_path, mutation, message):
+def test_registry_schema_and_exact_sets_fail_closed(tmp_path, mutation, message):
     registry, payload = _authority_tree(tmp_path)
     mutation(payload)
     registry.write_text(json.dumps(payload), encoding="utf-8")
@@ -302,45 +348,21 @@ def test_reference_only_document_cannot_be_promoted_by_registry(tmp_path):
         AuthorityResolver(registry).resolve()
 
 
-def test_checked_in_registry_declares_expected_bindings_and_identities():
+def test_checked_in_registry_has_native_paths_and_unset_revisions():
     payload = json.loads(Path("authority/current/registry.json").read_text(encoding="utf-8"))
 
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert payload["entries"] == BINDINGS
     assert set(payload["entries"]) == {owner.value for owner in Owner}
     assert set(payload["documents"]) == set(DOCUMENTS)
-    assert {
-        name: item["role"] for name, item in payload["documents"].items()
-    } == {name: role for name, (role, _, _) in DOCUMENTS.items()}
-    assert {
-        name: item["identity"] for name, item in payload["documents"].items()
-    } == IDENTITIES
-    assert "VISUAL" not in payload["documents"]
-    assert "EXECUTION" not in payload["documents"]
+    for name, (role, path, _) in DOCUMENTS.items():
+        assert payload["documents"][name] == {
+            "role": role,
+            "expected_revision": "UNSET",
+            "path": path,
+        }
 
 
-def test_checked_in_documents_are_exact_unset_placeholders():
-    payload = json.loads(Path("authority/current/registry.json").read_text(encoding="utf-8"))
-
-    for name, (role, section, expected_path) in DOCUMENTS.items():
-        document = payload["documents"][name]
-        assert document["path"] == expected_path
-        assert document["revision"] == "UNSET"
-        lines = [
-            line.strip()
-            for line in Path(document["path"]).read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        assert lines == [
-            f"# {name}",
-            f"ROLE: {role}",
-            "STATUS: UNSET",
-            "REVISION: UNSET",
-            section,
-            "UNSET",
-        ]
-
-
-def test_checked_in_unset_registry_fails_closed():
-    with pytest.raises(AuthorityError, match="document revision unset: GLOBAL"):
+def test_checked_in_unset_registry_fails_closed_without_native_documents():
+    with pytest.raises(AuthorityError, match="expected revision unset: GLOBAL"):
         AuthorityResolver("authority/current/registry.json").resolve()

@@ -1,7 +1,8 @@
 # Current Authority
 
-這個目錄只放 current authority registry。Registry 綁定的 current documents 位於專案根目錄；
-其中包含 live authority、reference-only 與可由多個 partition 共用的 canonical。
+這個目錄只放 current authority registry。Registry 綁定的原生 Canonical 位於專案
+根目錄；其中包含 live authority、reference-only 與可由多個 partition 共用的
+canonical。
 
 禁止：
 
@@ -10,28 +11,28 @@
 - 用 Memory / conversation history 補缺失 authority
 - revision = UNSET 時繼續 production execution
 
-第一次正式啟用前，請把 registry.json 每個 document 的 exact revision 與 current file 準備好。
+第一次正式啟用前，請把 registry.json 每個 document 的 `expected_revision`
+與原生 current file 準備好。
 
-每個 authority document 使用固定結構：
+原生 Canonical 必須直接保存，不另外包上 `ROLE / STATUS / REVISION / section`
+wrapper。Resolver 只從原生文件開頭的 metadata 區塊解析：
 
 ```text
-# <DOCUMENT NAME>
+# <native canonical title>
 
-ROLE: LIVE_AUTHORITY | REFERENCE_ONLY | CANONICAL
-STATUS: UNSET | CURRENT
-REVISION: <exact revision>
+CURRENT_REVISION: `<exact revision>`
+STATUS: `CURRENT`
+OWNER: `<native owner>`                       # 原文件有才驗證
+AUTHORITY_ROLE: `<registry role>`             # 原文件有才驗證
 
-## Current Authority | Reference Content | Canonical Content
-
-<current authoritative content>
+<unchanged native canonical content>
 ```
 
-Registry schema v4 將 runtime Owner、normative document 與 authority partition 分開，並鎖定
-可匯入的 authority identity：
+Registry schema v5 將 runtime Owner、normative document 與 authority partition 分開：
 
-- `documents` 保存 document role、authority identity、啟用 revision 與 current path。
-- `identity` 是允許接入的精確 authority identity；它本身不會啟用 document。
-- 正式啟用時，registry `revision` 與 file `REVISION` 都必須完全等於 `identity`。
+- `documents` 只保存 document role、`expected_revision` 與 exact root path。
+- 正式啟用時，registry `expected_revision` 必須完全等於原生文件
+  `CURRENT_REVISION`，且原生 `STATUS` 必須是 `CURRENT`。
 - `entries` 只保存既有五個 Owner 的 `normative_authority`、`authority_partition`
   與 reference binding。
 - `SALES_HUMAN` Owner 的 normative authority 是 `SALES`；`SALES_HUMAN_REFERENCE`
@@ -43,10 +44,12 @@ Registry schema v4 將 runtime Owner、normative document 與 authority partitio
 
 安全啟用順序：
 
-1. 保持 registry revision 為 `UNSET`。
-2. 確認 registry 已登記核准的 exact `identity`。
-3. 寫入所有已綁定 document，將 status 設為 `CURRENT`，並以該 identity 填入 file revision。
-4. 確認 document role、identity、revision、path、binding 與內容完整後，最後才更新 registry revision。
+1. 保持 registry `expected_revision` 為 `UNSET`。
+2. 將經核准的原生 Canonical 原樣寫入 exact root path，不改寫、不包裝、不摘要。
+3. 驗證原生 `CURRENT_REVISION / STATUS`，以及存在時的 `OWNER / AUTHORITY_ROLE`。
+4. 確認 role、revision、path、binding、partition 與內容完整後，最後才更新
+   registry `expected_revision`。
 
-file revision、registry revision 與 identity 必須完全相同；任一 role、status、identity、revision、
-content、path 或 binding 未設定或不一致時，resolver 必須 fail-close。
+file `CURRENT_REVISION` 與 registry `expected_revision` 必須完全相同；任一
+role、status、revision、content、path、binding 或 partition 未設定或不一致時，resolver
+必須 fail-close。

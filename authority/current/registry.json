@@ -1,34 +1,29 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "documents": {
     "GLOBAL": {
       "role": "LIVE_AUTHORITY",
-      "identity": "GLOBAL_CANONICAL_20260902_REPAIR_RESEARCH_EGRESS_MEDIATION",
-      "revision": "UNSET",
+      "expected_revision": "UNSET",
       "path": "GLOBAL_WINDOW_CANONICAL.md"
     },
     "SALES": {
       "role": "LIVE_AUTHORITY",
-      "identity": "SALES_CANONICAL_20260901_SINGLE_LIVE_RUNNER_CONTRACT_NORMALIZATION",
-      "revision": "UNSET",
+      "expected_revision": "UNSET",
       "path": "SALES_CANONICAL.md"
     },
     "SALES_HUMAN_REFERENCE": {
       "role": "REFERENCE_ONLY",
-      "identity": "SALES_HUMAN_CANONICAL_20260901_REFERENCE_ONLY_CONSTRAINT_COMPACTION",
-      "revision": "UNSET",
+      "expected_revision": "UNSET",
       "path": "SALES_HUMAN_CANONICAL.md"
     },
     "LIBRARY": {
       "role": "LIVE_AUTHORITY",
-      "identity": "VEHICLE_KNOWLEDGE_BASE_20260901_SCHEMA_DATA_SEPARATION",
-      "revision": "UNSET",
+      "expected_revision": "UNSET",
       "path": "VEHICLE_KNOWLEDGE_BASE.md"
     },
     "REAL_CAR": {
       "role": "CANONICAL",
-      "identity": "REAL_CAR_20260902_TEST_CIRCUIT_BREAKER_END_TO_END_RELEVANCE_GATE",
-      "revision": "UNSET",
+      "expected_revision": "UNSET",
       "path": "REAL_CAR_統一正式指令.md"
     }
   },

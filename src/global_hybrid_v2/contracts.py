@@ -69,7 +69,6 @@ class TaskRequest(BaseModel):
 class AuthorityDocument(BaseModel):
     name: str
     role: AuthorityDocumentRole
-    identity: str
     revision: str
     path: str
 

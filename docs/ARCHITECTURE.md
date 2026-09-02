@@ -77,7 +77,7 @@ Authority 與 runtime code 分離。
 
 `authority/current/registry.json` 保存 document pointer 與 Owner binding：
 
-- document name / role / approved authority identity / activated revision / current file path
+- document key / role / expected revision / exact root path
 - 既有 Owner 對 normative authority document 的唯一 binding
 - reference-only binding 與 shared canonical 的 partition binding
 
@@ -86,8 +86,10 @@ Document binding 不建立新 Owner，也不合併 Owner 權限。`SALES_HUMAN_R
 canonical 與 exact revision，卻分別以 `VISUAL_JUDGE` 與 `EXECUTION_LAB` partition
 消費；Owner 與 effect capability 仍互相隔離。
 
-Approved identity 不等於啟用狀態。只有 registry revision 與 authority file revision 都精確等於
-approved identity，且 document status 為 `CURRENT` 時，該 document 才可被解析。
+專案根目錄直接保存原生 Canonical，不加 wrapper、不重寫也不摘要。只有
+registry `expected_revision` 精確等於原生文件開頭的 `CURRENT_REVISION`，
+且原生 `STATUS` 為 `CURRENT` 時，該 document 才可被解析。原生文件若有
+`OWNER` 或 `AUTHORITY_ROLE`，resolver 也必須驗證其與 binding 相符。
 
 runtime 不掃 archive 找「看起來最新」的檔案。
 

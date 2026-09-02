@@ -65,8 +65,9 @@ MCP / HTTP Adapter
 ## 啟動前
 
 `authority/current/registry.json` 目前故意是 `UNSET`。
-請把真正 current authority documents 的 exact revision / path 與 Owner bindings 準備完成後，
-才允許 live run。
+請把真正 current 原生 Canonical 直接放在 registry 指定的 root path，並完成
+`expected_revision` 與 Owner binding 驗證後，才允許 live run。不得為 Canonical
+另加 wrapper metadata、改寫或摘要正文。
 
 VISUAL 與 EXECUTION 不各自複製 authority document；兩者共用同一份 REAL_CAR
 canonical，並透過不同 authority partition 維持 Owner 與 effect 權限隔離。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, TypeGuard
 
@@ -27,7 +28,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 class AuthorityResolver:
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
     REQUIRED = (
         Owner.GLOBAL,
         Owner.SALES_HUMAN,
@@ -38,28 +39,28 @@ class AuthorityResolver:
     DOCUMENTS = {
         "GLOBAL": (
             AuthorityDocumentRole.LIVE_AUTHORITY,
-            "## Current Authority",
             Path("GLOBAL_WINDOW_CANONICAL.md"),
+            "GLOBAL",
         ),
         "SALES": (
             AuthorityDocumentRole.LIVE_AUTHORITY,
-            "## Current Authority",
             Path("SALES_CANONICAL.md"),
+            "SALES",
         ),
         "SALES_HUMAN_REFERENCE": (
             AuthorityDocumentRole.REFERENCE_ONLY,
-            "## Reference Content",
             Path("SALES_HUMAN_CANONICAL.md"),
+            "SALES",
         ),
         "LIBRARY": (
             AuthorityDocumentRole.LIVE_AUTHORITY,
-            "## Current Authority",
             Path("VEHICLE_KNOWLEDGE_BASE.md"),
+            "LIBRARY",
         ),
         "REAL_CAR": (
             AuthorityDocumentRole.CANONICAL,
-            "## Canonical Content",
             Path("REAL_CAR_統一正式指令.md"),
+            "REAL_CAR",
         ),
     }
     BINDINGS = {
@@ -69,6 +70,8 @@ class AuthorityResolver:
         Owner.VISUAL: ("REAL_CAR", "VISUAL_JUDGE", ()),
         Owner.EXECUTION: ("REAL_CAR", "EXECUTION_LAB", ()),
     }
+    NATIVE_METADATA_KEYS = {"CURRENT_REVISION", "STATUS", "OWNER", "AUTHORITY_ROLE"}
+    NATIVE_METADATA_PATTERN = re.compile(r"^([A-Z][A-Z0-9_]*)\s*:\s*(.+?)\s*$")
 
     def __init__(self, registry_path: str | Path):
         self.registry_path = Path(registry_path)
@@ -87,6 +90,11 @@ class AuthorityResolver:
 
         if not isinstance(raw, dict):
             raise AuthorityError("authority registry must be a JSON object")
+        self._validate_exact_names(
+            "authority registry fields",
+            {"schema_version", "documents", "entries"},
+            set(raw),
+        )
         schema_version = raw.get("schema_version")
         if type(schema_version) is not int or schema_version != self.SCHEMA_VERSION:
             raise AuthorityError(f"unsupported authority registry schema: {schema_version}")
@@ -98,32 +106,26 @@ class AuthorityResolver:
 
         registry_root = self.registry_path.resolve().parents[2]
         documents: dict[str, AuthorityDocument] = {}
-        for name, (expected_role, section, expected_path) in self.DOCUMENTS.items():
+        for name, (expected_role, expected_path, expected_owner) in self.DOCUMENTS.items():
             item = raw_documents.get(name)
             if not isinstance(item, dict):
                 raise AuthorityError(f"invalid authority document entry: {name}")
             self._validate_exact_names(
                 f"authority document fields for {name}",
-                {"role", "identity", "revision", "path"},
+                {"role", "expected_revision", "path"},
                 set(item),
             )
 
             raw_role = item.get("role")
-            raw_identity = item.get("identity")
-            raw_revision = item.get("revision")
+            raw_revision = item.get("expected_revision")
             raw_path = item.get("path")
             role = raw_role.strip() if isinstance(raw_role, str) else ""
-            identity = raw_identity.strip() if isinstance(raw_identity, str) else ""
-            revision = raw_revision.strip() if isinstance(raw_revision, str) else ""
+            expected_revision = raw_revision.strip() if isinstance(raw_revision, str) else ""
             path = raw_path.strip() if isinstance(raw_path, str) else ""
             if role != expected_role.value:
                 raise AuthorityError(f"authority document role mismatch: {name}")
-            if not revision or revision.upper() == "UNSET":
-                raise AuthorityError(f"authority document revision unset: {name}")
-            if not identity or identity.upper() == "UNSET":
-                raise AuthorityError(f"authority document identity unset: {name}")
-            if revision != identity:
-                raise AuthorityError(f"authority document revision does not match identity: {name}")
+            if not expected_revision or expected_revision.upper() == "UNSET":
+                raise AuthorityError(f"authority document expected revision unset: {name}")
             if not path:
                 raise AuthorityError(f"authority document path unset: {name}")
 
@@ -134,12 +136,17 @@ class AuthorityResolver:
             if resolved_path.parent != registry_root:
                 raise AuthorityError(f"authority document path escapes repository root: {name}")
 
-            self._validate_authority_file(resolved_path, name, expected_role, revision, section)
+            file_revision = self._validate_native_authority_file(
+                resolved_path,
+                name,
+                expected_role,
+                expected_owner,
+                expected_revision,
+            )
             documents[name] = AuthorityDocument(
                 name=name,
                 role=expected_role,
-                identity=identity,
-                revision=revision,
+                revision=file_revision,
                 path=path,
             )
 
@@ -210,42 +217,69 @@ class AuthorityResolver:
     def _is_string_list(value: Any) -> TypeGuard[list[str]]:
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
-    @staticmethod
-    def _validate_authority_file(
+    @classmethod
+    def _validate_native_authority_file(
+        cls,
         path: Path,
         name: str,
         expected_role: AuthorityDocumentRole,
+        expected_owner: str,
         expected_revision: str,
-        expected_section: str,
-    ) -> None:
+    ) -> str:
         try:
-            lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise AuthorityError(f"authority document unreadable: {name}") from exc
 
-        if len(lines) < 5 or lines[0] != f"# {name}":
-            raise AuthorityError(f"authority document name mismatch: {name}")
-
-        role_prefix = "ROLE:"
-        status_prefix = "STATUS:"
-        revision_prefix = "REVISION:"
-        if (
-            not lines[1].startswith(role_prefix)
-            or not lines[2].startswith(status_prefix)
-            or not lines[3].startswith(revision_prefix)
-        ):
-            raise AuthorityError(f"authority document metadata invalid: {name}")
-
-        role = lines[1][len(role_prefix) :].strip()
-        status = lines[2][len(status_prefix) :].strip()
-        revision = lines[3][len(revision_prefix) :].strip()
-        if role != expected_role.value:
-            raise AuthorityError(f"authority document file role mismatch: {name}")
-        if status.upper() != "CURRENT":
-            raise AuthorityError(f"authority document status is not CURRENT: {name}")
-        if not revision or revision.upper() == "UNSET":
-            raise AuthorityError(f"authority document file revision unset: {name}")
-        if revision != expected_revision:
-            raise AuthorityError(f"authority document revision mismatch: {name}")
-        if lines[4] != expected_section or len(lines) < 6 or lines[5].upper() == "UNSET":
+        if not text.strip() or text.strip().upper() == "UNSET":
             raise AuthorityError(f"authority document content unset: {name}")
+
+        metadata: dict[str, str] = {}
+        first_heading_seen = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                if first_heading_seen or metadata:
+                    break
+                first_heading_seen = True
+                continue
+            if stripped == "---" and metadata:
+                break
+
+            match = cls.NATIVE_METADATA_PATTERN.fullmatch(stripped)
+            if not match or match.group(1) not in cls.NATIVE_METADATA_KEYS:
+                continue
+            key = match.group(1)
+            if key in metadata:
+                raise AuthorityError(f"duplicate native authority metadata: {name}.{key}")
+            metadata[key] = cls._unwrap_metadata_value(match.group(2), name, key)
+
+        revision = metadata.get("CURRENT_REVISION", "")
+        status = metadata.get("STATUS", "")
+        if not revision or revision.upper() == "UNSET":
+            raise AuthorityError(f"native authority CURRENT_REVISION unset: {name}")
+        if revision != expected_revision:
+            raise AuthorityError(f"native authority revision mismatch: {name}")
+        if status.upper() != "CURRENT":
+            raise AuthorityError(f"native authority status is not CURRENT: {name}")
+
+        declared_role = metadata.get("AUTHORITY_ROLE")
+        if declared_role is not None and declared_role != expected_role.value:
+            raise AuthorityError(f"native authority role mismatch: {name}")
+        declared_owner = metadata.get("OWNER")
+        if declared_owner is not None and declared_owner != expected_owner:
+            raise AuthorityError(f"native authority owner mismatch: {name}")
+        return revision
+
+    @staticmethod
+    def _unwrap_metadata_value(value: str, name: str, key: str) -> str:
+        value = value.strip()
+        if value.startswith("`") or value.endswith("`"):
+            if len(value) < 2 or not (value.startswith("`") and value.endswith("`")):
+                raise AuthorityError(f"native authority metadata invalid: {name}.{key}")
+            value = value[1:-1].strip()
+        if not value:
+            raise AuthorityError(f"native authority metadata invalid: {name}.{key}")
+        return value

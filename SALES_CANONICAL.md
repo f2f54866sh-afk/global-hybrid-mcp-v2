@@ -1,9 +1,0 @@
-# SALES
-
-ROLE: LIVE_AUTHORITY
-STATUS: UNSET
-REVISION: UNSET
-
-## Current Authority
-
-UNSET
