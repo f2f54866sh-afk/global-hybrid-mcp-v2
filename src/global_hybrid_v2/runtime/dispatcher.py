@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from global_hybrid_v2.contracts import Owner, TaskContract, TaskRequest
+from global_hybrid_v2.contracts import DomainResult, Owner, TaskContract, TaskRequest
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.effects import EffectGate
@@ -10,6 +10,10 @@ from global_hybrid_v2.governance.egress import (
     ResponseEgressValidator,
 )
 from global_hybrid_v2.governance.firewall import TaskFirewall
+from global_hybrid_v2.governance.repeat_action import (
+    REPEAT_BLOCKED_NO_NEW_EVIDENCE,
+    RepeatActionGate,
+)
 from global_hybrid_v2.governance.router import OwnerRouter
 from global_hybrid_v2.runtime.trace import TraceBus
 
@@ -25,6 +29,7 @@ class Dispatcher:
         router: OwnerRouter | None = None,
         effect_gate: EffectGate | None = None,
         egress: ResponseEgressValidator | None = None,
+        repeat_action_gate: RepeatActionGate | None = None,
     ):
         self.authority = authority
         self.domains = domains
@@ -33,6 +38,7 @@ class Dispatcher:
         self.router = router or OwnerRouter()
         self.effect_gate = effect_gate or EffectGate()
         self.egress = egress or ResponseEgressValidator()
+        self.repeat_action_gate = repeat_action_gate or RepeatActionGate()
 
     def dispatch(self, request: TaskRequest):
         snapshot = self.authority.resolve()
@@ -47,6 +53,7 @@ class Dispatcher:
             effects=request.effects,
             authority_snapshot_id=snapshot.snapshot_id,
             context=safe_context,
+            retry_context=request.retry_context,
         )
 
         self.trace.emit(
@@ -76,6 +83,36 @@ class Dispatcher:
             owner=owner,
             metadata={"effects": [effect.value for effect in request.effects]},
         )
+
+        repeat_admission = self.repeat_action_gate.evaluate(
+            effects=request.effects,
+            retry_context=request.retry_context,
+        )
+        self.trace.emit(
+            task_id=contract.task_id,
+            stage="repeat_action_gate",
+            decision=repeat_admission.decision,
+            owner=owner,
+            metadata=repeat_admission.metadata,
+        )
+        if not repeat_admission.allowed:
+            result = DomainResult(
+                owner=owner,
+                status=REPEAT_BLOCKED_NO_NEW_EVIDENCE,
+                output={
+                    "state": REPEAT_BLOCKED_NO_NEW_EVIDENCE,
+                    "blocker": "same failed side-effect operation has no admitted material change",
+                },
+                evidence={"repeat_action_gate": repeat_admission.metadata},
+            )
+            self.trace.emit(
+                task_id=contract.task_id,
+                stage="closure",
+                decision=result.status,
+                owner=owner,
+                metadata={"evidence": result.evidence},
+            )
+            return result
 
         domain = self.domains.get(owner)
         if domain is None:

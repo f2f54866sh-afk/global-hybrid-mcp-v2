@@ -207,6 +207,166 @@ def test_current_external_fact_without_architecture_impact_is_not_overblocked():
     assert validated.status == "READY"
 
 
+@pytest.mark.parametrize(
+    ("output", "semantic_key"),
+    [
+        (
+            "GitHub supports writing.",
+            OutputClassification.CURRENT_PLATFORM_CAPABILITY,
+        ),
+        (
+            "GitHub cannot write.",
+            OutputClassification.CURRENT_PLATFORM_CAPABILITY,
+        ),
+        (
+            "There is no available tool.",
+            OutputClassification.CURRENT_TOOL_CAPABILITY,
+        ),
+    ],
+    ids=["positive", "negative", "no-tool"],
+)
+def test_current_capability_claim_requires_evidence_without_architecture_language(
+    output,
+    semantic_key,
+):
+    result = DomainResult(
+        owner=Owner.GLOBAL,
+        status="READY",
+        output=output,
+        research_scope="current capability claim",
+    )
+
+    validated = _validator().validate(result)
+
+    assert validated.status == RUN_REQUIRED_RESEARCH
+    assert validated.output["required_semantic_keys"] == [semantic_key.value]
+
+
+@pytest.mark.parametrize(
+    ("source", "observed_result"),
+    [
+        (
+            ResearchEvidenceSource.CURRENT_CALLABLE_TOOL_RESULT,
+            "The current tool probe returned HTTP 403.",
+        ),
+        (
+            ResearchEvidenceSource.CURRENT_OFFICIAL_DOCUMENTATION,
+            "The current official capability page was read successfully.",
+        ),
+    ],
+    ids=["tool-probe", "official-docs"],
+)
+def test_current_capability_claim_accepts_fresh_matching_evidence(source, observed_result):
+    scope = "current connector availability"
+    result = DomainResult(
+        owner=Owner.GLOBAL,
+        status="READY",
+        output="The current connector tool is unavailable.",
+        research_scope=scope,
+        research_admission_receipts=[
+            _receipt(
+                semantic_key=OutputClassification.CURRENT_TOOL_CAPABILITY,
+                scope=scope,
+                source=source,
+                observed_result=observed_result,
+            )
+        ],
+    )
+
+    validated = _validator().validate(result)
+
+    assert validated.status == "READY"
+
+
+def test_user_observation_cannot_infer_platform_capability():
+    scope = "current platform support"
+    result = DomainResult(
+        owner=Owner.GLOBAL,
+        status="READY",
+        output="Current ChatGPT 不支援 GitHub write。",
+        research_scope=scope,
+        research_admission_receipts=[
+            _receipt(
+                semantic_key=OutputClassification.CURRENT_PLATFORM_CAPABILITY,
+                scope=scope,
+                source=ResearchEvidenceSource.CURRENT_USER_PROVIDED_OBSERVATION,
+                reference="current user observation",
+                observed_result="平台不支援這個能力。",
+            )
+        ],
+    )
+
+    validated = _validator().validate(result)
+
+    assert validated.status == RUN_REQUIRED_RESEARCH
+
+
+def test_direct_user_observation_is_admissible_without_capability_inference():
+    scope = "current GitHub call result"
+    result = DomainResult(
+        owner=Owner.GLOBAL,
+        status="READY",
+        output="The current GitHub write call returned 403.",
+        research_scope=scope,
+        research_admission_receipts=[
+            _receipt(
+                semantic_key=OutputClassification.CURRENT_TOOL_CAPABILITY,
+                scope=scope,
+                source=ResearchEvidenceSource.CURRENT_USER_PROVIDED_OBSERVATION,
+                reference="current user-provided call output",
+                observed_result="The observed call returned HTTP 403.",
+            )
+        ],
+    )
+
+    validated = _validator().validate(result)
+
+    assert validated.status == "READY"
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        _receipt(
+            semantic_key=OutputClassification.CURRENT_PLATFORM_CAPABILITY,
+            scope="current GitHub capability",
+            issued_at=NOW - timedelta(hours=2),
+            valid_until=NOW - timedelta(hours=1),
+        ),
+        _receipt(
+            semantic_key=OutputClassification.CURRENT_PLATFORM_CAPABILITY,
+            scope="different capability scope",
+        ),
+    ],
+    ids=["stale", "wrong-scope"],
+)
+def test_pure_capability_claim_rejects_stale_or_wrong_scope_evidence(receipt):
+    result = DomainResult(
+        owner=Owner.GLOBAL,
+        status="READY",
+        output="GitHub supports writing.",
+        research_scope="current GitHub capability",
+        research_admission_receipts=[receipt],
+    )
+
+    validated = _validator().validate(result)
+
+    assert validated.status == RUN_REQUIRED_RESEARCH
+
+
+def test_ordinary_prose_is_not_forced_to_research():
+    result = DomainResult(
+        owner=Owner.GLOBAL,
+        status="READY",
+        output="Write the meeting notes in a concise style.",
+    )
+
+    validated = _validator().validate(result)
+
+    assert validated.status == "READY"
+    assert validated.evidence["evidence_admission_check"] == "NOT_REQUIRED"
+
+
 def test_no_available_evidence_source_returns_unknown_with_exact_blocker():
     result = DomainResult(
         owner=Owner.GLOBAL,

@@ -58,6 +58,30 @@ class ResearchEvidenceSource(StrEnum):
     CURRENT_USER_PROVIDED_OBSERVATION = "CURRENT_USER_PROVIDED_OBSERVATION"
 
 
+class MaterialChangeReason(StrEnum):
+    CODE_CHANGED = "CODE_CHANGED"
+    CONFIG_CHANGED = "CONFIG_CHANGED"
+    ENVIRONMENT_CHANGED = "ENVIRONMENT_CHANGED"
+    INPUT_CHANGED = "INPUT_CHANGED"
+    DIAGNOSTIC_INSTRUMENTATION_CHANGED = "DIAGNOSTIC_INSTRUMENTATION_CHANGED"
+    DEPENDENCY_STATE_CHANGED = "DEPENDENCY_STATE_CHANGED"
+    VERIFIED_TRANSIENT_RETRY_CONDITION = "VERIFIED_TRANSIENT_RETRY_CONDITION"
+
+
+class TransientRetryEvidence(BaseModel):
+    source: ResearchEvidenceSource
+    reference: str = Field(min_length=1)
+    observed_result: str = Field(min_length=1)
+    verified: bool = False
+
+
+class RetryContext(BaseModel):
+    operation_key: str = Field(min_length=1)
+    prior_failure_signature: str | None = Field(default=None, min_length=1)
+    material_change_reasons: list[str] = Field(default_factory=list)
+    transient_retry_evidence: TransientRetryEvidence | None = None
+
+
 class ContextOrigin(StrEnum):
     CURRENT_USER = "current_user"
     CURRENT_AUTHORITY = "current_authority"
@@ -89,6 +113,7 @@ class TaskRequest(BaseModel):
     intent: Intent
     effects: list[EffectType] = Field(default_factory=lambda: [EffectType.READ_ONLY])
     context: list[ContextItem] = Field(default_factory=list)
+    retry_context: RetryContext | None = None
 
 
 class AuthorityDocument(BaseModel):
@@ -128,6 +153,7 @@ class TaskContract(BaseModel):
     effects: list[EffectType]
     authority_snapshot_id: str
     context: list[ContextItem]
+    retry_context: RetryContext | None = None
 
 
 class ResearchEvidence(BaseModel):

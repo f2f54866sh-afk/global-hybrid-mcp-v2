@@ -10,6 +10,8 @@ from global_hybrid_v2.contracts import (
     OutputClassification,
     ResearchAdmissionReceipt,
     ResearchAdmissionStatus,
+    ResearchEvidence,
+    ResearchEvidenceSource,
 )
 
 RUN_REQUIRED_RESEARCH = "RUN_REQUIRED_RESEARCH"
@@ -40,12 +42,18 @@ class ResponseEgressValidator:
         OutputClassification.CURRENT_PLATFORM_CAPABILITY,
         OutputClassification.CURRENT_TOOL_CAPABILITY,
     }
-    PLATFORM_PATTERN = re.compile(r"\b(chatgpt|codex|openai|github|mcp)\b", re.I)
-    TOOL_PATTERN = re.compile(r"\b(connector|plugin|tool|api|call|runtime)\b", re.I)
+    PLATFORM_PATTERN = re.compile(r"\b(chatgpt|codex|openai|github|mcp)\b|平台", re.I)
+    TOOL_PATTERN = re.compile(
+        r"\b(connector|plugin|tool|api|call|runtime)\b|工具|連接器|外掛|插件",
+        re.I,
+    )
     CAPABILITY_PATTERN = re.compile(
-        r"(可以|能不能|能夠|能否|支援|支持|同步|寫入|可寫|直接寫|寫|"
+        r"(可以|能不能|能夠|能否|支援|支持|同步|寫入|可寫|直接寫|寫|有工具|"
+        r"不行|不能|不支援|不支持|沒有工具|無法|沒辦法|不可用|"
         r"\bwrite\b|\bwritable\b|\bsupport(?:s|ed)?\b|\bsync(?:s|ed)?\b|"
-        r"\bcapabilit(?:y|ies)\b|\bavailable\b|\bavailability\b|\b403\b)",
+        r"\bcapabilit(?:y|ies)\b|\bavailable\b|\bavailability\b|\b403\b|"
+        r"\bcannot\b|\bcan['’]?t\b|\bunsupported\b|\bunavailable\b|"
+        r"\bnot available\b|\bno access\b)",
         re.I,
     )
     ARCHITECTURE_PATTERN = re.compile(
@@ -59,6 +67,12 @@ class ResponseEgressValidator:
         r"照理說|之前的假設|先前假設|先前對話假設|model memory|previous assumption|"
         r"prior conversation assumption|semantic plausibility|\bprobably\b|\blikely\b|"
         r"\bmodel thinks\b|\binferred from memory\b|\bmodel knowledge alone\b)",
+        re.I,
+    )
+    USER_OBSERVATION_INFERENCE_PATTERN = re.compile(
+        r"(平台不支援|平台不能|平台無法|沒有工具|工具不可用|"
+        r"\bplatform (?:does not|doesn't) support\b|\bplatform cannot\b|"
+        r"\bno (?:available )?tool\b|\btool (?:is )?unavailable\b|\bno access\b)",
         re.I,
     )
 
@@ -170,6 +184,8 @@ class ResponseEgressValidator:
         if OutputClassification.PERSISTENT_REPAIR_DESIGN in classifications:
             required.add(OutputClassification.PERSISTENT_REPAIR_DESIGN)
 
+        required.update(classifications & cls.CAPABILITY_CLAIMS)
+
         current_claims = classifications & cls.CURRENT_CLAIMS
         architecture_affecting = bool(
             classifications
@@ -203,7 +219,7 @@ class ResponseEgressValidator:
             if receipt.semantic_key is not semantic_key or receipt.scope != scope:
                 continue
             if not any(
-                cls._admissible_evidence(item.reference, item.observed_result)
+                cls._admissible_evidence(item, semantic_key)
                 for item in receipt.evidence
             ):
                 continue
@@ -214,10 +230,22 @@ class ResponseEgressValidator:
         return False
 
     @classmethod
-    def _admissible_evidence(cls, reference: str, observed_result: str) -> bool:
-        return (
-            cls.NON_EVIDENCE_PATTERN.search(reference) is None
-            and cls.NON_EVIDENCE_PATTERN.search(observed_result) is None
+    def _admissible_evidence(
+        cls,
+        evidence: ResearchEvidence,
+        semantic_key: OutputClassification,
+    ) -> bool:
+        if evidence.source not in set(ResearchEvidenceSource):
+            return False
+        if cls.NON_EVIDENCE_PATTERN.search(evidence.reference) is not None:
+            return False
+        if cls.NON_EVIDENCE_PATTERN.search(evidence.observed_result) is not None:
+            return False
+        return not (
+            evidence.source is ResearchEvidenceSource.CURRENT_USER_PROVIDED_OBSERVATION
+            and semantic_key in cls.CAPABILITY_CLAIMS
+            and cls.USER_OBSERVATION_INFERENCE_PATTERN.search(evidence.observed_result)
+            is not None
         )
 
     @classmethod
