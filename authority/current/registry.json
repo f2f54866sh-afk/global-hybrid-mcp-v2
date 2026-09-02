@@ -3,8 +3,8 @@
   "documents": {
     "GLOBAL": {
       "role": "LIVE_AUTHORITY",
-      "expected_revision": "GLOBAL_CANONICAL_20260902_CAPABILITY_EVIDENCE_REPEAT_ACTION_ENFORCEMENT",
-      "content_sha256": "ff576ebc27e3f9eaa00ae052884e12fceb0c2485fe1ab206476753056c2d10cb",
+      "expected_revision": "GLOBAL_CANONICAL_20260903_SELECTIVE_CONTEXT_ADMISSION_RETRIEVAL_TRUTH",
+      "content_sha256": "e72be8db6f16156d81632288416ef0b083a1c3ac505749aff1e5d5dff5abf9e6",
       "path": "GLOBAL_WINDOW_CANONICAL.md"
     },
     "SALES": {

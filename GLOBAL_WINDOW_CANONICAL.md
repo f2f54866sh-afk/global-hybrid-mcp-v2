@@ -1,7 +1,9 @@
 # GLOBAL_WINDOW｜Current Canonical
 
-CURRENT_REVISION: `GLOBAL_CANONICAL_20260902_CAPABILITY_EVIDENCE_REPEAT_ACTION_ENFORCEMENT`
+CURRENT_REVISION: `GLOBAL_CANONICAL_20260903_SELECTIVE_CONTEXT_ADMISSION_RETRIEVAL_TRUTH`
 STATUS: `CURRENT`
+
+Revision lineage: `GLOBAL_CANONICAL_20260902_CAPABILITY_EVIDENCE_REPEAT_ACTION_ENFORCEMENT` is `HISTORY_ONLY` and has no live authority.
 
 ## 1. Constitutional role
 GLOBAL is the system's **thin governance / control plane**. It governs authority, routing, task boundaries, cross-domain interfaces, persistence admission, rollback, validation orchestration, and system closure; it does not absorb professional domain semantics.
@@ -564,15 +566,20 @@ Critical classes：
 GLOBAL 對 live execution 的要求固定是 current-only consumption，但必須把「治理要求」與「工具層已證明做到」分開。
 
 固定准入：
-`CONTEXT_CANDIDATE → ORIGIN/PROVENANCE → TASK_ID/SCOPE → CURRENT_AUTHORITY_REVISION → PURPOSE/ROLE → ADMISSIBLE | QUARANTINE`。
+`CONTEXT_CANDIDATE → ORIGIN + CONTEXT_CLASS + PURPOSE + TASK_SCOPE + PROVENANCE + CURRENT_BINDING → EXECUTABLE | ADVISORY_ONLY | RETRIEVAL_HINT | QUARANTINE/BLOCK`。
 
-只有以下來源可成為 executable context：
-- current user / current task contract；
-- CURRENT_AUTHORITY_REGISTRY 指向的 current Canonical；
-- 經 bounded interface 明確授權給本任務的 current projection/brief；
-- current task 已綁定的 source/reference。
+Admission 不得只看 origin；同一來源中的不同內容仍須依 class、用途、scope、provenance 與 current binding 分別判定：
+- `NORMATIVE_AUTHORITY`：只有 `CURRENT_AUTHORITY_REGISTRY` 指向並通過 current revision/binding 驗證的 Canonical 可作 normative/executable authority；Memory、history、舊 prompt、舊 generated output 與 archived authority 永遠不得因來源名稱或相似度取得 authority。
+- `STABLE_USER_PREFERENCE / DOMAIN_HEURISTIC`：只有 `PROVENANCE + PURPOSE + TASK_SCOPE` 完整且不與 current authority/current facts 衝突時，才可作 `ADVISORY_ONLY`；不得自行授權 effect、persistent mutation 或 normative decision。
+- `REFERENCE_POINTER`：只可作 `RETRIEVAL_HINT` 以定位應讀取的 current source；pointer 本身不是 fact、authority 或 absence proof。
+- `CASE_HISTORY`：預設 `QUARANTINE`；只有存在 explicit current binding，且 purpose/scope/provenance 完整時，才可作 bounded advisory/reference，仍不得升格成 normative authority。
+- `CURRENT_FACT`：必須有 matching verified source 才可准入；`CURRENT_CAPABILITY_FACT` 必須有 fresh matching-scope current evidence，並沿用 §7B evidence admission。
+- `STALE_OR_SUPERSEDED_RULE`：一律 `BLOCK`；不得因曾是 CURRENT、反覆出現、semantic similarity 或 past success 重新取得 live authority。
+- `UNKNOWN` 或缺少必要 admission field：`QUARANTINE_UNKNOWN_ORIGIN_OR_BINDING`，不得靠模型推測補值。
 
-History、Memory hint、舊案例、舊 generated output、舊 prompt、archived authority 只能作 provenance/evidence；未能回指 current origin、current scope 與 current purpose 的內容一律 `QUARANTINE_UNKNOWN_ORIGIN`，不得用語意相似、最近出現或過去成功補成 executable input。
+`MEMORY/HISTORY_RELEVANT != MEMORY/HISTORY_AUTHORITATIVE`。
+`REFERENCE_POINTER_FOUND != REFERENCED_FACT_VERIFIED`。
+`ADVISORY_ONLY != EXECUTABLE_AUTHORITY`。
 
 工具／executor 的隔離能力固定標記：
 `EXECUTION_CONTEXT_ISOLATION_CAPABILITY = HARD_ISOLATED | SOFT_SCOPED | UNVERIFIED`。
@@ -586,6 +593,31 @@ History、Memory hint、舊案例、舊 generated output、舊 prompt、archived
 - 沒有 consumption proof 時，不得宣稱「舊內容已被機械隔離／工具只吃 current packet」。只能說規則／packet 已修正，執行隔離尚未證實。
 - 對 stale/foreign-context 高敏感的 action，若 isolation 只有 `SOFT_SCOPED/UNVERIFIED`，不得升 `PRODUCTION_SAFE / WINNER / BASELINE`；只有在有新資訊價值時才可作 bounded visible pilot，否則 block call。
 - 任務若真的需要 hard isolation，必須改用能接受 explicit current-only input 並提供可核對 consumption boundary 的執行面／新鮮隔離執行環境；增加 prompt 禁令本身不得冒充 hard isolation。
+
+### 4C.4.1 Retrieval truth + negative-claim egress｜搜尋未命中不等於已證明不存在
+
+Retrieval receipt 的 state 固定只允許：
+`FOUND | NOT_RETRIEVED | COVERAGE_INCOMPLETE | SOURCE_INACCESSIBLE | VERIFIED_ABSENT`。
+
+固定真值邊界：
+`NOT_RETRIEVED != VERIFIED_ABSENT`。
+`SEARCH_MISS != DOES_NOT_EXIST`。
+`MEMORY_MISS != USER_NEVER_SAID`。
+
+只有同一 semantic key / task scope 的 receipt 同時滿足以下條件，才可標 `VERIFIED_ABSENT`：
+- `coverage_complete=true`；
+- `unresolved_source_gap=false`；
+- `searched_source_classes` 非空；
+- `query_variants` 非空。
+
+任一 required source class 未搜尋、來源不可存取、coverage 不完整、alternate terminology/query rewrite 未完成或仍有 unresolved source gap，必須保留實際 state；不得把 `NOT_RETRIEVED / COVERAGE_INCOMPLETE / SOURCE_INACCESSIBLE` 壓成不存在。
+
+任何 final response / governed egress 要輸出「找不到、沒有、你沒說過、沒有這條規則、沒有相關紀錄、does not exist、user never said、no prior rule、no previous instruction」等 prior-context absence claim，必須消費 matching-scope `VERIFIED_ABSENT` receipt。沒有 matching receipt 時禁止輸出確定 absence，固定改成 `UNKNOWN_WITH_EXACT_BLOCKER`，並帶出實際 retrieval state；不得用單次 semantic search、top-k miss、Memory miss 或模型記憶作 absence evidence。
+
+只有同一 current evidence chain 明確同時具有 `prior_negative_claim=true` 與 `later_matching_content_found=true`，才可標 `RETRIEVAL_FALSE_NEGATIVE`。其 root-cause reason 固定為：
+`QUERY_MISMATCH | SOURCE_NOT_SEARCHED | TOP_K_TRUNCATION | SEMANTIC_DRIFT | CONTEXT_FIREWALL_DROP | INDEX_GAP | RETRIEVAL_ROUTE_GAP | UNKNOWN`。
+
+缺少上述同鏈 evidence 時，不得只因後來找到相似內容就推定 false negative。監察官只可觀察、分類並回報該 finding；修復仍由既有 GLOBAL routing / owner / mutation admission 處理，監察官不取得執行權。
 
 ### 4C.5 Clean-room execution recovery｜確認 context consumption 污染後，用乾淨執行上下文重建，不靠更多 prompt
 
