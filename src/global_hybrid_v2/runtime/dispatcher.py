@@ -4,7 +4,11 @@ from global_hybrid_v2.contracts import Owner, TaskContract, TaskRequest
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.effects import EffectGate
-from global_hybrid_v2.governance.egress import RUN_REQUIRED_RESEARCH, ResponseEgressValidator
+from global_hybrid_v2.governance.egress import (
+    RUN_REQUIRED_RESEARCH,
+    UNKNOWN_WITH_EXACT_BLOCKER,
+    ResponseEgressValidator,
+)
 from global_hybrid_v2.governance.firewall import TaskFirewall
 from global_hybrid_v2.governance.router import OwnerRouter
 from global_hybrid_v2.runtime.trace import TraceBus
@@ -82,11 +86,22 @@ class Dispatcher:
         self.trace.emit(
             task_id=contract.task_id,
             stage="response_egress",
-            decision="BLOCK" if result.status == RUN_REQUIRED_RESEARCH else "PASS",
+            decision=(
+                "BLOCK"
+                if result.status in {RUN_REQUIRED_RESEARCH, UNKNOWN_WITH_EXACT_BLOCKER}
+                else "PASS"
+            ),
             owner=owner,
             metadata={
                 "classifications": sorted(item.value for item in result.output_classifications),
                 "status": result.status,
+                "evidence_admission_check": result.evidence.get("evidence_admission_check"),
+                "finding_codes": result.evidence.get("finding_codes", []),
+                "defect_family": result.evidence.get("defect_family"),
+                "fix_claimed": bool(result.evidence.get("fix_claimed", False)),
+                "user_reported_recurrence": bool(
+                    result.evidence.get("user_reported_recurrence", False)
+                ),
             },
         )
 

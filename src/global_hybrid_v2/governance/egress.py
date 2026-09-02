@@ -13,6 +13,13 @@ from global_hybrid_v2.contracts import (
 )
 
 RUN_REQUIRED_RESEARCH = "RUN_REQUIRED_RESEARCH"
+UNKNOWN_WITH_EXACT_BLOCKER = "UNKNOWN_WITH_EXACT_BLOCKER"
+
+ASSUMPTION_USED_AS_EVIDENCE = "ASSUMPTION_USED_AS_EVIDENCE"
+CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE = (
+    "CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE"
+)
+RESEARCH_GATE_BYPASS = "RESEARCH_GATE_BYPASS"
 
 
 class ResponseEgressValidator:
@@ -24,32 +31,59 @@ class ResponseEgressValidator:
         "IMPLEMENTATION_PATTERN",
         "PERSISTENT_MUTATION",
     )
-    RESEARCH_REQUIRED = {
-        OutputClassification.PERSISTENT_REPAIR_DESIGN,
-        OutputClassification.CURRENT_EXTERNAL_FACT_CLAIM,
-        OutputClassification.CURRENT_PLATFORM_OR_CAPABILITY_CLAIM,
+    CURRENT_CLAIMS = {
+        OutputClassification.CURRENT_EXTERNAL_FACT,
+        OutputClassification.CURRENT_PLATFORM_CAPABILITY,
+        OutputClassification.CURRENT_TOOL_CAPABILITY,
     }
-    PLATFORM_PATTERN = re.compile(r"\b(chatgpt|codex|openai|github|mcp|connector)\b", re.I)
+    CAPABILITY_CLAIMS = {
+        OutputClassification.CURRENT_PLATFORM_CAPABILITY,
+        OutputClassification.CURRENT_TOOL_CAPABILITY,
+    }
+    PLATFORM_PATTERN = re.compile(r"\b(chatgpt|codex|openai|github|mcp)\b", re.I)
+    TOOL_PATTERN = re.compile(r"\b(connector|plugin|tool|api|call|runtime)\b", re.I)
     CAPABILITY_PATTERN = re.compile(
         r"(可以|能不能|能夠|能否|支援|支持|同步|寫入|可寫|直接寫|寫|"
         r"\bwrite\b|\bwritable\b|\bsupport(?:s|ed)?\b|\bsync(?:s|ed)?\b|"
-        r"\bcapabilit(?:y|ies)\b|\bavailable\b|\bavailability\b)",
+        r"\bcapabilit(?:y|ies)\b|\bavailable\b|\bavailability\b|\b403\b)",
+        re.I,
+    )
+    ARCHITECTURE_PATTERN = re.compile(
+        r"(架構|修正|修復|決策|方向|工作流|持久|"
+        r"\barchitecture\b|\brepair\b|\bdecision\b|\bdirection\b|\bworkflow\b|"
+        r"\bpersistent\b)",
         re.I,
     )
     NON_EVIDENCE_PATTERN = re.compile(
-        r"(我以為|我猜|我覺得|應該|可能|\bprobably\b|\blikely\b|"
-        r"\binferred from memory\b|\bmodel knowledge alone\b)",
+        r"(我以為|我猜|我覺得|我認為|模型認為|應該可以|應該|可能是|可能|"
+        r"照理說|之前的假設|先前假設|先前對話假設|model memory|previous assumption|"
+        r"prior conversation assumption|semantic plausibility|\bprobably\b|\blikely\b|"
+        r"\bmodel thinks\b|\binferred from memory\b|\bmodel knowledge alone\b)",
         re.I,
     )
 
-    def __init__(self, *, clock: Callable[[], datetime] | None = None):
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        research_available: bool = False,
+    ):
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.research_available = research_available
 
     def validate(self, result: DomainResult) -> DomainResult:
         classifications = self.classify(result)
-        required = classifications & self.RESEARCH_REQUIRED
+        required = self._required_semantic_keys(classifications)
         if not required:
-            return result.model_copy(update={"output_classifications": classifications})
+            return result.model_copy(
+                update={
+                    "evidence": {
+                        **result.evidence,
+                        "evidence_admission_check": "NOT_REQUIRED",
+                    },
+                    "output_classifications": classifications,
+                }
+            )
 
         now = self.clock()
         scope = (result.research_scope or "").strip()
@@ -64,23 +98,40 @@ class ResponseEgressValidator:
             )
         ]
         if not missing:
-            return result.model_copy(update={"output_classifications": classifications})
+            return result.model_copy(
+                update={
+                    "evidence": {
+                        **result.evidence,
+                        "evidence_admission_check": "PASS",
+                    },
+                    "output_classifications": classifications,
+                }
+            )
 
-        blocker = self._blocker(missing, scope)
+        state = RUN_REQUIRED_RESEARCH if self.research_available else UNKNOWN_WITH_EXACT_BLOCKER
+        blocker = self._blocker(missing, scope, self.research_available)
+        finding_codes = self._finding_codes(result, missing)
         return DomainResult(
             owner=result.owner,
-            status=RUN_REQUIRED_RESEARCH,
+            status=state,
             output={
-                "state": RUN_REQUIRED_RESEARCH,
+                "state": state,
                 "result": "UNKNOWN",
                 "blocker": blocker,
                 "required_semantic_keys": [item.value for item in missing],
             },
             evidence={
                 "egress_decision": "BLOCK",
+                "evidence_admission_check": "FAIL",
                 "reason": blocker,
-                "research_tool": "UNAVAILABLE",
+                "research_tool": "AVAILABLE" if self.research_available else "UNAVAILABLE",
                 "non_evidence_language_detected": self._contains_non_evidence_language(result),
+                "finding_codes": finding_codes,
+                "defect_family": result.evidence.get("defect_family"),
+                "fix_claimed": bool(result.evidence.get("fix_claimed", False)),
+                "user_reported_recurrence": bool(
+                    result.evidence.get("user_reported_recurrence", False)
+                ),
             },
             output_classifications=classifications,
             research_scope=result.research_scope,
@@ -93,11 +144,48 @@ class ResponseEgressValidator:
         normalized = re.sub(r"[\s-]+", "_", flattened.upper())
         if any(marker in normalized for marker in self.REPAIR_MARKERS):
             classifications.add(OutputClassification.PERSISTENT_REPAIR_DESIGN)
-        if self.PLATFORM_PATTERN.search(flattened) and self.CAPABILITY_PATTERN.search(flattened):
-            classifications.add(OutputClassification.CURRENT_PLATFORM_OR_CAPABILITY_CLAIM)
+
+        capability_claim = self.CAPABILITY_PATTERN.search(flattened) is not None
+        if capability_claim and self.TOOL_PATTERN.search(flattened):
+            classifications.add(OutputClassification.CURRENT_TOOL_CAPABILITY)
+        elif capability_claim and self.PLATFORM_PATTERN.search(flattened):
+            classifications.add(OutputClassification.CURRENT_PLATFORM_CAPABILITY)
+
+        current_claim = bool(classifications & self.CURRENT_CLAIMS)
+        assumption_language = self.NON_EVIDENCE_PATTERN.search(flattened) is not None
+        architecture_language = self.ARCHITECTURE_PATTERN.search(flattened) is not None
+        if current_claim and (assumption_language or architecture_language):
+            classifications.add(OutputClassification.ARCHITECTURE_AFFECTING_ASSUMPTION)
+
         if not classifications:
             classifications.add(OutputClassification.DIAGNOSIS_ONLY)
         return classifications
+
+    @classmethod
+    def _required_semantic_keys(
+        cls,
+        classifications: set[OutputClassification],
+    ) -> set[OutputClassification]:
+        required: set[OutputClassification] = set()
+        if OutputClassification.PERSISTENT_REPAIR_DESIGN in classifications:
+            required.add(OutputClassification.PERSISTENT_REPAIR_DESIGN)
+
+        current_claims = classifications & cls.CURRENT_CLAIMS
+        architecture_affecting = bool(
+            classifications
+            & {
+                OutputClassification.ARCHITECTURE_AFFECTING_ASSUMPTION,
+                OutputClassification.PERSISTENT_REPAIR_DESIGN,
+            }
+        )
+        if architecture_affecting:
+            required.update(current_claims)
+        if (
+            OutputClassification.ARCHITECTURE_AFFECTING_ASSUMPTION in classifications
+            and not current_claims
+        ):
+            required.add(OutputClassification.ARCHITECTURE_AFFECTING_ASSUMPTION)
+        return required
 
     @classmethod
     def _has_fresh_matching_receipt(
@@ -115,7 +203,7 @@ class ResponseEgressValidator:
             if receipt.semantic_key is not semantic_key or receipt.scope != scope:
                 continue
             if not any(
-                cls.NON_EVIDENCE_PATTERN.search(item.reference) is None
+                cls._admissible_evidence(item.reference, item.observed_result)
                 for item in receipt.evidence
             ):
                 continue
@@ -125,14 +213,43 @@ class ResponseEgressValidator:
                 return True
         return False
 
+    @classmethod
+    def _admissible_evidence(cls, reference: str, observed_result: str) -> bool:
+        return (
+            cls.NON_EVIDENCE_PATTERN.search(reference) is None
+            and cls.NON_EVIDENCE_PATTERN.search(observed_result) is None
+        )
+
+    @classmethod
+    def _finding_codes(
+        cls,
+        result: DomainResult,
+        missing: list[OutputClassification],
+    ) -> list[str]:
+        codes = [RESEARCH_GATE_BYPASS]
+        if cls._contains_non_evidence_language(result):
+            codes.insert(0, ASSUMPTION_USED_AS_EVIDENCE)
+        if set(missing) & cls.CAPABILITY_CLAIMS:
+            codes.insert(0, CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE)
+        return codes
+
     @staticmethod
-    def _blocker(missing: list[OutputClassification], scope: str) -> str:
+    def _blocker(
+        missing: list[OutputClassification],
+        scope: str,
+        research_available: bool,
+    ) -> str:
         keys = ", ".join(item.value for item in missing)
         if not scope:
             return f"research_scope is missing for: {keys}"
+        if research_available:
+            return (
+                "fresh matching-scope evidence admission is missing for: "
+                f"{keys}; run required current research and re-evaluate"
+            )
         return (
-            "fresh matching-scope RESEARCH_ADMISSION_RECEIPT=PASS is missing for: "
-            f"{keys}; research execution is not configured at response egress"
+            "fresh matching-scope evidence admission is missing for: "
+            f"{keys}; no current evidence source is available"
         )
 
     @classmethod

@@ -198,21 +198,29 @@ Research admission 的 consumption point 位於 domain execution 與 closure 之
 router 或平行 research gate。Output 會以下列類型表示：
 
 - `DIAGNOSIS_ONLY`
+- `STATIC_KNOWLEDGE`
+- `CURRENT_EXTERNAL_FACT`
+- `CURRENT_PLATFORM_CAPABILITY`
+- `CURRENT_TOOL_CAPABILITY`
+- `ARCHITECTURE_AFFECTING_ASSUMPTION`
 - `PERSISTENT_REPAIR_DESIGN`
-- `CURRENT_EXTERNAL_FACT_CLAIM`
-- `CURRENT_PLATFORM_OR_CAPABILITY_CLAIM`
 - `MUTATION_REPORT`
 
 `REPAIR_DIRECTION / SHOULD_CHANGE / ARCHITECTURE_CHOICE / CANDIDATE_RULE /
 IMPLEMENTATION_PATTERN / PERSISTENT_MUTATION` 會 deterministic 地觸發
-`PERSISTENT_REPAIR_DESIGN`。Current/changeable 且 capability/architecture-sensitive 的 platform claim
-也會觸發 research requirement；不會對所有外部敘述一律要求搜尋。
+`PERSISTENT_REPAIR_DESIGN`。只有 current/changeable claim 同時影響 architecture 或 persistent action
+時，才會觸發 current evidence requirement；一般靜態知識、diagnosis-only 與單次低風險內容不會
+被要求搜尋。
 
 放行需要 `RESEARCH_ADMISSION_RECEIPT=PASS`，其 semantic key 與 scope 必須 exact match，
-時間必須位於 receipt 的有效期，並包含 current tool、current web 或 official-source
-evidence。「我以為」、「我猜」、「我覺得」、「應該」、「可能」、`probably`、`likely`、
-`inferred from memory` 與 `model knowledge alone` 不會被解析為 receipt。
+時間必須位於 receipt 的有效期，並包含 current callable tool result、repository/runtime readback、
+current official documentation/web source 或 current user-provided observation。「我以為」、「我猜」、
+「我覺得」、「應該」、「可能」、`probably`、`likely`、`inferred from memory` 與
+`model knowledge alone` 不會被當成 evidence。
 
-若 receipt 不存在、過期或 scope/semantic key 不合，egress 會移除原 repair design，
-只返回 `RUN_REQUIRED_RESEARCH / UNKNOWN / exact blocker`。目前 runtime 沒有 research
-tool adapter，因此該狀態 fail-close，不會以 model confidence 取代 research。
+若 receipt 不存在、過期或 scope/semantic key 不合，egress 會移除原 architecture/repair
+conclusion。有可用 research adapter 時回傳 `RUN_REQUIRED_RESEARCH`；沒有可取得 evidence source
+時回傳 `UNKNOWN_WITH_EXACT_BLOCKER`，不會以 model confidence 取代 research。Read-only witness
+辨識 `ASSUMPTION_USED_AS_EVIDENCE`、`CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE`、
+`RESEARCH_GATE_BYPASS`，並在同一 defect 曾宣稱修好後再次被使用者指出時標記
+`RECURRENT_DEFECT`。
