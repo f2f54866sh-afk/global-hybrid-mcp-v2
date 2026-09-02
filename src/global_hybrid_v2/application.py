@@ -6,6 +6,8 @@ from pathlib import Path
 from global_hybrid_v2.adapters.openai_research import configured_research_port
 from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
+from global_hybrid_v2.domains.library_projection import LibraryProjectionDomain
+from global_hybrid_v2.domains.sales_media import SalesMediaDomain
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
@@ -63,6 +65,8 @@ def create_application(
         owner: NotConfiguredDomain(owner)
         for owner in Owner
     }
+    domains[Owner.LIBRARY_FACT] = LibraryProjectionDomain()
+    domains[Owner.SALES_HUMAN] = SalesMediaDomain()
     composition_fitness = SystemFitnessFunctions.evaluate_composition(
         domains=domains,
         trace=runtime_trace,

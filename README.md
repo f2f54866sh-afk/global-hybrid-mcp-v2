@@ -132,9 +132,9 @@ deployment attestation；local 明確標記 `LOCAL_OR_UNKNOWN`，identity incomp
 authority readiness。`render.yaml` 使用 `/ready` 作 deploy health check，並維持
 `GLOBAL_LIVE_EXECUTION=false`。
 
-`AUTHORITY_READY != DOMAIN_EXECUTION_CONFIGURED`：目前五個 Owner 都仍使用既有
-`NotConfiguredDomain`。因此 authority readiness 可以通過，而安全 dispatch 的最終 domain
-結果可以是 `BLOCKED_NOT_CONFIGURED`。
+`AUTHORITY_READY != DOMAIN_EXECUTION_CONFIGURED`：SALES_HUMAN 現在只綁定 bounded media-analysis
+adapter，LIBRARY_FACT 只提供 read-only consumer projection；GLOBAL、VISUAL、EXECUTION 與非 media
+Sales 工作仍可回 `BLOCKED_NOT_CONFIGURED`。這個 binding 不會執行廣告投放或開啟 live side effect。
 
 ## Authority promotion
 

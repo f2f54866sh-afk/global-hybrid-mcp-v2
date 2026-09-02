@@ -2,9 +2,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from global_hybrid_v2.contracts import AuthoritySnapshot, EffectType, Owner
+from global_hybrid_v2.contracts import (
+    AuthoritySnapshot,
+    ContextAdmissionReason,
+    ContextAuthorityEffect,
+    ContextClass,
+    ContextContentRole,
+    ContextOrigin,
+    DomainContractStatus,
+    DomainResult,
+    EffectType,
+    Owner,
+    TaskContract,
+)
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.governance.effects import OWNER_EFFECTS
+from global_hybrid_v2.governance.firewall import TaskFirewall
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.runtime.trace import TraceBus
 
@@ -121,3 +134,157 @@ class SystemFitnessFunctions:
                 ),
             )
         )
+
+    @staticmethod
+    def evaluate_sales_consumption(
+        *,
+        snapshot: AuthoritySnapshot,
+        contract: TaskContract,
+        result: DomainResult,
+        trace: TraceBus,
+    ) -> FitnessReport:
+        packets = [
+            item
+            for item in contract.domain_contracts
+            if item.provider_owner is Owner.LIBRARY_FACT
+            and item.consumer_owner is Owner.SALES_HUMAN
+        ]
+        packet = packets[0] if len(packets) == 1 else None
+        required_projection = {
+            "library_request_id",
+            "projection",
+            "contract_version",
+            "source_scope",
+            "evidence_role",
+            "evidence_items",
+            "uncertainties",
+        }
+        directive_receipts = [
+            item for item in contract.context_admission_receipts if item.directive_detected
+        ]
+        no_directive_in_consumer = all(
+            item.content_role is ContextContentRole.DATA_ONLY
+            and not TaskFirewall.contains_external_directive(item.payload)
+            for item in contract.context
+        )
+        no_history_authority = all(
+            not (
+                item.origin
+                in {ContextOrigin.HISTORY, ContextOrigin.ARCHIVE, ContextOrigin.MEMORY}
+                and item.context_class is ContextClass.NORMATIVE_AUTHORITY
+            )
+            for item in contract.context
+        )
+        evidence = result.evidence
+
+        def check(name: str, passed: bool, blocker: str) -> FitnessCheck:
+            return FitnessCheck(name, passed, None if passed else blocker)
+
+        checks = (
+            check(
+                "CURRENT_POINTER_MATCH",
+                Owner.SALES_HUMAN in snapshot.entries
+                and Owner.LIBRARY_FACT in snapshot.entries,
+                "Sales or Library authority pointer is unresolved",
+            ),
+            check(
+                "TASK_CONTRACT_PASS",
+                bool(contract.contract_id and contract.task_trace_id),
+                "task contract identity is incomplete",
+            ),
+            check(
+                "OWNER_ROUTE_PASS",
+                contract.owner is Owner.SALES_HUMAN,
+                "Sales media task did not route to SALES_HUMAN",
+            ),
+            check(
+                "LIBRARY_REQUEST_EXISTS",
+                packet is not None and bool(packet.payload.get("library_request_id")),
+                "Library request receipt is missing",
+            ),
+            check(
+                "LIBRARY_PACKET_EXISTS",
+                packet is not None,
+                "bounded Library packet is missing",
+            ),
+            check(
+                "LIBRARY_PACKET_BOUNDED",
+                packet is not None
+                and packet.status is DomainContractStatus.PASS
+                and set(packet.payload) == required_projection
+                and not (set(packet.payload) & packet.blocked_foreign_fields),
+                "Library packet is unbounded or contains a foreign decision field",
+            ),
+            check(
+                "LIBRARY_DOES_NOT_DECIDE_TARGETING",
+                packet is not None
+                and packet.payload.get("evidence_role")
+                == "LIBRARY_EVIDENCE_NOT_SALES_DECISION"
+                and evidence.get("library_decided_targeting") is False,
+                "Library projection asserted a Sales targeting decision",
+            ),
+            check(
+                "SNAPSHOT_CONTAINS_REQUIRED_PROJECTION",
+                packet is not None
+                and required_projection <= set(packet.payload)
+                and packet.used_fields == required_projection,
+                "consumer-required Library projection is incomplete",
+            ),
+            check(
+                "SALES_ADAPTER_CONFIGURED",
+                evidence.get("adapter_configured") is True,
+                "Sales adapter is not configured",
+            ),
+            check(
+                "SALES_ADAPTER_CALLED",
+                evidence.get("adapter_called") is True,
+                "Sales adapter was not called",
+            ),
+            check(
+                "SALES_CONTEXT_MATCHES_SNAPSHOT",
+                packet is not None
+                and set(evidence.get("actual_consumed_context", [])) == packet.used_fields,
+                "Sales consumed context differs from the admitted projection",
+            ),
+            check(
+                "EXTERNAL_DIRECTIVE_DETECTED",
+                not directive_receipts
+                or all(item.directive_detected for item in directive_receipts),
+                "embedded external directive was not detected",
+            ),
+            check(
+                "EXTERNAL_DIRECTIVE_QUARANTINED",
+                not directive_receipts
+                or all(
+                    item.directive_quarantined
+                    and item.reason_code
+                    is ContextAdmissionReason.QUARANTINE_EXTERNAL_DIRECTIVE
+                    and item.authority_effect is ContextAuthorityEffect.NO_AUTHORITY_EFFECT
+                    and item.persistence_effect is False
+                    for item in directive_receipts
+                ),
+                "embedded external directive was not quarantined",
+            ),
+            check(
+                "EXTERNAL_DIRECTIVE_NOT_IN_CONSUMER_CONTEXT",
+                no_directive_in_consumer,
+                "raw external directive reached Sales consumer context",
+            ),
+            check(
+                "NO_HISTORY_FALLBACK",
+                no_history_authority,
+                "legacy context supplied normative authority",
+            ),
+            check(
+                "NO_UNAUTHORIZED_SIDE_EFFECT",
+                set(contract.effects)
+                <= {EffectType.READ_ONLY, EffectType.MODEL_INFERENCE},
+                "Sales analysis requested an unauthorized side effect",
+            ),
+            check(
+                "WITNESS_READ_ONLY",
+                isinstance(trace.witness, ReadOnlyWitness),
+                "read-only Witness is not attached",
+            ),
+        )
+        return FitnessReport(checks=checks)

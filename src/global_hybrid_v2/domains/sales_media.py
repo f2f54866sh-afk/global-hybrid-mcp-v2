@@ -7,7 +7,14 @@ from itertools import pairwise
 
 from pydantic import BaseModel, Field, model_validator
 
-from global_hybrid_v2.contracts import Owner
+from global_hybrid_v2.contracts import (
+    ContextContentRole,
+    DomainContractStatus,
+    DomainResult,
+    OutputClassification,
+    Owner,
+    TaskContract,
+)
 
 
 class PaidAdEligibility(StrEnum):
@@ -436,4 +443,110 @@ class MediaLearningEvaluator:
             causal_credit_allowed=(
                 record.attribution_state is AttributionState.CONTROLLED
             ),
+        )
+
+
+class SalesMediaDomain:
+    """The single SALES_HUMAN adapter for bounded media-analysis consumption."""
+
+    owner = Owner.SALES_HUMAN
+    media_markers = ("facebook", "media", "廣告", "投放", "audience", "targeting")
+
+    @classmethod
+    def supports(cls, request_text: str) -> bool:
+        normalized = request_text.casefold()
+        return any(marker in normalized for marker in cls.media_markers)
+
+    def run(self, contract: TaskContract) -> DomainResult:
+        if contract.owner is not self.owner:
+            raise ValueError("Sales media adapter received another owner's task")
+        if not self.supports(contract.request_text):
+            return DomainResult(
+                owner=self.owner,
+                status="BLOCKED_NOT_CONFIGURED",
+                output=None,
+                evidence={
+                    "reason": "non-media Sales execution remains intentionally unconfigured",
+                    "adapter_configured": True,
+                    "adapter_called": True,
+                    "context_delivered": False,
+                    "result_returned": True,
+                },
+            )
+        library_packets = [
+            item
+            for item in contract.domain_contracts
+            if item.provider_owner is Owner.LIBRARY_FACT
+            and item.consumer_owner is Owner.SALES_HUMAN
+        ]
+        if len(library_packets) != 1:
+            raise ValueError("Sales media adapter requires one bounded Library packet")
+        packet = library_packets[0]
+        if packet.status is not DomainContractStatus.PASS:
+            raise ValueError("Sales media adapter received an unadmitted Library packet")
+        if any(item.content_role is not ContextContentRole.DATA_ONLY for item in contract.context):
+            raise ValueError("Sales consumer context contains executable external content")
+
+        consumed_fields = sorted(packet.used_fields)
+        uncertainties = list(packet.payload["uncertainties"])
+        output = {
+            "state": "SALES_MEDIA_EVIDENCE_GAP" if uncertainties else "SALES_MEDIA_READY",
+            "campaign_objective": (
+                "maximize qualified conversations, appointments, show-ups, and sold outcomes"
+            ),
+            "primary_hypothesis": (
+                "multi-passenger practicality may be a relevant purchase reason"
+            ),
+            "counter_hypothesis": (
+                "price, condition, local supply, and broad delivery may explain demand better "
+                "than demographic narrowing"
+            ),
+            "falsifier": (
+                "controlled audience cells produce contrary qualified-conversation, "
+                "appointment, show-up, or sold outcomes"
+            ),
+            "target_buyer_state": "EVIDENCE_BACKED_HYPOTHESIS_OR_ASSUMPTION",
+            "age_hypothesis": "AUDIENCE_ASSUMPTION",
+            "geo_hypothesis": "AUDIENCE_ASSUMPTION",
+            "candidate_strategies": [
+                "BROAD",
+                "GUIDED_BROAD",
+                "MANUAL_NARROW",
+                "RETARGETING_IF_AUTHORIZED_DATA_EXISTS",
+            ],
+            "current_platform_capability": "EVIDENCE_GAP",
+            "outcome_evidence": "OUTCOME_EVIDENCE_GAP",
+            "winner_metric_priority": [
+                "QUALIFIED_CONVERSATION",
+                "APPOINTMENT",
+                "SHOW_UP",
+                "SOLD",
+            ],
+            "library_packet_id": packet.contract_id,
+            "actual_consumed_context": consumed_fields,
+            "uncertainties": uncertainties,
+        }
+        return DomainResult(
+            owner=self.owner,
+            status="SALES_MEDIA_RESULT_RETURNED",
+            output=output,
+            evidence={
+                "adapter_configured": True,
+                "adapter_called": True,
+                "context_delivered": True,
+                "result_returned": True,
+                "library_request_id": packet.payload["library_request_id"],
+                "library_packet_id": packet.contract_id,
+                "consumer": self.owner.value,
+                "projection": packet.payload["projection"],
+                "contract_version": packet.schema_version,
+                "source_authority_revision": packet.source_authority_revision,
+                "provenance": packet.provenance,
+                "currentness": packet.currentness.value,
+                "uncertainties": uncertainties,
+                "actual_consumed_context": consumed_fields,
+                "library_payload_keys": sorted(packet.payload),
+                "library_decided_targeting": False,
+            },
+            output_classifications={OutputClassification.DIAGNOSIS_ONLY},
         )

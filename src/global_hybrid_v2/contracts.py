@@ -193,6 +193,7 @@ class ContextAdmissionReason(StrEnum):
     UNSUPPORTED_CONTEXT_ORIGIN = "UNSUPPORTED_CONTEXT_ORIGIN"
     UNTRUSTED_EVIDENCE_DATA_ONLY = "UNTRUSTED_EVIDENCE_DATA_ONLY"
     EXTERNAL_INSTRUCTION_IGNORED = "EXTERNAL_INSTRUCTION_IGNORED"
+    QUARANTINE_EXTERNAL_DIRECTIVE = "QUARANTINE_EXTERNAL_DIRECTIVE"
 
 
 class RetrievalState(StrEnum):
@@ -242,6 +243,12 @@ class ContextAdmissionReceipt(BaseModel):
     reason_code: ContextAdmissionReason
     admitted_content_role: ContextContentRole = ContextContentRole.DATA_ONLY
     authority_effect: ContextAuthorityEffect = ContextAuthorityEffect.NO_AUTHORITY_EFFECT
+    raw_evidence_stored_for_audit: bool = False
+    directive_detected: bool = False
+    directive_quarantined: bool = False
+    persistence_effect: bool = False
+    raw_evidence_sha256: str | None = None
+    quarantined_paths: list[str] = Field(default_factory=list)
 
 
 class TaskRequest(BaseModel):
@@ -346,10 +353,13 @@ class DomainContract(BaseModel):
 
 
 class LibraryAccessRequest(BaseModel):
+    request_id: str = Field(default_factory=lambda: str(uuid4()))
+    contract_version: int = Field(default=1, ge=1)
     actor_owner: Owner
     access_kind: LibraryAccessKind
     task_scope: str = Field(min_length=1)
     projection: str | None = None
+    required_fields: set[str] = Field(default_factory=set)
 
 
 class TaskContract(BaseModel):
@@ -365,6 +375,7 @@ class TaskContract(BaseModel):
     context_admission_receipts: list[ContextAdmissionReceipt] = Field(default_factory=list)
     retry_context: RetryContext | None = None
     risk_class: RiskClass = RiskClass.R0
+    domain_contracts: list[DomainContract] = Field(default_factory=list)
     research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
     research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)
 

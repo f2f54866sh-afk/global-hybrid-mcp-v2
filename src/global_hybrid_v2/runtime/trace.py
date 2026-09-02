@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
+from copy import deepcopy
+from typing import Any
 from uuid import uuid4
 
 from global_hybrid_v2.contracts import Owner, TraceEvent
@@ -15,6 +17,7 @@ class TraceBus:
         self.trace_id = str(uuid4())
         self.witness = witness
         self.findings = []
+        self._quarantined_evidence: dict[str, dict[str, Any]] = {}
         self._task_trace_ids: dict[str, str] = {}
         self._task_spans: dict[tuple[str, str], str] = {}
 
@@ -27,6 +30,17 @@ class TraceBus:
         self._task_trace_ids[task_id] = trace_id
         self._span_id(task_id, "GLOBAL")
         return trace_id
+
+    def store_quarantined_evidence(
+        self,
+        task_id: str,
+        evidence: dict[str, Any],
+    ) -> None:
+        if evidence:
+            self._quarantined_evidence[task_id] = deepcopy(evidence)
+
+    def quarantined_evidence_for_task(self, task_id: str) -> dict[str, Any]:
+        return deepcopy(self._quarantined_evidence.get(task_id, {}))
 
     def _span_id(self, task_id: str, span_owner: str) -> str:
         key = (task_id, span_owner)
@@ -85,6 +99,11 @@ class TraceBus:
                 stage="witness_observation",
                 decision="FINDING" if finding else "OBSERVED",
                 metadata={
+                    "state": "WITNESS_FINDING" if finding else "WITNESS_OBSERVED",
+                    "input_ref": stage,
+                    "output_ref": finding.code if finding else None,
+                    "result": "FINDING" if finding else "OBSERVED",
+                    "failure_class": finding.code if finding else None,
                     "observed_stage": stage,
                     "finding_code": finding.code if finding else None,
                 },

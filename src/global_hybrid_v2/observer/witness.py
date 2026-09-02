@@ -54,6 +54,27 @@ class ReadOnlyWitness:
             )
         if event.stage == "response_egress":
             return self._observe_response_egress(event)
+        if event.stage == "firewall":
+            receipts = event.metadata.get("admission_receipts", [])
+            if isinstance(receipts, list) and any(
+                isinstance(item, dict)
+                and item.get("directive_detected") is True
+                and item.get("directive_quarantined") is not True
+                for item in receipts
+            ):
+                return WitnessFinding(
+                    task_id=event.task_id,
+                    severity="error",
+                    code="EXTERNAL_EVIDENCE_CONTEXT_ISOLATION_FAIL",
+                    message="Detected external directive was not quarantined.",
+                )
+        if event.stage == "fitness" and event.decision == "FAIL":
+            return WitnessFinding(
+                task_id=event.task_id,
+                severity="error",
+                code="CONSUMPTION_FITNESS_FAIL",
+                message="Runtime consumption fitness reported a failed invariant.",
+            )
         return None
 
     def _observe_response_egress(self, event: TraceEvent) -> WitnessFinding | None:

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from dataclasses import dataclass
+from typing import Any
 
 from global_hybrid_v2.contracts import (
     AuthoritySnapshot,
@@ -23,6 +27,7 @@ class FirewallError(RuntimeError):
 class ContextAdmissionResult:
     admitted: list[ContextItem]
     receipts: list[ContextAdmissionReceipt]
+    quarantined_external: dict[str, Any]
 
 
 class TaskFirewall:
@@ -35,6 +40,17 @@ class TaskFirewall:
         ContextOrigin.CURRENT_TOOL_RESULT,
         ContextOrigin.EXTERNAL_SOURCE,
     }
+    EXTERNAL_DIRECTIVE_PATTERN = re.compile(
+        r"(?i)(?:\bsystem\s*:|ignore\s+(?:all\s+)?(?:previous|current)\s+"
+        r"(?:instructions?|canonical)|(?:invoke|call|run|start|enable)\s+(?:a\s+)?tool|"
+        r"(?:modify|write|update|save|persist|store)\s+(?:the\s+)?(?:memory|authority|"
+        r"canonical|rule|policy)|(?:force|set)\s+(?:age|geo|targeting)|"
+        r"(?:永久保存|忽略.*canonical|直接設定|啟動.*工具|修改.*memory))"
+    )
+    EXTERNAL_DIRECTIVE_KEYS = re.compile(
+        r"(?i)(?:^|_)(?:directive|instruction|command|system_prompt|tool_call|"
+        r"authority_claim|canonical_claim|persistence_request)(?:$|_)"
+    )
 
     def filter(self, items: list[ContextItem], authority: AuthoritySnapshot) -> list[ContextItem]:
         return self.evaluate(items, authority).admitted
@@ -46,12 +62,139 @@ class TaskFirewall:
     ) -> ContextAdmissionResult:
         admitted: list[ContextItem] = []
         receipts: list[ContextAdmissionReceipt] = []
+        quarantined_external: dict[str, Any] = {}
         for item in items:
             receipt = self._evaluate_item(item, authority)
+            if self._is_external(item) and receipt.decision is not ContextAdmissionDecision.QUARANTINE:
+                sanitized, quarantined_paths = self._sanitize_external_payload(item.payload)
+                directive_detected = bool(quarantined_paths)
+                if (
+                    item.content_role is ContextContentRole.EXECUTABLE_INSTRUCTION
+                    and not directive_detected
+                ):
+                    sanitized = None
+                    quarantined_paths = ["$"]
+                    directive_detected = True
+                if directive_detected:
+                    quarantined_external[item.id] = item.payload
+                    raw_hash = self._payload_sha256(item.payload)
+                    safe_payload_exists = self._has_safe_payload(sanitized)
+                    receipt = receipt.model_copy(
+                        update={
+                            "decision": (
+                                ContextAdmissionDecision.ADVISORY
+                                if safe_payload_exists
+                                else ContextAdmissionDecision.QUARANTINE
+                            ),
+                            "reason_code": (
+                                ContextAdmissionReason.QUARANTINE_EXTERNAL_DIRECTIVE
+                            ),
+                            "admitted_content_role": ContextContentRole.DATA_ONLY,
+                            "authority_effect": ContextAuthorityEffect.NO_AUTHORITY_EFFECT,
+                            "raw_evidence_stored_for_audit": True,
+                            "directive_detected": True,
+                            "directive_quarantined": True,
+                            "persistence_effect": False,
+                            "raw_evidence_sha256": raw_hash,
+                            "quarantined_paths": quarantined_paths,
+                        }
+                    )
+                    if safe_payload_exists:
+                        admitted.append(self._sanitized_external_item(item, sanitized))
+                    receipts.append(receipt)
+                    continue
             receipts.append(receipt)
             if receipt.decision is not ContextAdmissionDecision.QUARANTINE:
-                admitted.append(item)
-        return ContextAdmissionResult(admitted=admitted, receipts=receipts)
+                admitted.append(
+                    self._sanitized_external_item(item, item.payload)
+                    if self._is_external(item)
+                    else item
+                )
+        return ContextAdmissionResult(
+            admitted=admitted,
+            receipts=receipts,
+            quarantined_external=quarantined_external,
+        )
+
+    def _is_external(self, item: ContextItem) -> bool:
+        return (
+            item.origin in self.EXTERNAL_ORIGINS
+            or item.context_class is ContextClass.UNTRUSTED_EXTERNAL_EVIDENCE
+        )
+
+    def _sanitize_external_payload(
+        self,
+        payload: Any,
+        *,
+        path: str = "$",
+    ) -> tuple[Any, list[str]]:
+        if isinstance(payload, dict):
+            safe: dict[Any, Any] = {}
+            quarantined: list[str] = []
+            for key, value in payload.items():
+                child_path = f"{path}.{key}"
+                if isinstance(key, str) and self.EXTERNAL_DIRECTIVE_KEYS.search(key):
+                    quarantined.append(child_path)
+                    continue
+                child, child_quarantined = self._sanitize_external_payload(
+                    value,
+                    path=child_path,
+                )
+                quarantined.extend(child_quarantined)
+                if self._has_safe_payload(child):
+                    safe[key] = child
+            return safe, quarantined
+        if isinstance(payload, list):
+            safe_items: list[Any] = []
+            quarantined = []
+            for index, value in enumerate(payload):
+                child, child_quarantined = self._sanitize_external_payload(
+                    value,
+                    path=f"{path}[{index}]",
+                )
+                quarantined.extend(child_quarantined)
+                if self._has_safe_payload(child):
+                    safe_items.append(child)
+            return safe_items, quarantined
+        if isinstance(payload, str) and self.EXTERNAL_DIRECTIVE_PATTERN.search(payload):
+            return None, [path]
+        return payload, []
+
+    @classmethod
+    def contains_external_directive(cls, payload: Any) -> bool:
+        _, quarantined_paths = cls()._sanitize_external_payload(payload)
+        return bool(quarantined_paths)
+
+    @staticmethod
+    def _has_safe_payload(payload: Any) -> bool:
+        if payload is None:
+            return False
+        if isinstance(payload, (dict, list, tuple, set, str, bytes)):
+            return bool(payload)
+        return True
+
+    @staticmethod
+    def _payload_sha256(payload: Any) -> str:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=repr,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _sanitized_external_item(item: ContextItem, payload: Any) -> ContextItem:
+        return item.model_copy(
+            update={
+                "payload": payload,
+                "content_role": ContextContentRole.DATA_ONLY,
+                "current_binding": False,
+                "authority_owner": None,
+                "authority_revision": None,
+            }
+        )
 
     def _evaluate_item(
         self,
@@ -89,15 +232,6 @@ class TaskFirewall:
                 item,
                 ContextAdmissionDecision.QUARANTINE,
                 ContextAdmissionReason.MISSING_PROVENANCE,
-            )
-        if (
-            item.origin in self.EXTERNAL_ORIGINS
-            and item.content_role is ContextContentRole.EXECUTABLE_INSTRUCTION
-        ):
-            return self._receipt(
-                item,
-                ContextAdmissionDecision.ADVISORY,
-                ContextAdmissionReason.EXTERNAL_INSTRUCTION_IGNORED,
             )
         if item.context_class is ContextClass.UNTRUSTED_EXTERNAL_EVIDENCE:
             return self._receipt(

@@ -482,7 +482,8 @@ def test_dispatcher_enforces_evidence_admission_before_closure(capsys):
 
     assert result.status == UNKNOWN_WITH_EXACT_BLOCKER
     assert result.output["blocker"] == RESEARCH_PROVIDER_UNAVAILABLE
-    assert CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE in events[3]["metadata"][
+    egress = next(event for event in events if event["stage"] == "response_egress")
+    assert CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE in egress["metadata"][
         "finding_codes"
     ]
     assert [event["stage"] for event in events[-3:]] == [
