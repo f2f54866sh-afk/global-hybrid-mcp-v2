@@ -30,6 +30,29 @@ NATIVE_AUTHORITY_ROLES = {
     "REAL_CAR": "SHARED_VISUAL_EXECUTION_CANONICAL",
 }
 
+CURRENT_DOCUMENTS = {
+    "GLOBAL": (
+        "GLOBAL_CANONICAL_20260902_REPAIR_RESEARCH_EGRESS_MEDIATION",
+        "33bbc43d6f4293daa5d2f411b46808d3132ccc4db404f20474ca501a4df148ab",
+    ),
+    "SALES": (
+        "SALES_CANONICAL_20260901_SINGLE_LIVE_RUNNER_CONTRACT_NORMALIZATION",
+        "1988b9a3bad15d4357c6f5717c81e7220be82623871ac1ab7065e0cb51e0f0a8",
+    ),
+    "SALES_HUMAN_REFERENCE": (
+        "SALES_HUMAN_CANONICAL_20260901_REFERENCE_ONLY_CONSTRAINT_COMPACTION",
+        "fdfbaa34c77186524a85fb2d12b00b67488539ed6c1ca5757cac4660485166d8",
+    ),
+    "LIBRARY": (
+        "VEHICLE_KNOWLEDGE_BASE_20260901_SCHEMA_DATA_SEPARATION",
+        "601cf5525e3e88cf8263f8b559a4bfea69816dea4ec0eeabb889810ac84a4252",
+    ),
+    "REAL_CAR": (
+        "REAL_CAR_20260902_TEST_CIRCUIT_BREAKER_END_TO_END_RELEVANCE_GATE",
+        "99e1b50ff133e7102e62a1a8cc8417c45df82e0b50856a740cd1ffb82c8545f7",
+    ),
+}
+
 BINDINGS = {
     "GLOBAL": {
         "normative_authority": "GLOBAL",
@@ -405,7 +428,7 @@ def test_reference_only_document_cannot_be_promoted_by_registry(tmp_path):
         AuthorityResolver(registry).resolve()
 
 
-def test_checked_in_registry_has_native_paths_and_unset_activation_metadata():
+def test_checked_in_registry_has_exact_current_activation_metadata():
     payload = json.loads(Path("authority/current/registry.json").read_text(encoding="utf-8"))
 
     assert payload["schema_version"] == 6
@@ -413,14 +436,27 @@ def test_checked_in_registry_has_native_paths_and_unset_activation_metadata():
     assert set(payload["entries"]) == {owner.value for owner in Owner}
     assert set(payload["documents"]) == set(DOCUMENTS)
     for name, (role, path, _) in DOCUMENTS.items():
+        revision, content_sha256 = CURRENT_DOCUMENTS[name]
         assert payload["documents"][name] == {
             "role": role,
-            "expected_revision": "UNSET",
-            "content_sha256": "UNSET",
+            "expected_revision": revision,
+            "content_sha256": content_sha256,
             "path": path,
         }
 
 
-def test_checked_in_unset_registry_fails_closed_without_native_documents():
-    with pytest.raises(AuthorityError, match="expected revision unset: GLOBAL"):
-        AuthorityResolver("authority/current/registry.json").resolve()
+def test_checked_in_current_authority_resolves_all_owner_bindings():
+    snapshot = AuthorityResolver("authority/current/registry.json").resolve()
+
+    assert set(snapshot.entries) == set(Owner)
+    assert snapshot.entries[Owner.GLOBAL].revision == CURRENT_DOCUMENTS["GLOBAL"][0]
+    assert snapshot.entries[Owner.SALES_HUMAN].normative_authority.name == "SALES"
+    assert [item.name for item in snapshot.entries[Owner.SALES_HUMAN].references] == [
+        "SALES_HUMAN_REFERENCE"
+    ]
+    assert snapshot.entries[Owner.LIBRARY_FACT].normative_authority.name == "LIBRARY"
+    visual = snapshot.entries[Owner.VISUAL]
+    execution = snapshot.entries[Owner.EXECUTION]
+    assert visual.normative_authority == execution.normative_authority
+    assert visual.authority_partition == "VISUAL_JUDGE"
+    assert execution.authority_partition == "EXECUTION_LAB"

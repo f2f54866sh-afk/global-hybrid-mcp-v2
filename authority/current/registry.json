@@ -3,32 +3,32 @@
   "documents": {
     "GLOBAL": {
       "role": "LIVE_AUTHORITY",
-      "expected_revision": "UNSET",
-      "content_sha256": "UNSET",
+      "expected_revision": "GLOBAL_CANONICAL_20260902_REPAIR_RESEARCH_EGRESS_MEDIATION",
+      "content_sha256": "33bbc43d6f4293daa5d2f411b46808d3132ccc4db404f20474ca501a4df148ab",
       "path": "GLOBAL_WINDOW_CANONICAL.md"
     },
     "SALES": {
       "role": "LIVE_AUTHORITY",
-      "expected_revision": "UNSET",
-      "content_sha256": "UNSET",
+      "expected_revision": "SALES_CANONICAL_20260901_SINGLE_LIVE_RUNNER_CONTRACT_NORMALIZATION",
+      "content_sha256": "1988b9a3bad15d4357c6f5717c81e7220be82623871ac1ab7065e0cb51e0f0a8",
       "path": "SALES_CANONICAL.md"
     },
     "SALES_HUMAN_REFERENCE": {
       "role": "REFERENCE_ONLY",
-      "expected_revision": "UNSET",
-      "content_sha256": "UNSET",
+      "expected_revision": "SALES_HUMAN_CANONICAL_20260901_REFERENCE_ONLY_CONSTRAINT_COMPACTION",
+      "content_sha256": "fdfbaa34c77186524a85fb2d12b00b67488539ed6c1ca5757cac4660485166d8",
       "path": "SALES_HUMAN_CANONICAL.md"
     },
     "LIBRARY": {
       "role": "LIVE_AUTHORITY",
-      "expected_revision": "UNSET",
-      "content_sha256": "UNSET",
+      "expected_revision": "VEHICLE_KNOWLEDGE_BASE_20260901_SCHEMA_DATA_SEPARATION",
+      "content_sha256": "601cf5525e3e88cf8263f8b559a4bfea69816dea4ec0eeabb889810ac84a4252",
       "path": "VEHICLE_KNOWLEDGE_BASE.md"
     },
     "REAL_CAR": {
       "role": "CANONICAL",
-      "expected_revision": "UNSET",
-      "content_sha256": "UNSET",
+      "expected_revision": "REAL_CAR_20260902_TEST_CIRCUIT_BREAKER_END_TO_END_RELEVANCE_GATE",
+      "content_sha256": "99e1b50ff133e7102e62a1a8cc8417c45df82e0b50856a740cd1ffb82c8545f7",
       "path": "REAL_CAR_統一正式指令.md"
     }
   },
