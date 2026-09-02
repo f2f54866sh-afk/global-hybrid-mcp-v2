@@ -65,6 +65,7 @@ TaskRequest
 → RouteDecision
 → EffectDecision
 → DomainExecution
+→ ResponseEgressDecision
 → Trace
 → Closure
 ```
@@ -188,3 +189,30 @@ GLOBAL 本身應保持 deterministic。
 - effect 超出 owner capability
 - observer 嘗試 mutation
 - domain output contract invalid
+- persistent repair design 沒有 fresh matching-scope research admission receipt
+- architecture-affecting current platform/capability claim 沒有 current evidence
+
+## 11. Research-backed response egress
+
+Research admission 的 consumption point 位於 domain execution 與 closure 之間，不建立新 Owner、
+router 或平行 research gate。Output 會以下列類型表示：
+
+- `DIAGNOSIS_ONLY`
+- `PERSISTENT_REPAIR_DESIGN`
+- `CURRENT_EXTERNAL_FACT_CLAIM`
+- `CURRENT_PLATFORM_OR_CAPABILITY_CLAIM`
+- `MUTATION_REPORT`
+
+`REPAIR_DIRECTION / SHOULD_CHANGE / ARCHITECTURE_CHOICE / CANDIDATE_RULE /
+IMPLEMENTATION_PATTERN / PERSISTENT_MUTATION` 會 deterministic 地觸發
+`PERSISTENT_REPAIR_DESIGN`。Current/changeable 且 capability/architecture-sensitive 的 platform claim
+也會觸發 research requirement；不會對所有外部敘述一律要求搜尋。
+
+放行需要 `RESEARCH_ADMISSION_RECEIPT=PASS`，其 semantic key 與 scope 必須 exact match，
+時間必須位於 receipt 的有效期，並包含 current tool、current web 或 official-source
+evidence。「我以為」、「我猜」、「我覺得」、「應該」、「可能」、`probably`、`likely`、
+`inferred from memory` 與 `model knowledge alone` 不會被解析為 receipt。
+
+若 receipt 不存在、過期或 scope/semantic key 不合，egress 會移除原 repair design，
+只返回 `RUN_REQUIRED_RESEARCH / UNKNOWN / exact blocker`。目前 runtime 沒有 research
+tool adapter，因此該狀態 fail-close，不會以 model confidence 取代 research。

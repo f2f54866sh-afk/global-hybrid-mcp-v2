@@ -33,6 +33,25 @@ class EffectType(StrEnum):
     IMAGE_GENERATE = "image_generate"
 
 
+class OutputClassification(StrEnum):
+    DIAGNOSIS_ONLY = "DIAGNOSIS_ONLY"
+    PERSISTENT_REPAIR_DESIGN = "PERSISTENT_REPAIR_DESIGN"
+    CURRENT_EXTERNAL_FACT_CLAIM = "CURRENT_EXTERNAL_FACT_CLAIM"
+    CURRENT_PLATFORM_OR_CAPABILITY_CLAIM = "CURRENT_PLATFORM_OR_CAPABILITY_CLAIM"
+    MUTATION_REPORT = "MUTATION_REPORT"
+
+
+class ResearchAdmissionStatus(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+
+
+class ResearchEvidenceSource(StrEnum):
+    CURRENT_TOOL = "CURRENT_TOOL"
+    CURRENT_WEB = "CURRENT_WEB"
+    OFFICIAL_SOURCE = "OFFICIAL_SOURCE"
+
+
 class ContextOrigin(StrEnum):
     CURRENT_USER = "current_user"
     CURRENT_AUTHORITY = "current_authority"
@@ -105,11 +124,28 @@ class TaskContract(BaseModel):
     context: list[ContextItem]
 
 
+class ResearchEvidence(BaseModel):
+    source: ResearchEvidenceSource
+    reference: str = Field(min_length=1)
+
+
+class ResearchAdmissionReceipt(BaseModel):
+    status: ResearchAdmissionStatus
+    semantic_key: OutputClassification
+    scope: str = Field(min_length=1)
+    issued_at: datetime
+    valid_until: datetime
+    evidence: list[ResearchEvidence] = Field(min_length=1)
+
+
 class DomainResult(BaseModel):
     owner: Owner
     status: str
     output: Any = None
     evidence: dict[str, Any] = Field(default_factory=dict)
+    output_classifications: set[OutputClassification] = Field(default_factory=set)
+    research_scope: str | None = None
+    research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
 
 
 class TraceEvent(BaseModel):

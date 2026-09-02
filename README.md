@@ -59,6 +59,8 @@ MCP / HTTP Adapter
 - 監察官永遠只讀，沒有 mutation port。
 - history / archive / memory 不可自行進 live task context。
 - authority 必須能解析到 exact current revision；`UNSET` 直接 fail-close。
+- persistent repair design 與 architecture-sensitive current capability claim 必須在 response egress
+  前具有 fresh matching-scope research admission receipt；模型推測不是 evidence。
 - MCP server 是 adapter，不是治理中心。
 - 不把整段 conversation dump 給 MCP server；Host 應只送本次 TaskRequest。
 
