@@ -1,6 +1,6 @@
 # GLOBAL_WINDOW｜Current Canonical
 
-CURRENT_REVISION: `GLOBAL_CANONICAL_20260902_REPAIR_RESEARCH_EGRESS_MEDIATION`
+CURRENT_REVISION: `GLOBAL_CANONICAL_20260902_CAPABILITY_EVIDENCE_REPEAT_ACTION_ENFORCEMENT`
 STATUS: `CURRENT`
 
 ## 1. Constitutional role
@@ -226,6 +226,13 @@ Task reset 只清除上一個 task 的 **binding/authorization**，不代表對�
 - `TARGET_KIND / TARGET_ID / ACTION_INTENT` 任一未解析、與 proposed tool 不相容、或只是由 topical recency/最近 artifact 猜出來 → 不得編譯 receipt；固定 `BLOCK_TOOL_TARGET_MISMATCH | MATERIAL_ACTION_TARGET_AMBIGUITY`。
 - `EFFECT_AUTHORIZATION_PASS != TOOL_CALL_MEDIATED`。只有 runtime/tool boundary 能證明 side-effecting invocation 必須持有且原子消費 receipt，才可標 `EFFECT_ENFORCEMENT_CAPABILITY=HARD_ENFORCED`；若主要靠 Canonical/模型流程遵守，固定 `SOFT_GOVERNED`；無法證明則 `UNVERIFIED`。
 - 在 `SOFT_GOVERNED/UNVERIFIED` 狀態，不得宣稱治理層能物理攔截所有 hosted/built-in tool call；若出現未綁 receipt 的 side effect，標 `UNMEDIATED_SIDE_EFFECT`，該執行不得視為治理 PASS，並回到最小 root-cause repair。
+
+**Repeat side-effect admission｜相同失敗沒有新狀態，不構成新的執行理由：**
+- 這是既有 effect/action admission 在 side-effect invocation 前的 consumption check，不是 retry framework、hidden history database、新 owner 或 Observer veto。只消費 current task 明示的 `RetryContext = OPERATION_KEY / PRIOR_FAILURE_SIGNATURE / MATERIAL_CHANGE_REASONS / TRANSIENT_RETRY_EVIDENCE(optional)`；沒有 current prior-failure evidence 時，不得從 history/memory 猜曾失敗，正常繼續既有 effect flow。
+- 對 `EXTERNAL_WRITE / FILE_WRITE / IMAGE_GENERATE`，若 `SAME_OPERATION_IDENTITY + SAME_PRIOR_FAILURE_SIGNATURE + NO_MATERIAL_NEW_STATE + NO_VERIFIED_TRANSIENT_RETRY_EVIDENCE`，固定 `BLOCK → REPEAT_BLOCKED_NO_NEW_EVIDENCE`，且不得呼叫 domain side-effect implementation。
+- 可准入的 observable material new state 限於 `CODE_CHANGED / CONFIG_CHANGED / ENVIRONMENT_CHANGED / INPUT_CHANGED / DIAGNOSTIC_INSTRUMENTATION_CHANGED / DEPENDENCY_STATE_CHANGED / VERIFIED_TRANSIENT_RETRY_CONDITION`。只有已驗證 transient condition 才可使用最後一項。
+- 「再試一次／等等再跑／可能這次會好」、使用者再次要求、單純 elapsed time、previous attempt failed 或模型猜測都不是 material change；`READ_ONLY / EXTERNAL_READ` 不受此 gate 一般性阻擋。
+- current v2 `Dispatcher` path 由 `RepeatActionGate` 在 `domain.run` 前執行並留下 `repeat_action_gate PASS|DENY` trace；Execution 仍擁有真正 capability/effect implementation，GLOBAL 只做 admission。
 
 ### 4B.0.2 Repair-validation effect｜修的是邏輯，也可能必須靠新輸出才能證明真的修好
 `REPAIR_TARGET_KIND=LOGIC/CANONICAL` 不代表整個 repair episode 永遠禁止產生 domain artifact。若 corrective action 已完成，而有效性只能靠一個新的 matching-scope artifact／execution 才能觀察，GLOBAL 可在**不重用舊 receipt**的前提下，重新建立一個獨立、最小的 `VALIDATION_EFFECT_RECEIPT`。這個 receipt 的目的只能是驗證修正，不得偷換成新的 production/creative request。
@@ -748,6 +755,15 @@ GLOBAL closure check：
 
 `REPAIR_DESIGN_EGRESS != MODEL_DISCRETION`。
 `PERSISTENT_REPAIR_DESIGN + NO_FRESH_RESEARCH_RECEIPT → RUN_RESEARCH_OR_BLOCK, NOT GUESS`。
+
+**Current capability evidence admission｜正向與否定 capability 結論採同一 current-evidence 標準：**
+- 這是既有 §7B research/evidence admission 與 final-response egress 的同一 consumption contract，不建立第二套 research/evidence system。任何 `CURRENT_PLATFORM_CAPABILITY / CURRENT_TOOL_CAPABILITY` claim，不論是「可以／不可以、支援／不支援、有工具／沒有工具、可寫／不可寫、available／unavailable、supported／unsupported、can／cannot、has access／no access」，都必須有 fresh matching-scope current evidence；不以 architecture-affecting 為必要前提。
+- 合法 evidence 沿用 `CURRENT_CALLABLE_TOOL_RESULT / CURRENT_RUNTIME_READBACK / CURRENT_REPOSITORY_READBACK / CURRENT_OFFICIAL_DOCUMENTATION / CURRENT_WEB_SOURCE`。`CURRENT_USER_PROVIDED_OBSERVATION` 只能證明使用者直接觀察到的 current result，不得單獨推導平台不存在某能力。
+- `model memory / previous assumption / semantic plausibility / confidence wording` 一律不是 capability evidence。缺 current evidence 時固定 `UNKNOWN → PROBE/RESEARCH`；research callable 時進 `RUN_REQUIRED_RESEARCH`，不可取得 evidence 時回 `UNKNOWN_WITH_EXACT_BLOCKER`。禁止 `UNKNOWN → NOT_SUPPORTED`。
+- current v2 `Dispatcher` path 的 governed domain output 由 `ResponseEgressValidator` 消費本 contract；freshness、semantic key 或 scope 不符仍 fail-close。
+
+**Enforcement honesty：**
+`SPEC_RULE != RUNTIME_ENFORCEMENT != PLATFORM_WIDE_HARD_GUARANTEE`。本 revision 已證明且只可標 `CURRENT_V2_DISPATCH_PATH_ENFORCED`：capability evidence 經 `ResponseEgressValidator`，repeat side effect 經 `RepeatActionGate` 且在 `domain.run` 前。未經 v2 `Dispatcher` 的一般 ChatGPT conversation／平台回覆固定依可觀測能力標 `SOFT_GOVERNED / OUTSIDE_ENFORCED_PATH`；不得宣稱所有平台輸出已 hard non-bypassable enforcement。
 
 **使用者輸入先分類，不把一句話直接當實作規格：**
 - `GOAL / CONSTRAINT`：current user 明確想要的 outcome、literal、角色、禁止事項或長期偏好；在 safety/truth 不衝突時是 normative intent，外部研究不得把它「研究掉」。

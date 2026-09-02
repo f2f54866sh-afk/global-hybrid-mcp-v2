@@ -3,8 +3,8 @@
   "documents": {
     "GLOBAL": {
       "role": "LIVE_AUTHORITY",
-      "expected_revision": "GLOBAL_CANONICAL_20260902_REPAIR_RESEARCH_EGRESS_MEDIATION",
-      "content_sha256": "33bbc43d6f4293daa5d2f411b46808d3132ccc4db404f20474ca501a4df148ab",
+      "expected_revision": "GLOBAL_CANONICAL_20260902_CAPABILITY_EVIDENCE_REPEAT_ACTION_ENFORCEMENT",
+      "content_sha256": "ff576ebc27e3f9eaa00ae052884e12fceb0c2485fe1ab206476753056c2d10cb",
       "path": "GLOBAL_WINDOW_CANONICAL.md"
     },
     "SALES": {
