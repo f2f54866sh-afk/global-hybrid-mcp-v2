@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -28,7 +29,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 class AuthorityResolver:
-    SCHEMA_VERSION = 5
+    SCHEMA_VERSION = 6
     REQUIRED = (
         Owner.GLOBAL,
         Owner.SALES_HUMAN,
@@ -112,20 +113,28 @@ class AuthorityResolver:
                 raise AuthorityError(f"invalid authority document entry: {name}")
             self._validate_exact_names(
                 f"authority document fields for {name}",
-                {"role", "expected_revision", "path"},
+                {"role", "expected_revision", "content_sha256", "path"},
                 set(item),
             )
 
             raw_role = item.get("role")
             raw_revision = item.get("expected_revision")
+            raw_content_sha256 = item.get("content_sha256")
             raw_path = item.get("path")
             role = raw_role.strip() if isinstance(raw_role, str) else ""
             expected_revision = raw_revision.strip() if isinstance(raw_revision, str) else ""
+            content_sha256 = (
+                raw_content_sha256.strip() if isinstance(raw_content_sha256, str) else ""
+            )
             path = raw_path.strip() if isinstance(raw_path, str) else ""
             if role != expected_role.value:
                 raise AuthorityError(f"authority document role mismatch: {name}")
             if not expected_revision or expected_revision.upper() == "UNSET":
                 raise AuthorityError(f"authority document expected revision unset: {name}")
+            if not content_sha256 or content_sha256.upper() == "UNSET":
+                raise AuthorityError(f"authority document content SHA-256 unset: {name}")
+            if re.fullmatch(r"[0-9a-f]{64}", content_sha256) is None:
+                raise AuthorityError(f"authority document content SHA-256 invalid: {name}")
             if not path:
                 raise AuthorityError(f"authority document path unset: {name}")
 
@@ -136,18 +145,22 @@ class AuthorityResolver:
             if resolved_path.parent != registry_root:
                 raise AuthorityError(f"authority document path escapes repository root: {name}")
 
-            file_revision = self._validate_native_authority_file(
-                resolved_path,
-                name,
-                expected_role,
-                expected_owner,
-                expected_revision,
+            file_revision, native_owner, native_authority_role = (
+                self._validate_native_authority_file(
+                    resolved_path,
+                    name,
+                    expected_owner,
+                    expected_revision,
+                    content_sha256,
+                )
             )
             documents[name] = AuthorityDocument(
                 name=name,
                 role=expected_role,
                 revision=file_revision,
                 path=path,
+                native_owner=native_owner,
+                native_authority_role=native_authority_role,
             )
 
         raw_entries = raw.get("entries", {})
@@ -222,13 +235,21 @@ class AuthorityResolver:
         cls,
         path: Path,
         name: str,
-        expected_role: AuthorityDocumentRole,
         expected_owner: str,
         expected_revision: str,
-    ) -> str:
+        expected_content_sha256: str,
+    ) -> tuple[str, str | None, str | None]:
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise AuthorityError(f"authority document unreadable: {name}") from exc
+
+        actual_content_sha256 = hashlib.sha256(content).hexdigest()
+        if actual_content_sha256 != expected_content_sha256:
+            raise AuthorityError(f"authority document content SHA-256 mismatch: {name}")
+        try:
+            text = content.decode("utf-8")
+        except UnicodeError as exc:
             raise AuthorityError(f"authority document unreadable: {name}") from exc
 
         if not text.strip() or text.strip().upper() == "UNSET":
@@ -265,13 +286,10 @@ class AuthorityResolver:
         if status.upper() != "CURRENT":
             raise AuthorityError(f"native authority status is not CURRENT: {name}")
 
-        declared_role = metadata.get("AUTHORITY_ROLE")
-        if declared_role is not None and declared_role != expected_role.value:
-            raise AuthorityError(f"native authority role mismatch: {name}")
         declared_owner = metadata.get("OWNER")
         if declared_owner is not None and declared_owner != expected_owner:
             raise AuthorityError(f"native authority owner mismatch: {name}")
-        return revision
+        return revision, declared_owner, metadata.get("AUTHORITY_ROLE")
 
     @staticmethod
     def _unwrap_metadata_value(value: str, name: str, key: str) -> str:

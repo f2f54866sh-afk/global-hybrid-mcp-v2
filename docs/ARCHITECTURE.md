@@ -77,7 +77,7 @@ Authority 與 runtime code 分離。
 
 `authority/current/registry.json` 保存 document pointer 與 Owner binding：
 
-- document key / role / expected revision / exact root path
+- document key / runtime role / expected revision / content SHA-256 / exact root path
 - 既有 Owner 對 normative authority document 的唯一 binding
 - reference-only binding 與 shared canonical 的 partition binding
 
@@ -88,8 +88,12 @@ canonical 與 exact revision，卻分別以 `VISUAL_JUDGE` 與 `EXECUTION_LAB` p
 
 專案根目錄直接保存原生 Canonical，不加 wrapper、不重寫也不摘要。只有
 registry `expected_revision` 精確等於原生文件開頭的 `CURRENT_REVISION`，
-且原生 `STATUS` 為 `CURRENT` 時，該 document 才可被解析。原生文件若有
-`OWNER` 或 `AUTHORITY_ROLE`，resolver 也必須驗證其與 binding 相符。
+原生 `STATUS` 為 `CURRENT`，且 exact file bytes 符合 registry `content_sha256` 時，
+該 document 才可被解析。原生文件若有 `OWNER`，resolver 也必須驗證其與
+document binding 相符。
+
+Registry `role` 是 runtime/governance classification；原生 `AUTHORITY_ROLE` 是 domain
+semantic metadata。兩者不是同一 type，resolver 不得比較其字串。
 
 runtime 不掃 archive 找「看起來最新」的檔案。
 

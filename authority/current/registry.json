@@ -1,29 +1,34 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "documents": {
     "GLOBAL": {
       "role": "LIVE_AUTHORITY",
       "expected_revision": "UNSET",
+      "content_sha256": "UNSET",
       "path": "GLOBAL_WINDOW_CANONICAL.md"
     },
     "SALES": {
       "role": "LIVE_AUTHORITY",
       "expected_revision": "UNSET",
+      "content_sha256": "UNSET",
       "path": "SALES_CANONICAL.md"
     },
     "SALES_HUMAN_REFERENCE": {
       "role": "REFERENCE_ONLY",
       "expected_revision": "UNSET",
+      "content_sha256": "UNSET",
       "path": "SALES_HUMAN_CANONICAL.md"
     },
     "LIBRARY": {
       "role": "LIVE_AUTHORITY",
       "expected_revision": "UNSET",
+      "content_sha256": "UNSET",
       "path": "VEHICLE_KNOWLEDGE_BASE.md"
     },
     "REAL_CAR": {
       "role": "CANONICAL",
       "expected_revision": "UNSET",
+      "content_sha256": "UNSET",
       "path": "REAL_CAR_統一正式指令.md"
     }
   },

@@ -71,6 +71,8 @@ class AuthorityDocument(BaseModel):
     role: AuthorityDocumentRole
     revision: str
     path: str
+    native_owner: str | None = None
+    native_authority_role: str | None = None
 
 
 class AuthorityEntry(BaseModel):
