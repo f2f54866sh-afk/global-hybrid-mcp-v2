@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -150,6 +151,29 @@ def test_ready_fails_closed_on_revision_mismatch(tmp_path):
 
     assert response.status_code == 503
     assert response.json()["failure_code"] == "AUTHORITY_ACTIVATION_INVALID"
+
+
+def test_ready_logs_chained_authority_failure_without_changing_response(tmp_path, caplog):
+    repo_root = _copy_authority_repo(tmp_path)
+    activation_path = repo_root / "authority" / "current" / "activation.json"
+    activation = json.loads(activation_path.read_text(encoding="utf-8"))
+    activation["key_id"] = "unexpected-key"
+    activation_path.write_text(json.dumps(activation), encoding="utf-8")
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="global_hybrid_v2.adapters.mcp_server",
+    ):
+        with _http_client(repo_root) as client:
+            response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "ready": False,
+        "failure_code": "AUTHORITY_ACTIVATION_INVALID",
+    }
+    assert "Authority readiness check failed" in caplog.text
+    assert "activation key id mismatch" in caplog.text
 
 
 def test_dispatch_fails_closed_when_authority_is_broken(tmp_path):

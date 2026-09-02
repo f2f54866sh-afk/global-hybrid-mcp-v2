@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from mcp.server.mcpserver import MCPServer
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -7,6 +9,8 @@ from starlette.responses import JSONResponse
 from global_hybrid_v2.application import Application, create_application
 from global_hybrid_v2.contracts import TaskRequest
 from global_hybrid_v2.governance.authority import AUTHORITY_ACTIVATION_INVALID, AuthorityError
+
+logger = logging.getLogger(__name__)
 
 
 def create_mcp_server(application: Application) -> MCPServer:
@@ -27,6 +31,7 @@ def create_mcp_server(application: Application) -> MCPServer:
         try:
             snapshot = application.authority.resolve()
         except AuthorityError as exc:
+            logger.exception("Authority readiness check failed")
             failure_code = (
                 AUTHORITY_ACTIVATION_INVALID
                 if str(exc) == AUTHORITY_ACTIVATION_INVALID
