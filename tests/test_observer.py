@@ -4,7 +4,9 @@ from global_hybrid_v2.contracts import TraceEvent
 from global_hybrid_v2.governance.egress import (
     ASSUMPTION_USED_AS_EVIDENCE,
     CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE,
+    NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE,
     RESEARCH_GATE_BYPASS,
+    RETRIEVAL_FALSE_NEGATIVE,
 )
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 
@@ -31,6 +33,8 @@ def _egress_event(*, finding_codes: list[str], **metadata: object) -> TraceEvent
         ASSUMPTION_USED_AS_EVIDENCE,
         CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE,
         RESEARCH_GATE_BYPASS,
+        NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE,
+        RETRIEVAL_FALSE_NEGATIVE,
     ],
 )
 def test_witness_recognizes_evidence_admission_regressions(code):

@@ -12,6 +12,8 @@ from starlette.testclient import TestClient
 
 from global_hybrid_v2.adapters.mcp_server import create_mcp_server
 from global_hybrid_v2.application import create_application
+from global_hybrid_v2.contracts import Owner
+from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.runtime.deployment import read_runtime_identity
 from global_hybrid_v2.settings import Settings
 from tests._authority_signing import TEST_KEY_ID, TEST_PUBLIC_KEY, activate_registry
@@ -101,6 +103,17 @@ def test_mcp_in_memory_client_lists_tools_and_dispatches_through_runtime(tmp_pat
     payload = json.loads(result.content[0].text)
     assert payload["status"] == "BLOCKED_NOT_CONFIGURED"
     assert payload["owner"] == "GLOBAL"
+
+
+def test_all_owner_domains_remain_explicitly_not_configured(tmp_path):
+    repo_root = _copy_authority_repo(tmp_path)
+    application = create_application(repo_root=repo_root, settings=_test_settings())
+
+    assert set(application.dispatcher.domains) == set(Owner)
+    assert all(
+        isinstance(domain, NotConfiguredDomain)
+        for domain in application.dispatcher.domains.values()
+    )
 
 
 def test_ready_resolves_current_authority(tmp_path):

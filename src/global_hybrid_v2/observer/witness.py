@@ -4,7 +4,9 @@ from global_hybrid_v2.contracts import TraceEvent, WitnessFinding
 from global_hybrid_v2.governance.egress import (
     ASSUMPTION_USED_AS_EVIDENCE,
     CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE,
+    NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE,
     RESEARCH_GATE_BYPASS,
+    RETRIEVAL_FALSE_NEGATIVE,
 )
 
 
@@ -52,11 +54,19 @@ class ReadOnlyWitness:
                 "Current capability claim lacked current evidence."
             ),
             RESEARCH_GATE_BYPASS: "Required research admission was bypassed.",
+            NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE: (
+                "Prior-context absence was claimed without verified absence."
+            ),
+            RETRIEVAL_FALSE_NEGATIVE: (
+                "Matching prior content was found after an earlier negative retrieval claim."
+            ),
         }
         for code in (
             ASSUMPTION_USED_AS_EVIDENCE,
             CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE,
             RESEARCH_GATE_BYPASS,
+            NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE,
+            RETRIEVAL_FALSE_NEGATIVE,
         ):
             if code in finding_codes:
                 return WitnessFinding(

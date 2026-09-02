@@ -44,7 +44,8 @@ class Dispatcher:
         snapshot = self.authority.resolve()
 
         owner = self.router.route(request.intent)
-        safe_context = self.firewall.filter(request.context, snapshot)
+        context_admission = self.firewall.evaluate(request.context, snapshot)
+        safe_context = context_admission.admitted
 
         contract = TaskContract(
             request_text=request.request_text,
@@ -53,6 +54,7 @@ class Dispatcher:
             effects=request.effects,
             authority_snapshot_id=snapshot.snapshot_id,
             context=safe_context,
+            context_admission_receipts=context_admission.receipts,
             retry_context=request.retry_context,
         )
 
@@ -61,7 +63,13 @@ class Dispatcher:
             stage="firewall",
             decision="PASS",
             owner=owner,
-            metadata={"accepted_context": len(safe_context), "received_context": len(request.context)},
+            metadata={
+                "accepted_context": len(safe_context),
+                "received_context": len(request.context),
+                "admission_receipts": [
+                    receipt.model_dump(mode="json") for receipt in context_admission.receipts
+                ],
+            },
         )
 
         try:

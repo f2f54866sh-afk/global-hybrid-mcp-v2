@@ -12,6 +12,8 @@ from global_hybrid_v2.contracts import (
     ResearchAdmissionStatus,
     ResearchEvidence,
     ResearchEvidenceSource,
+    RetrievalReceipt,
+    RetrievalState,
 )
 
 RUN_REQUIRED_RESEARCH = "RUN_REQUIRED_RESEARCH"
@@ -22,6 +24,10 @@ CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE = (
     "CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE"
 )
 RESEARCH_GATE_BYPASS = "RESEARCH_GATE_BYPASS"
+NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE = (
+    "NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE"
+)
+RETRIEVAL_FALSE_NEGATIVE = "RETRIEVAL_FALSE_NEGATIVE"
 
 
 class ResponseEgressValidator:
@@ -75,6 +81,14 @@ class ResponseEgressValidator:
         r"\bno (?:available )?tool\b|\btool (?:is )?unavailable\b|\bno access\b)",
         re.I,
     )
+    PRIOR_CONTEXT_ABSENCE_PATTERN = re.compile(
+        r"(找不到|沒有找到|以前沒有|你沒說過|沒有這條規則|沒有相關紀錄|"
+        r"不存在|使用者從未說過|沒有先前指令|"
+        r"\bi couldn['’]?t find\b|\bnot found\b|\bno prior rule\b|"
+        r"\bno previous instruction\b|\bno record\b|\bdoes not exist\b|"
+        r"\buser never said\b|\bno prior instruction\b)",
+        re.I,
+    )
 
     def __init__(
         self,
@@ -86,7 +100,13 @@ class ResponseEgressValidator:
         self.research_available = research_available
 
     def validate(self, result: DomainResult) -> DomainResult:
+        result = self._record_retrieval_false_negative(result)
         classifications = self.classify(result)
+        retrieval_decision = self._validate_prior_context_absence(result, classifications)
+        if retrieval_decision is not None:
+            if retrieval_decision.evidence.get("negative_retrieval_egress_check") == "FAIL":
+                return retrieval_decision
+            result = retrieval_decision
         required = self._required_semantic_keys(classifications)
         if not required:
             return result.model_copy(
@@ -135,6 +155,7 @@ class ResponseEgressValidator:
                 "required_semantic_keys": [item.value for item in missing],
             },
             evidence={
+                **result.evidence,
                 "egress_decision": "BLOCK",
                 "evidence_admission_check": "FAIL",
                 "reason": blocker,
@@ -150,6 +171,9 @@ class ResponseEgressValidator:
             output_classifications=classifications,
             research_scope=result.research_scope,
             research_admission_receipts=result.research_admission_receipts,
+            retrieval_key=result.retrieval_key,
+            retrieval_receipts=result.retrieval_receipts,
+            retrieval_false_negative_evidence=result.retrieval_false_negative_evidence,
         )
 
     def classify(self, result: DomainResult) -> set[OutputClassification]:
@@ -171,9 +195,124 @@ class ResponseEgressValidator:
         if current_claim and (assumption_language or architecture_language):
             classifications.add(OutputClassification.ARCHITECTURE_AFFECTING_ASSUMPTION)
 
+        if self.PRIOR_CONTEXT_ABSENCE_PATTERN.search(flattened) is not None:
+            classifications.add(OutputClassification.PRIOR_CONTEXT_ABSENCE_CLAIM)
+
         if not classifications:
             classifications.add(OutputClassification.DIAGNOSIS_ONLY)
         return classifications
+
+    def _validate_prior_context_absence(
+        self,
+        result: DomainResult,
+        classifications: set[OutputClassification],
+    ) -> DomainResult | None:
+        if OutputClassification.PRIOR_CONTEXT_ABSENCE_CLAIM not in classifications:
+            return None
+
+        retrieval_key = (result.retrieval_key or "").strip()
+        matching = [
+            receipt
+            for receipt in result.retrieval_receipts
+            if retrieval_key and receipt.retrieval_key == retrieval_key
+        ]
+        if any(receipt.state is RetrievalState.VERIFIED_ABSENT for receipt in matching):
+            return result.model_copy(
+                update={
+                    "evidence": {
+                        **result.evidence,
+                        "negative_retrieval_egress_check": "PASS",
+                        "retrieval_state": RetrievalState.VERIFIED_ABSENT.value,
+                    },
+                    "output_classifications": classifications,
+                }
+            )
+
+        retrieval_state = self._retrieval_state(matching)
+        blocker = (
+            "prior-context absence claim requires a matching VERIFIED_ABSENT retrieval "
+            f"receipt; actual retrieval state: {retrieval_state}"
+        )
+        finding_codes = self._merge_finding_codes(
+            result.evidence,
+            [NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE],
+        )
+        return DomainResult(
+            owner=result.owner,
+            status=UNKNOWN_WITH_EXACT_BLOCKER,
+            output={
+                "state": UNKNOWN_WITH_EXACT_BLOCKER,
+                "result": "UNKNOWN",
+                "blocker": blocker,
+                "retrieval_state": retrieval_state,
+            },
+            evidence={
+                **result.evidence,
+                "egress_decision": "BLOCK",
+                "negative_retrieval_egress_check": "FAIL",
+                "reason": blocker,
+                "retrieval_state": retrieval_state,
+                "finding_codes": finding_codes,
+            },
+            output_classifications=classifications,
+            research_scope=result.research_scope,
+            research_admission_receipts=result.research_admission_receipts,
+            retrieval_key=result.retrieval_key,
+            retrieval_receipts=result.retrieval_receipts,
+            retrieval_false_negative_evidence=result.retrieval_false_negative_evidence,
+        )
+
+    @staticmethod
+    def _retrieval_state(receipts: list[RetrievalReceipt]) -> str:
+        if not receipts:
+            return "NO_RECEIPT"
+        states = {receipt.state for receipt in receipts}
+        for state in (
+            RetrievalState.SOURCE_INACCESSIBLE,
+            RetrievalState.COVERAGE_INCOMPLETE,
+            RetrievalState.NOT_RETRIEVED,
+            RetrievalState.FOUND,
+        ):
+            if state in states:
+                return state.value
+        return "NO_RECEIPT"
+
+    @classmethod
+    def _record_retrieval_false_negative(cls, result: DomainResult) -> DomainResult:
+        confirmed = [
+            item
+            for item in result.retrieval_false_negative_evidence
+            if item.prior_negative_claim and item.later_matching_content_found
+        ]
+        if not confirmed:
+            return result
+        return result.model_copy(
+            update={
+                "evidence": {
+                    **result.evidence,
+                    "retrieval_false_negative": [
+                        {
+                            "retrieval_key": item.retrieval_key,
+                            "reason": item.reason.value,
+                        }
+                        for item in confirmed
+                    ],
+                    "finding_codes": cls._merge_finding_codes(
+                        result.evidence,
+                        [RETRIEVAL_FALSE_NEGATIVE],
+                    ),
+                }
+            }
+        )
+
+    @staticmethod
+    def _merge_finding_codes(evidence: dict[str, Any], additional: list[str]) -> list[str]:
+        existing = evidence.get("finding_codes", [])
+        codes = list(existing) if isinstance(existing, list) else []
+        for code in additional:
+            if code not in codes:
+                codes.append(code)
+        return codes
 
     @classmethod
     def _required_semantic_keys(
@@ -254,12 +393,12 @@ class ResponseEgressValidator:
         result: DomainResult,
         missing: list[OutputClassification],
     ) -> list[str]:
-        codes = [RESEARCH_GATE_BYPASS]
+        additional = [RESEARCH_GATE_BYPASS]
         if cls._contains_non_evidence_language(result):
-            codes.insert(0, ASSUMPTION_USED_AS_EVIDENCE)
+            additional.insert(0, ASSUMPTION_USED_AS_EVIDENCE)
         if set(missing) & cls.CAPABILITY_CLAIMS:
-            codes.insert(0, CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE)
-        return codes
+            additional.insert(0, CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE)
+        return cls._merge_finding_codes(result.evidence, additional)
 
     @staticmethod
     def _blocker(
