@@ -1,6 +1,6 @@
 # SALES｜正式銷售 Canonical
 
-CURRENT_REVISION: `SALES_CANONICAL_20260901_SINGLE_LIVE_RUNNER_CONTRACT_NORMALIZATION`
+CURRENT_REVISION: `SALES_CANONICAL_20260903_MEDIA_ACTIVATION_OUTCOME_CALIBRATION`
 OWNER: `SALES`
 STATUS: `CURRENT`
 HUMAN_REFERENCE: `/SALES_HUMAN_CANONICAL.md`
@@ -188,6 +188,36 @@ Campaign 結構先服從 current task contract：
 - 把公開 asking price 說成成交行情；
 - 把 listing 下架或同車重刊自行解讀成 SOLD/多筆獨立 evidence；這類市場 truth 以 Library packet 為準；
 - 在 verified current inventory packet 尚未取得時先做依賴該資料的最終車款排序。
+
+### 8.1D.1 Media activation / audience learning｜客群理解不等於把人口條件硬鎖進廣告
+`TARGET_BUYER` 是 Sales 對「誰可能因這台車的用途／預算／取捨而有購買理由」的市場假設；`MEDIA_TARGETING` 是把該假設映射到當前廣告平台可用控制面的 **task-local distribution experiment**。兩者不得畫等號。
+
+固定：
+`PAID_AD_ELIGIBILITY / CAMPAIGN_RESEARCH_NEED → TARGET_BUYER_HYPOTHESIS → CURRENT_PLATFORM_CAPABILITY + AUDIENCE/MARKET EVIDENCE → MEDIA_ACTIVATION_HYPOTHESIS → CONTROLLED CAMPAIGN CELL → OBSERVED OUTCOME → CALIBRATE_BOUNDED_PRIOR`。
+
+Owner：
+- `SALES` 決定 campaign objective、受眾假設、投放範圍/寬度、budget/test cell、retargeting/exclusion 與 outcome interpretation。
+- `LIBRARY` 提供 current platform capability/restriction、vehicle/model audience evidence、區域需求／供給、price-band/use-case/competitor evidence 與可驗證 campaign/first-party資料；Library 不決定 targeting winner。
+- `GLOBAL` 只治理授權、資料/介面、effect 與 attribution trace；不得替 Sales 選 age/geo。
+- `VISUAL/Execution` 只接收與 creative 有關的 bounded acquisition semantics；不得因 targeting hypothesis 改寫自己的 perceptual/capability authority。
+
+`MEDIA_ACTIVATION_PLAN` 採 consumer-defined minimum，可用欄位：
+`CAMPAIGN_ID / EXPERIMENT_ID / VEHICLE_ID / CAMPAIGN_OBJECTIVE / TARGET_BUYER_HYPOTHESIS / AGE_HYPOTHESIS / GEO_HYPOTHESIS / AUDIENCE_BREADTH / MANUAL_TARGETING_SIGNALS / PLATFORM_EXPANSION_ALLOWED / RETARGETING_STATE / CUSTOM_AUDIENCE_STATE / LOOKALIKE_STATE / EXCLUSION_OR_SUPPRESSION / BUDGET_TEST_CELL / CREATIVE_VARIANT_ID / COPY_VARIANT_ID / POSITIONING_ID / EVIDENCE_BASIS / UNCERTAINTIES / TEST_STOP_CONDITION`。
+不要求每次填滿；只帶本次 decision/experiment 必要欄位。
+
+Audience / demographic 規則：
+- `TARGET_BUYER != AGE_TARGET != GEO_TARGET`。年齡、地區、性別／興趣等若缺直接 evidence，只能標 `AUDIENCE_ASSUMPTION`，不得包裝成已知客群。
+- 禁止把車型刻板印象永久化，例如「家庭車=女性」「性能車=年輕男性」「某車固定 30–45 歲」。人口條件只能是 `HYPOTHESIS + EVIDENCE_BASIS + CONFIDENCE/UNCERTAINTY + TRANSFER_LIMIT`。
+- 系統不得預設 `越窄越精準`，也不得預設 `Broad/Advantage+ 永遠最好`。依 current platform capability、objective、樣本量與 first-party signal，在 `BROAD / GUIDED_BROAD / MANUAL_NARROW / RETARGETING / CUSTOM_OR_LOOKALIKE` 中建立可比較候選；平台可用控制面必須 fresh/current。
+- GEO 至少可考慮 `DEALERSHIP_LOCATION / REALISTIC_TRAVEL_DISTANCE / VEHICLE_PRICE_BAND / VEHICLE_SCARCITY / COMPARABLE_SUPPLY_DENSITY / PRIOR_INQUIRY_GEO / SHOW_UP_OR_SOLD_GEO / ACCESS_FRICTION`。林口車商不等於永遠只投林口；稀有/高價車可有較廣 hypothesis，高供給低價代步車可偏 local，但都必須可被 outcome 推翻。
+- Custom/Lookalike/retargeting 等 first-party audience 只有在 current task 有合法且可用資料時才啟用；不存在時不得假裝有 CRM signal。
+
+Outcome / attribution：
+- 每個可學習 campaign cell 儘量回指 `CAMPAIGN_ID + AUDIENCE_CELL + VEHICLE + CREATIVE_VARIANT_ID + COPY_VARIANT_ID + POSITIONING_ID + PERIOD + SPEND + IMPRESSIONS + MESSAGE_START + QUALIFIED_CONVERSATION + APPOINTMENT + SHOW_UP + SOLD + CONTAMINATION_FLAGS`。
+- `HIGH_CTR != HIGH_SALES_VALUE`、`LOW_CPM != GOOD_TARGETING`、`MESSAGE_VOLUME != QUALIFIED_DEMAND`、`CORRELATION != CAUSAL_CREDIT`。
+- 若 creative、copy、price、audience、budget 同時改變，結果只能標 contamination/association；不得把所有 uplift 歸功於 targeting。
+- 實際 `QUALIFIED_CONVERSATION / APPOINTMENT / SHOW_UP / SOLD` 可反過來縮小、擴大或推翻 age/geo/audience hypothesis；單一 campaign 或小樣本不得升成永久人口規則。
+- paid execution 本身仍需 current effect/financial authorization；本節允許的是 Sales decision/research semantics，不因分析出 targeting plan 就自動取得花費授權。
 
 ### 8.1E Acquisition entry gate｜先讓對的人停下來，再進入銷售互動
 FB 商店、FB 輪播、廣告 Hero、影片封面／開頭等 acquisition surface 的第一關，是**商品市場精準度 + 文案入口 + 視覺入口**是否共同成立。使用者先前以「文案跟圖片一樣重要」表達的是同一層級的 acquisition 要素，不代表把完整 Sales/Human 銷售技巧提前混進出圖或文案。
