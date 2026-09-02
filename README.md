@@ -65,7 +65,8 @@ MCP / HTTP Adapter
 ## 啟動前
 
 `authority/current/registry.json` 目前故意是 `UNSET`。
-請把真正 current authority 的 exact revision / path 寫入後才允許 live run。
+請把真正 current authority documents 的 exact revision / path 與 Owner bindings 準備完成後，
+才允許 live run。
 
 ## 本機
 

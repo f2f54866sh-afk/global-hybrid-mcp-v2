@@ -1,25 +1,67 @@
 {
-  "schema_version": 1,
-  "entries": {
+  "schema_version": 2,
+  "documents": {
     "GLOBAL": {
+      "role": "LIVE_AUTHORITY",
       "revision": "UNSET",
       "path": "authority/current/GLOBAL.md"
     },
+    "SALES": {
+      "role": "LIVE_AUTHORITY",
+      "revision": "UNSET",
+      "path": "authority/current/SALES.md"
+    },
     "SALES_HUMAN": {
+      "role": "REFERENCE_ONLY",
       "revision": "UNSET",
       "path": "authority/current/SALES_HUMAN.md"
     },
     "LIBRARY_FACT": {
+      "role": "LIVE_AUTHORITY",
       "revision": "UNSET",
       "path": "authority/current/LIBRARY_FACT.md"
     },
     "VISUAL": {
+      "role": "LIVE_AUTHORITY",
       "revision": "UNSET",
       "path": "authority/current/VISUAL.md"
     },
     "EXECUTION": {
+      "role": "LIVE_AUTHORITY",
       "revision": "UNSET",
       "path": "authority/current/EXECUTION.md"
+    },
+    "REAL_CAR": {
+      "role": "CANONICAL",
+      "revision": "UNSET",
+      "path": "authority/current/REAL_CAR.md"
+    }
+  },
+  "entries": {
+    "GLOBAL": {
+      "live_authority": "GLOBAL",
+      "references": [],
+      "canonicals": []
+    },
+    "SALES_HUMAN": {
+      "live_authority": "SALES",
+      "references": ["SALES_HUMAN"],
+      "canonicals": []
+    },
+    "LIBRARY_FACT": {
+      "live_authority": "LIBRARY_FACT",
+      "references": [],
+      "canonicals": []
+    },
+    "VISUAL": {
+      "live_authority": "VISUAL",
+      "references": [],
+      "canonicals": ["REAL_CAR"]
+    },
+    "EXECUTION": {
+      "live_authority": "EXECUTION",
+      "references": [],
+      "canonicals": ["REAL_CAR"]
     }
   }
 }

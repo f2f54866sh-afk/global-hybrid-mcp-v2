@@ -1,4 +1,6 @@
 from global_hybrid_v2.contracts import (
+    AuthorityDocument,
+    AuthorityDocumentRole,
     AuthorityEntry,
     AuthoritySnapshot,
     ContextItem,
@@ -11,7 +13,15 @@ from global_hybrid_v2.governance.firewall import TaskFirewall
 def _snapshot():
     return AuthoritySnapshot(
         entries={
-            owner: AuthorityEntry(owner=owner, revision=f"{owner.value}-1", path=f"{owner.value}.md")
+            owner: AuthorityEntry(
+                owner=owner,
+                live_authority=AuthorityDocument(
+                    name=owner.value,
+                    role=AuthorityDocumentRole.LIVE_AUTHORITY,
+                    revision=f"{owner.value}-1",
+                    path=f"{owner.value}.md",
+                ),
+            )
             for owner in Owner
         }
     )

@@ -75,11 +75,14 @@ TaskRequest
 
 Authority 與 runtime code 分離。
 
-`authority/current/registry.json` 只保存 pointer：
+`authority/current/registry.json` 保存 document pointer 與 Owner binding：
 
-- owner
-- exact revision
-- current file path
+- document name / role / exact revision / current file path
+- 既有 Owner 對 live authority document 的唯一 binding
+- reference-only 與 shared canonical binding
+
+Document binding 不建立新 Owner，也不合併 Owner 權限。reference-only document 不可成為 live
+authority；共享 canonical 只共享 canonical state，不共享 domain authority 或 effect capability。
 
 runtime 不掃 archive 找「看起來最新」的檔案。
 

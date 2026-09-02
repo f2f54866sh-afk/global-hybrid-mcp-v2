@@ -43,6 +43,12 @@ class ContextOrigin(StrEnum):
     UNKNOWN = "unknown"
 
 
+class AuthorityDocumentRole(StrEnum):
+    LIVE_AUTHORITY = "LIVE_AUTHORITY"
+    REFERENCE_ONLY = "REFERENCE_ONLY"
+    CANONICAL = "CANONICAL"
+
+
 class ContextItem(BaseModel):
     id: str
     origin: ContextOrigin
@@ -60,10 +66,26 @@ class TaskRequest(BaseModel):
     context: list[ContextItem] = Field(default_factory=list)
 
 
-class AuthorityEntry(BaseModel):
-    owner: Owner
+class AuthorityDocument(BaseModel):
+    name: str
+    role: AuthorityDocumentRole
     revision: str
     path: str
+
+
+class AuthorityEntry(BaseModel):
+    owner: Owner
+    live_authority: AuthorityDocument
+    references: list[AuthorityDocument] = Field(default_factory=list)
+    canonicals: list[AuthorityDocument] = Field(default_factory=list)
+
+    @property
+    def revision(self) -> str:
+        return self.live_authority.revision
+
+    @property
+    def path(self) -> str:
+        return self.live_authority.path
 
 
 class AuthoritySnapshot(BaseModel):
