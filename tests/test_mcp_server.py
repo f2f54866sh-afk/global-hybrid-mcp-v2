@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import shutil
@@ -174,6 +176,43 @@ def test_ready_logs_chained_authority_failure_without_changing_response(tmp_path
     }
     assert "Authority readiness check failed" in caplog.text
     assert "activation key id mismatch" in caplog.text
+
+
+def test_ready_logs_safe_authority_fingerprints_for_invalid_signature(tmp_path, caplog):
+    repo_root = _copy_authority_repo(tmp_path)
+    registry_path = repo_root / "authority" / "current" / "registry.json"
+    activation_path = registry_path.parent / "activation.json"
+    activation = json.loads(activation_path.read_text(encoding="utf-8"))
+    raw_public_key = base64.b64decode(TEST_PUBLIC_KEY, validate=True)
+    raw_signature = base64.b64decode(activation["signature"], validate=True)
+
+    _mutate_registry(repo_root, "GLOBAL", "content_sha256", "0" * 64)
+    expected_registry_fingerprint = hashlib.sha256(registry_path.read_bytes()).hexdigest()
+    expected_public_key_fingerprint = hashlib.sha256(raw_public_key).hexdigest()
+    expected_signature_fingerprint = hashlib.sha256(raw_signature).hexdigest()
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="global_hybrid_v2.adapters.mcp_server",
+    ):
+        with _http_client(repo_root) as client:
+            response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "ready": False,
+        "failure_code": "AUTHORITY_ACTIVATION_INVALID",
+    }
+    assert f"registry_raw_sha256={expected_registry_fingerprint}" in caplog.text
+    assert f"trusted_public_key_raw_sha256={expected_public_key_fingerprint}" in caplog.text
+    assert f"activation_signature_raw_sha256={expected_signature_fingerprint}" in caplog.text
+    assert f"trusted_key_id='{TEST_KEY_ID}'" in caplog.text
+    assert f"activation_key_id='{TEST_KEY_ID}'" in caplog.text
+    assert f"registry_path={str(registry_path)!r}" in caplog.text
+    assert TEST_PUBLIC_KEY not in caplog.text
+    assert activation["signature"] not in caplog.text
+    assert raw_public_key.hex() not in caplog.text
+    assert raw_signature.hex() not in caplog.text
 
 
 def test_dispatch_fails_closed_when_authority_is_broken(tmp_path):
