@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from global_hybrid_v2.adapters.openai_research import configured_research_port
 from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
@@ -10,7 +11,6 @@ from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.research import (
     ResearchExecutor,
     ResearchPort,
-    UnavailableResearchPort,
 )
 from global_hybrid_v2.runtime.deployment import RuntimeIdentity, read_runtime_identity
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
@@ -53,7 +53,7 @@ def create_application(
         trusted_public_key=runtime_settings.authority_trusted_public_key,
     )
     runtime_trace = trace or TraceBus()
-    research_port = research or UnavailableResearchPort()
+    research_port = research if research is not None else configured_research_port(runtime_settings)
     research_executor = ResearchExecutor(research_port)
     domains: dict[Owner, DomainPort] = {
         owner: NotConfiguredDomain(owner)

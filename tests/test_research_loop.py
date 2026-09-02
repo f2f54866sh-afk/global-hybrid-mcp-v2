@@ -6,8 +6,10 @@ from pathlib import Path
 
 from mcp import Client
 from mcp.types import TextContent
+from pydantic import SecretStr
 
 from global_hybrid_v2.adapters.mcp_server import create_mcp_server
+from global_hybrid_v2.adapters.openai_research import OpenAIWebResearchPort
 from global_hybrid_v2.application import Application, create_application
 from global_hybrid_v2.contracts import (
     AuthorityDocument,
@@ -470,3 +472,78 @@ def test_observer_only_observes_research_trace():
     assert result.status == "READY"
     assert not {"write", "execute", "promote"}.intersection(dir(witness))
     assert len(provider.requests) == 1
+
+
+class _OpenAIResponses:
+    def __init__(self, *, secret_error: str | None = None):
+        self.secret_error = secret_error
+
+    def create(self, **_kwargs):
+        if self.secret_error is not None:
+            raise RuntimeError(self.secret_error)
+        source = "https://example.com/current-platform-capability"
+        return {
+            "status": "completed",
+            "output_text": json.dumps(
+                {
+                    "evidence": [
+                        {
+                            "semantic_key": "CURRENT_PLATFORM_CAPABILITY",
+                            "observed_result": "The current capability is source-verified.",
+                            "source_urls": [source],
+                        }
+                    ],
+                    "unresolved_semantic_keys": [],
+                }
+            ),
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "action": {
+                        "type": "search",
+                        "query": "current platform capability",
+                        "sources": [{"type": "url", "url": source}],
+                    },
+                }
+            ],
+        }
+
+
+class _OpenAIClient:
+    def __init__(self, *, secret_error: str | None = None):
+        self.responses = _OpenAIResponses(secret_error=secret_error)
+
+
+def test_openai_provider_runs_through_existing_auto_research_loop():
+    domain = _CapabilityDomain()
+    provider = OpenAIWebResearchPort(
+        model="gpt-test",
+        api_key=SecretStr("sk-test-integration"),
+        client=_OpenAIClient(),
+        clock=lambda: NOW,
+    )
+
+    result = _dispatcher(domain, provider).dispatch(_request())
+
+    assert result.status == "READY"
+    assert len(domain.contracts) == 2
+    assert result.research_execution_receipts[0].provider == "OPENAI_WEB"
+
+
+def test_provider_exception_secret_does_not_enter_trace_or_receipt(capsys):
+    secret = "sk-provider-error-secret"
+    domain = _CapabilityDomain()
+    provider = OpenAIWebResearchPort(
+        model="gpt-test",
+        api_key=SecretStr(secret),
+        client=_OpenAIClient(secret_error=f"upstream rejected {secret}"),
+        clock=lambda: NOW,
+    )
+
+    result = _dispatcher(domain, provider).dispatch(_request())
+    trace_output = capsys.readouterr().out
+
+    assert result.status == UNKNOWN_WITH_EXACT_BLOCKER
+    assert result.research_execution_receipts
+    assert secret not in trace_output
+    assert secret not in result.model_dump_json()

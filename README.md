@@ -81,10 +81,21 @@ canonical，並透過不同 authority partition 維持 Owner 與 effect 權限�
 同一 scope/semantic keys 最多兩次；第二次沒有 material query/source/provider/strategy
 變更時 fail-close，不會重跑相同研究。
 
-Research provider 是工具 port，不是 Owner，也不能修改 authority。目前 production
-composition 明確使用 `UnavailableResearchPort`：production install 未安裝 `ai` extra，且沒有
-API key 或 provider/model 設定，因此不假裝可執行 web research。Callable provider 只可透過
-明確配置／注入接入；deterministic fake provider 僅供 tests 驗證完整 loop。
+Research provider 是工具 port，不是 Owner，也不能修改 authority。Production composition
+支援既有 `ResearchPort` 的 `OpenAIWebResearchPort`，透過 Responses API 的 built-in
+`web_search` 執行 bounded research，並只從 `web_search_call.action.sources` 接受來源 URL。
+API 完成不等於 coverage complete；每個 required semantic key 都必須具有 matching source-backed
+evidence，否則仍 fail-close。Deterministic fake provider 僅供 tests 驗證完整 loop。
+
+Production image 的正式 runtime dependency 包含 `openai>=2.25,<3`。Provider 只有在下列設定
+全部有效時才是 `CALLABLE`，否則 composition 明確使用 `UnavailableResearchPort`：
+
+- `GLOBAL_RESEARCH_PROVIDER=openai_web`
+- `GLOBAL_RESEARCH_MODEL=<configured model>`
+- `OPENAI_API_KEY=<secret>`（亦相容 `GLOBAL_OPENAI_API_KEY`）
+
+API key 使用 secret settings 讀取，不會進入 trace、research receipt 或 provider error detail；
+repository 與 `render.yaml` 都不保存 key value。
 
 ## 本機
 

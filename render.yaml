@@ -18,5 +18,11 @@ services:
         sync: false
       - key: GLOBAL_AUTHORITY_TRUSTED_PUBLIC_KEY
         sync: false
+      - key: GLOBAL_RESEARCH_PROVIDER
+        value: openai_web
+      - key: GLOBAL_RESEARCH_MODEL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
       - key: GLOBAL_LIVE_EXECUTION
         value: "false"

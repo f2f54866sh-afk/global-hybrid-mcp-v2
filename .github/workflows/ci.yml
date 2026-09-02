@@ -31,4 +31,4 @@ jobs:
         run: pytest -q tests/test_mcp_server.py
 
       - name: Core import
-        run: python -c "from global_hybrid_v2.application import create_application; from global_hybrid_v2.adapters.mcp_server import mcp; print('import-ok')"
+        run: python -c "from openai import OpenAI; from global_hybrid_v2.application import create_application; from global_hybrid_v2.adapters.mcp_server import mcp; print('import-ok')"
