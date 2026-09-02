@@ -2,6 +2,7 @@ services:
   - type: web
     name: global-hybrid-mcp-v2
     runtime: docker
+    plan: free
     region: singapore
     rootDir: .
     dockerfilePath: ./Dockerfile
