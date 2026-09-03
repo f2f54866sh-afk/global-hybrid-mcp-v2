@@ -66,6 +66,8 @@ class TurnContract(BaseModel):
 class ActionPlan(BaseModel):
     kind: str
     payload: str = ""
+    deliverable_contract: str | None = None
+    fulfilled_obligations: list[str] = Field(default_factory=list)
     input_required_receipt: InputRequiredReceipt | None = None
 
 
@@ -98,9 +100,10 @@ class ResearchConsumptionGate:
                 raise ValueError("NO_SERIALIZE: self-retrievable information requires SELF_RETRIEVE")
             if plan.input_required_receipt is None:
                 raise ValueError("NO_SERIALIZE: ASK_USER requires INPUT_REQUIRED_RECEIPT")
-        if contract.next_external_user_action == "DELIVER_ENGINEER_INSTRUCTION":
-            if plan.kind != ActionKind.DELIVER_HANDOFF or not plan.payload.strip():
-                raise ValueError("NO_SERIALIZE: required engineer instruction is not delivered")
+        if contract.required_obligations and plan.deliverable_contract != contract.deliverable_contract:
+            raise ValueError("NO_SERIALIZE: deliverable contract is not fulfilled")
+        if not set(contract.required_obligations) <= set(plan.fulfilled_obligations):
+            raise ValueError("NO_SERIALIZE: required deliverable obligations are unfulfilled")
         return plan
 
     @staticmethod
@@ -112,10 +115,6 @@ class ResearchConsumptionGate:
     ) -> FinalEgressVerdict:
         ResearchConsumptionGate.admit_action(contract, plan, sources_callable=False)
         ResearchConsumptionGate.validate_final(packet, final)
-        if any(
-            item not in final.claims and item not in plan.payload for item in contract.required_obligations
-        ):
-            return FinalEgressVerdict(serialize=False, reason="NO_SERIALIZE: required obligation unconsumed")
         if any(item in plan.payload for item in contract.prohibited_actions):
             return FinalEgressVerdict(serialize=False, reason="NO_SERIALIZE: prohibited action serialized")
         return FinalEgressVerdict(serialize=True, reason="PASS")

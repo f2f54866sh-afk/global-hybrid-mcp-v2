@@ -44,7 +44,11 @@ def _result(*, sources_callable=False, action=ActionKind.DELIVER_HANDOFF):
             deliverable_contract="one",
             required_obligations=["ENGINEER_INSTRUCTION"],
         ).model_dump(),
-        action_plan=ActionPlan(kind=action, payload="ENGINEER_INSTRUCTION").model_dump(),
+        action_plan=ActionPlan(
+            kind=action,
+            deliverable_contract="one",
+            fulfilled_obligations=["ENGINEER_INSTRUCTION"],
+        ).model_dump(),
     )
 
 

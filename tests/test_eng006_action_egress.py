@@ -55,14 +55,16 @@ def test_eng006_elicit_005_requires_typed_receipt():
     )
     assert (
         ResearchConsumptionGate.admit_action(
-            _contract(next_external_user_action="ANSWER"), plan, sources_callable=False
+            _contract(next_external_user_action="ANSWER", required_obligations=[]),
+            plan,
+            sources_callable=False,
         )
         == plan
     )
 
 
 def test_eng006_instruction_010_and_011_block_status_without_required_handoff():
-    with pytest.raises(ValueError, match="engineer instruction"):
+    with pytest.raises(ValueError, match="deliverable"):
         ResearchConsumptionGate.admit_action(
             _contract(), ActionPlan(kind=ActionKind.ANSWER, payload="notes updated"), sources_callable=False
         )
@@ -70,19 +72,28 @@ def test_eng006_instruction_010_and_011_block_status_without_required_handoff():
 
 def test_eng006_instruction_012_delivers_one_copyable_instruction():
     packet = _packet()
-    plan = ActionPlan(kind=ActionKind.DELIVER_HANDOFF, payload="ENGINEER_INSTRUCTION: implement exact fix")
+    plan = ActionPlan(
+        kind=ActionKind.DELIVER_HANDOFF,
+        deliverable_contract=_contract().deliverable_contract,
+        fulfilled_obligations=["ENGINEER_INSTRUCTION"],
+    )
     final = FinalResponseObject(task_id="t", consumed_packet_id=packet.packet_id, claims=["current finding"])
     assert ResearchConsumptionGate.validate_terminal(_contract(), plan, final, packet).serialize
 
 
 def test_eng006_egress_014_rewrite_is_revalidated():
     packet = _packet()
-    plan = ActionPlan(kind=ActionKind.DELIVER_HANDOFF, payload="ENGINEER_INSTRUCTION")
+    plan = ActionPlan(
+        kind=ActionKind.DELIVER_HANDOFF,
+        deliverable_contract=_contract().deliverable_contract,
+        fulfilled_obligations=["ENGINEER_INSTRUCTION"],
+    )
     final = FinalResponseObject(task_id="t", consumed_packet_id=packet.packet_id, claims=["current finding"])
     assert ResearchConsumptionGate.validate_terminal(_contract(), plan, final, packet).serialize
-    assert not ResearchConsumptionGate.validate_terminal(
-        _contract(), ActionPlan(kind=ActionKind.DELIVER_HANDOFF, payload="status only"), final, packet
-    ).serialize
+    with pytest.raises(ValueError, match="deliverable"):
+        ResearchConsumptionGate.validate_terminal(
+            _contract(), ActionPlan(kind=ActionKind.DELIVER_HANDOFF), final, packet
+        )
 
 
 def test_eng006_evidence_006_to_009_packet_beats_intervening_prose_and_stale_scope_blocks():
@@ -92,3 +103,20 @@ def test_eng006_evidence_006_to_009_packet_beats_intervening_prose_and_stale_sco
     stale = ResearchConsumptionGate.invalidate_for_scope_change(packet)
     with pytest.raises(ValueError, match="stale"):
         ResearchConsumptionGate.validate_final(stale, final)
+
+
+def test_generic_deliverable_contract_missing_blocks_and_structured_fulfillment_passes():
+    contract = _contract(deliverable_contract="EXPORT_REPORT", required_obligations=["REPORT_FILE"])
+    with pytest.raises(ValueError, match="deliverable"):
+        ResearchConsumptionGate.admit_action(
+            contract, ActionPlan(kind=ActionKind.DELIVER_HANDOFF), sources_callable=False
+        )
+    assert ResearchConsumptionGate.admit_action(
+        contract,
+        ActionPlan(
+            kind=ActionKind.DELIVER_HANDOFF,
+            deliverable_contract="EXPORT_REPORT",
+            fulfilled_obligations=["REPORT_FILE"],
+        ),
+        sources_callable=False,
+    )
