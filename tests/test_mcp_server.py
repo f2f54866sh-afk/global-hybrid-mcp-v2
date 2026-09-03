@@ -19,6 +19,7 @@ from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.runtime.deployment import read_runtime_identity
 from global_hybrid_v2.settings import Settings
 from tests._authority_signing import TEST_KEY_ID, TEST_PUBLIC_KEY, activate_registry
+from tests._host_projection import TestHostCurrentStateVerifier, host_projection_payload
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CANONICALS = (
@@ -109,19 +110,26 @@ def _http_client(repo_root: Path, *, render_identity: bool = False) -> TestClien
 
 def test_mcp_in_memory_client_lists_tools_and_dispatches_through_runtime(tmp_path):
     repo_root = _copy_authority_repo(tmp_path)
-    application = create_application(repo_root=repo_root, settings=_test_settings())
+    application = create_application(
+        repo_root=repo_root,
+        settings=_test_settings(),
+        host_current_state_verifier=TestHostCurrentStateVerifier(),
+    )
     server = create_mcp_server(application)
 
     async def scenario():
         async with Client(server) as client:
             tools = await client.list_tools()
-            result = await client.call_tool("dispatch_task", {"payload": SAFE_TASK})
+            result = await client.call_tool(
+                "dispatch_task",
+                {"payload": {**SAFE_TASK, **host_projection_payload()}},
+            )
             return tools, result
 
     tools, result = asyncio.run(scenario())
 
     names = {tool.name for tool in tools.tools}
-    assert {"validate_task", "dispatch_task"} <= names
+    assert {"validate_task", "dispatch_task", "dispatch_host_task"} <= names
     assert result.is_error is False
     assert isinstance(result.content[0], TextContent)
     payload = json.loads(result.content[0].text)
@@ -131,14 +139,18 @@ def test_mcp_in_memory_client_lists_tools_and_dispatches_through_runtime(tmp_pat
 
 def test_mcp_sales_media_dispatch_consumes_library_projection(tmp_path):
     repo_root = _copy_authority_repo(tmp_path)
-    application = create_application(repo_root=repo_root, settings=_test_settings())
+    application = create_application(
+        repo_root=repo_root,
+        settings=_test_settings(),
+        host_current_state_verifier=TestHostCurrentStateVerifier(),
+    )
     server = create_mcp_server(application)
 
     async def scenario():
         async with Client(server) as client:
             return await client.call_tool(
                 "dispatch_task",
-                {"payload": SALES_MEDIA_TASK},
+                {"payload": {**SALES_MEDIA_TASK, **host_projection_payload()}},
             )
 
     result = asyncio.run(scenario())

@@ -110,6 +110,9 @@ class TraceBus:
                     "consumption_checks": consumption_checks,
                     "current_mapping_version": event.metadata.get("current_mapping_version"),
                     "resolved_referent_id": event.metadata.get("resolved_referent_id"),
+                    "identity_source_id": event.metadata.get("identity_source_id"),
+                    "identity_source_version": event.metadata.get("identity_source_version"),
+                    "identity_currentness_token": event.metadata.get("identity_currentness_token"),
                 },
             )
             self._print(witness_event)

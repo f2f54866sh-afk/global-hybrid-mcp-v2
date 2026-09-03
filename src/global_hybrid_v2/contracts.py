@@ -195,6 +195,13 @@ class ContextAdmissionReason(StrEnum):
 class CurrentIdentityProjection(BaseModel):
     """Ephemeral, host-supplied current identity map for one MCP task."""
 
+    projection_id: str = Field(min_length=1)
+    projection_version: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    source_version: str | None = Field(default=None, min_length=1)
+    currentness_token: str | None = Field(default=None, min_length=1)
+    source_state: str = Field(min_length=1)
+    source_provenance: list[str] = Field(min_length=1)
     mapping_version: str = Field(min_length=1)
     identities: dict[str, str] = Field(min_length=1)
     issued_at: datetime
@@ -206,6 +213,12 @@ class CurrentIdentityProjection(BaseModel):
             raise ValueError("identity projection timestamps must be timezone-aware")
         if self.valid_until < self.issued_at:
             raise ValueError("identity projection validity precedes issuance")
+        if self.source_state != "CURRENT":
+            raise ValueError("identity projection source state must be CURRENT")
+        if self.source_version is None and self.currentness_token is None:
+            raise ValueError("identity projection requires source version or currentness token")
+        if any(not item.strip() for item in self.source_provenance):
+            raise ValueError("identity projection source provenance must be non-blank")
         if any(not alias.strip() or not target.strip() for alias, target in self.identities.items()):
             raise ValueError("identity projection aliases and targets must be non-blank")
         return self
@@ -415,6 +428,9 @@ class TaskContract(BaseModel):
     risk_class: RiskClass = RiskClass.R0
     current_mapping_version: str | None = None
     resolved_referent_id: str | None = None
+    identity_source_id: str | None = None
+    identity_source_version: str | None = None
+    identity_currentness_token: str | None = None
     domain_contracts: list[DomainContract] = Field(default_factory=list)
     research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
     research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)

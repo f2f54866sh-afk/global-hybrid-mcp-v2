@@ -57,11 +57,15 @@ class ReadOnlyWitness:
             if (
                 projection is not None
                 and projection.decision == "PASS"
-                and (
-                    event.metadata.get("current_mapping_version")
-                    != projection.metadata.get("current_mapping_version")
-                    or event.metadata.get("resolved_referent_id")
-                    != projection.metadata.get("resolved_referent_id")
+                and any(
+                    event.metadata.get(key) != projection.metadata.get(key)
+                    for key in (
+                        "current_mapping_version",
+                        "resolved_referent_id",
+                        "identity_source_id",
+                        "identity_source_version",
+                        "identity_currentness_token",
+                    )
                 )
             ):
                 return WitnessFinding(

@@ -23,6 +23,9 @@ class ResearchEvidencePacket(BaseModel):
     stale: bool = False
     current_mapping_version: str | None = None
     resolved_referent_id: str | None = None
+    identity_source_id: str | None = None
+    identity_source_version: str | None = None
+    identity_currentness_token: str | None = None
 
 
 class FinalResponseObject(BaseModel):
@@ -32,6 +35,9 @@ class FinalResponseObject(BaseModel):
     labelled_inferences: list[str] = Field(default_factory=list)
     current_mapping_version: str | None = None
     resolved_referent_id: str | None = None
+    identity_source_id: str | None = None
+    identity_source_version: str | None = None
+    identity_currentness_token: str | None = None
 
 
 class SelfResolvabilityDecision(BaseModel):
@@ -67,6 +73,9 @@ class TurnContract(BaseModel):
     ask_user_admission_state: str = "UNDECIDED"
     current_mapping_version: str | None = None
     resolved_referent_id: str | None = None
+    identity_source_id: str | None = None
+    identity_source_version: str | None = None
+    identity_currentness_token: str | None = None
 
 
 class ActionPlan(BaseModel):
@@ -77,6 +86,9 @@ class ActionPlan(BaseModel):
     input_required_receipt: InputRequiredReceipt | None = None
     current_mapping_version: str | None = None
     resolved_referent_id: str | None = None
+    identity_source_id: str | None = None
+    identity_source_version: str | None = None
+    identity_currentness_token: str | None = None
 
 
 class FinalEgressVerdict(BaseModel):

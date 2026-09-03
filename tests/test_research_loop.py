@@ -37,6 +37,7 @@ from global_hybrid_v2.governance.egress import (
     UNKNOWN_WITH_EXACT_BLOCKER,
     ResponseEgressValidator,
 )
+from global_hybrid_v2.governance.host_projection import HostProjectionGate
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
 from global_hybrid_v2.runtime.deployment import read_runtime_identity
@@ -51,6 +52,7 @@ from global_hybrid_v2.runtime.dispatcher import (
 )
 from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.settings import Settings
+from tests._host_projection import TestHostCurrentStateVerifier, host_projection_payload
 
 NOW = datetime(2026, 9, 3, 1, 0, tzinfo=UTC)
 SCOPE = "current platform capability for the bounded architecture task"
@@ -253,6 +255,7 @@ def test_mcp_dispatch_runs_the_same_automatic_research_loop():
         trace=trace,
         egress=ResponseEgressValidator(clock=lambda: NOW, research_available=True),
         research_executor=research_executor,
+        host_projection_gate=HostProjectionGate(verifier=TestHostCurrentStateVerifier()),
     )
     application = Application(
         repo_root=Path.cwd(),
@@ -274,6 +277,7 @@ def test_mcp_dispatch_runs_the_same_automatic_research_loop():
                         "request_text": "verify the current capability",
                         "intent": "governance",
                         "effects": ["read_only"],
+                        **host_projection_payload(),
                     }
                 },
             )

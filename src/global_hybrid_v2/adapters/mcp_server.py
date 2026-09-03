@@ -132,14 +132,14 @@ def create_mcp_server(application: Application) -> MCPServer:
 
     @server.tool()
     def dispatch_task(payload: dict) -> dict:
-        """Dispatch a task through the authoritative governance runtime."""
+        """Dispatch a live Host task through mandatory current-state admission."""
         request = TaskRequest.model_validate(payload)
-        result = application.dispatcher.dispatch(request)
+        result = application.dispatcher.dispatch(request, require_host_projection=True)
         return result.model_dump(mode="json")
 
     @server.tool()
     def dispatch_host_task(payload: dict) -> dict:
-        """Dispatch one stateless task with its current Host identity projection."""
+        """Compatibility name for the same mandatory live Host dispatch path."""
         request = TaskRequest.model_validate(payload)
         result = application.dispatcher.dispatch(request, require_host_projection=True)
         return result.model_dump(mode="json")

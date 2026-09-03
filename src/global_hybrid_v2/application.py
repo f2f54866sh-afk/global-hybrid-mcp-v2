@@ -11,6 +11,7 @@ from global_hybrid_v2.domains.sales_media import SalesMediaDomain
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
+from global_hybrid_v2.governance.host_projection import HostCurrentStateVerifier, HostProjectionGate
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.research import (
     ResearchExecutor,
@@ -41,6 +42,7 @@ def create_application(
     trace: TraceBus | None = None,
     research: ResearchPort | None = None,
     runtime_identity: RuntimeIdentity | None = None,
+    host_current_state_verifier: HostCurrentStateVerifier | None = None,
 ) -> Application:
     root = (
         Path(repo_root).resolve()
@@ -83,6 +85,7 @@ def create_application(
         domains=domains,
         trace=runtime_trace,
         research_executor=research_executor,
+        host_projection_gate=HostProjectionGate(verifier=host_current_state_verifier),
     )
     return Application(
         repo_root=root,

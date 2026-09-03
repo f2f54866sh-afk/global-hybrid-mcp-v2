@@ -159,6 +159,9 @@ class Dispatcher:
                 "blocker": host_projection.blocker,
                 "current_mapping_version": host_projection.mapping_version,
                 "resolved_referent_id": host_projection.resolved_referent_id,
+                "identity_source_id": host_projection.source_id,
+                "identity_source_version": host_projection.source_version,
+                "identity_currentness_token": host_projection.currentness_token,
             },
         )
         if not host_projection.allowed:
@@ -197,6 +200,9 @@ class Dispatcher:
             risk_class=risk_class,
             current_mapping_version=host_projection.mapping_version,
             resolved_referent_id=host_projection.resolved_referent_id,
+            identity_source_id=host_projection.source_id,
+            identity_source_version=host_projection.source_version,
+            identity_currentness_token=host_projection.currentness_token,
         )
 
         self.trace.emit(
@@ -214,6 +220,9 @@ class Dispatcher:
                 "context_count": len(safe_context),
                 "current_mapping_version": contract.current_mapping_version,
                 "resolved_referent_id": contract.resolved_referent_id,
+                "identity_source_id": contract.identity_source_id,
+                "identity_source_version": contract.identity_source_version,
+                "identity_currentness_token": contract.identity_currentness_token,
             },
         )
 
@@ -231,6 +240,9 @@ class Dispatcher:
                 "failure_class": None,
                 "current_mapping_version": contract.current_mapping_version,
                 "resolved_referent_id": contract.resolved_referent_id,
+                "identity_source_id": contract.identity_source_id,
+                "identity_source_version": contract.identity_source_version,
+                "identity_currentness_token": contract.identity_currentness_token,
             },
         )
 
@@ -762,6 +774,9 @@ class Dispatcher:
                 expected = {
                     "current_mapping_version": contract.current_mapping_version,
                     "resolved_referent_id": contract.resolved_referent_id,
+                    "identity_source_id": contract.identity_source_id,
+                    "identity_source_version": contract.identity_source_version,
+                    "identity_currentness_token": contract.identity_currentness_token,
                 }
                 if not all(
                     isinstance(item, dict)
@@ -791,6 +806,9 @@ class Dispatcher:
                     ),
                     "current_mapping_version": contract.current_mapping_version,
                     "resolved_referent_id": contract.resolved_referent_id,
+                    "identity_source_id": contract.identity_source_id,
+                    "identity_source_version": contract.identity_source_version,
+                    "identity_currentness_token": contract.identity_currentness_token,
                     "host_binding_consumption": (
                         "PASS" if contract.current_mapping_version is not None else "NOT_APPLICABLE"
                     ),
@@ -815,6 +833,9 @@ class Dispatcher:
                 "user_reported_recurrence": bool(validated.evidence.get("user_reported_recurrence", False)),
                 "current_mapping_version": contract.current_mapping_version,
                 "resolved_referent_id": contract.resolved_referent_id,
+                "identity_source_id": contract.identity_source_id,
+                "identity_source_version": contract.identity_source_version,
+                "identity_currentness_token": contract.identity_currentness_token,
                 "host_binding_consumption": validated.evidence.get("host_binding_consumption"),
             },
         )
