@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from global_hybrid_v2.contracts import (
     AuthorityDocument,
@@ -26,7 +27,7 @@ from global_hybrid_v2.governance.resume import (
     RESUME_STATE_SCHEMA_INCOMPATIBLE,
     RESUME_TERMINAL_BLOCKER,
 )
-from global_hybrid_v2.runtime.dispatcher import Dispatcher
+from global_hybrid_v2.runtime.dispatcher import RESUME_CHECKPOINT_REQUIRED, Dispatcher
 from global_hybrid_v2.runtime.trace import TraceBus
 
 
@@ -127,6 +128,30 @@ def test_compatible_resume_only_rehydrates_unfinished_step_and_emits_receipt():
     assert domain.contract.resume_rehydration_receipt.status == "RESUMED"
     assert domain.contract.resume_rehydration_receipt.resumed_step == "step-2"
     assert result.evidence["resume_rehydration"] == "PASS"
+
+
+def test_engineering_resume_mutation_without_checkpoint_blocks_before_domain():
+    result, domain = _dispatch(
+        _request(
+            None,
+            engineering_item_id="ENG-RESUME",
+            engineering_backlog_snapshot_id="backlog-1",
+        )
+    )
+    assert result.status == RESUME_CHECKPOINT_REQUIRED
+    assert domain.contract is None
+
+
+def test_engineering_resume_mutation_with_incomplete_checkpoint_is_rejected():
+    with pytest.raises(ValidationError):
+        TaskRequest(
+            request_text="resume engineering step",
+            intent=Intent.EXECUTION,
+            effects=[EffectType.EXTERNAL_WRITE],
+            engineering_item_id="ENG-RESUME",
+            engineering_backlog_snapshot_id="backlog-1",
+            engineering_checkpoint={"checkpoint_id": "incomplete"},
+        )
 
 
 @pytest.mark.parametrize(

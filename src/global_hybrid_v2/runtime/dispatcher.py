@@ -6,6 +6,7 @@ from uuid import uuid4
 from global_hybrid_v2.contracts import (
     AuthoritySnapshot,
     DomainResult,
+    EffectType,
     LibraryAccessKind,
     LibraryAccessRequest,
     OutputClassification,
@@ -54,6 +55,7 @@ RESEARCH_RECEIPT_INVALID = "RESEARCH_RECEIPT_INVALID"
 RESEARCH_MAX_ATTEMPTS_REACHED = "RESEARCH_MAX_ATTEMPTS_REACHED"
 RESEARCH_REPEAT_BLOCKED_NO_NEW_INFORMATION = "RESEARCH_REPEAT_BLOCKED_NO_NEW_INFORMATION"
 RESEARCH_RESUME_DIFFERENT_BLOCKER = "RESEARCH_RESUME_DIFFERENT_BLOCKER"
+RESUME_CHECKPOINT_REQUIRED = "RESUME_CHECKPOINT_REQUIRED"
 NOT_EXECUTED_UPSTREAM_BLOCK = "NOT_EXECUTED_UPSTREAM_BLOCK"
 SNAPSHOT_COMPILATION_FAIL = "SNAPSHOT_COMPILATION_FAIL"
 EXECUTION_BINDING_CONSUMPTION_FAIL = "EXECUTION_BINDING_CONSUMPTION_FAIL"
@@ -65,6 +67,11 @@ SALES_LIBRARY_PROJECTION_FIELDS = {
     "evidence_role",
     "evidence_items",
     "uncertainties",
+}
+RESUME_MUTATION_EFFECTS = {
+    EffectType.EXTERNAL_WRITE,
+    EffectType.FILE_WRITE,
+    EffectType.IMAGE_GENERATE,
 }
 
 
@@ -182,6 +189,31 @@ class Dispatcher:
             )
 
         resume_receipt = None
+        engineering_resume_context = bool(
+            request.engineering_item_id
+            or request.engineering_backlog_snapshot_id
+            or request.engineering_checkpoint
+        )
+        if engineering_resume_context and RESUME_MUTATION_EFFECTS.intersection(request.effects):
+            if request.engineering_checkpoint is None:
+                self.trace.emit(
+                    task_id=task_id,
+                    stage="resume_rehydration",
+                    decision="BLOCK",
+                    span_owner="GLOBAL",
+                    metadata={
+                        "compatibility_result": "NOT_EVALUATED",
+                        "blocker": RESUME_CHECKPOINT_REQUIRED,
+                    },
+                )
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status=RESUME_CHECKPOINT_REQUIRED,
+                    evidence={
+                        "resume_rehydration": "BLOCK",
+                        "blocker": RESUME_CHECKPOINT_REQUIRED,
+                    },
+                )
         if request.engineering_checkpoint is not None:
             current_authority = {
                 owner.value: entry.revision
