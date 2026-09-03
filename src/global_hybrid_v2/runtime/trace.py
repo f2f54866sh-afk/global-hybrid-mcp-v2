@@ -90,6 +90,7 @@ class TraceBus:
             finding = self.witness.observe(event.model_copy(deep=True))
             if finding:
                 self.findings.append(finding)
+            consumption_checks = self.witness.consumption_assessment_for_task(task_id)
             witness_event = TraceEvent(
                 trace_id=task_trace_id,
                 task_id=task_id,
@@ -106,6 +107,7 @@ class TraceBus:
                     "failure_class": finding.code if finding else None,
                     "observed_stage": stage,
                     "finding_code": finding.code if finding else None,
+                    "consumption_checks": consumption_checks,
                 },
             )
             self._print(witness_event)

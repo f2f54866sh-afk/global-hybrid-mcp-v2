@@ -166,6 +166,18 @@ def test_sales_media_e2e_consumes_bounded_library_packet_and_quarantines_directi
     )
     assert witness_fitness["decision"] == "OBSERVED"
     assert required_metadata <= set(witness_fitness["metadata"])
+    witness_closure = next(
+        event
+        for event in events
+        if event["stage"] == "witness_observation"
+        and event["metadata"]["observed_stage"] == "closure"
+    )
+    assert witness_closure["decision"] == "OBSERVED"
+    assert witness_closure["metadata"]["consumption_checks"]
+    assert all(witness_closure["metadata"]["consumption_checks"].values())
+    witness = application.trace.witness
+    assert witness is not None
+    assert all(witness.consumption_assessment_for_task(task_id).values())
 
 
 def test_sales_consumption_marks_downstream_not_executed_after_library_binding_block(
@@ -194,6 +206,17 @@ def test_sales_consumption_marks_downstream_not_executed_after_library_binding_b
     ):
         event = next(item for item in events if item["stage"] == stage)
         assert event["decision"] == NOT_EXECUTED_UPSTREAM_BLOCK
+    assert any(
+        finding.code == "RUNTIME_CONSUMPTION_PROOF_INCOMPLETE"
+        for finding in application.trace.findings
+    )
+    witness_closure = next(
+        event
+        for event in events
+        if event["stage"] == "witness_observation"
+        and event["metadata"]["observed_stage"] == "closure"
+    )
+    assert witness_closure["decision"] == "FINDING"
 
 
 def test_non_media_sales_work_remains_outside_the_new_adapter_scope(tmp_path, capsys):

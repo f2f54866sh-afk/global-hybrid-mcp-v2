@@ -224,6 +224,11 @@ class Dispatcher:
                 "admission_receipts": [
                     receipt.model_dump(mode="json") for receipt in context_admission.receipts
                 ],
+                "admitted_context_ids": [item.id for item in safe_context],
+                "admitted_context_directive_free": all(
+                    not TaskFirewall.contains_external_directive(item.payload)
+                    for item in safe_context
+                ),
                 "quarantined_external_count": len(
                     context_admission.quarantined_external
                 ),
