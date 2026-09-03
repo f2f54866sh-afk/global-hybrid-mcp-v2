@@ -4,7 +4,7 @@ from global_hybrid_v2.contracts import AuthoritySnapshot, DomainResult, EffectTy
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
 from global_hybrid_v2.runtime.state import RuntimeTaskState, SQLiteRuntimeStateStore
 from global_hybrid_v2.runtime.trace import TraceBus
-from global_hybrid_v2.runtime.transition import TransitionController
+from global_hybrid_v2.runtime.transition import TransitionController, TransitionDecision
 
 
 class _Authority:
@@ -102,7 +102,26 @@ def test_transition_controller_keeps_support_candidate_stable():
     first = controller.decide(state, _request(runtime_state_required=False))
     second = controller.decide(state, _request(runtime_state_required=False))
     assert first == second
-    assert first.kind == "EXECUTE"
+    assert first.kind == "SUPPORT"
+
+
+def test_transition_controller_marks_mutation_candidate_executable():
+    state = _state(next_action_candidate="publish")
+    request = _request(runtime_state_required=False).model_copy(
+        update={"effects": [EffectType.FILE_WRITE]}
+    )
+    assert TransitionController().decide(state, request).kind == "EXECUTE"
+
+
+def test_completed_support_clears_subtask_and_keeps_parent():
+    state = _state(active_subtask_id="support-1", active_main_task_id="main-1")
+    result = DomainResult(owner=Owner.GLOBAL, status="DONE")
+    updated = TransitionController().consume_result(
+        state, _request(runtime_state_required=False), result,
+        TransitionDecision("SUPPORT", "done"),
+    )
+    assert updated.active_subtask_id is None
+    assert updated.active_main_task_id == "main-1"
 
 
 def test_stateless_request_remains_unchanged(tmp_path):

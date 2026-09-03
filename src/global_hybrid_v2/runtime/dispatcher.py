@@ -574,20 +574,6 @@ class Dispatcher:
                 },
             )
         result = self._validate_egress(contract, domain_result)
-        if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
-            runtime_state = self.transition_controller.consume_result(
-                runtime_state, request, result, transition
-            )
-            self.runtime_state_store.update(runtime_state)
-            result = result.model_copy(
-                update={
-                    "evidence": {
-                        **result.evidence,
-                        "runtime_state": "COMMITTED",
-                        "runtime_transition": transition.kind,
-                    }
-                }
-            )
         if resume_receipt is not None:
             result = result.model_copy(
                 update={
@@ -615,6 +601,21 @@ class Dispatcher:
                 result,
                 RESEARCH_PROVIDER_UNAVAILABLE,
                 "no callable production research provider is configured",
+            )
+
+        if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
+            runtime_state = self.transition_controller.consume_result(
+                runtime_state, request, result, transition
+            )
+            self.runtime_state_store.update(runtime_state)
+            result = result.model_copy(
+                update={
+                    "evidence": {
+                        **result.evidence,
+                        "runtime_state": "COMMITTED",
+                        "runtime_transition": transition.kind,
+                    }
+                }
             )
 
         if sales_media_task:

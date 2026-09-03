@@ -24,8 +24,16 @@ class TransitionController:
         if state.closure_state == "CLOSED":
             return TransitionDecision("CLOSE", "runtime task already closed")
         if state.next_action_candidate:
+            executable_effects = {
+                "external_write",
+                "file_write",
+                "image_generate",
+            }
+            is_executable = any(effect.value in executable_effects for effect in request.effects)
+            if state.active_subtask_id and state.last_action_result in {"DONE", "PASS", "CLOSED"}:
+                return TransitionDecision("SUPPORT", "complete support and resume parent task")
             return TransitionDecision(
-                "EXECUTE" if request.effects else "SUPPORT",
+                "EXECUTE" if is_executable else "SUPPORT",
                 f"continue candidate {state.next_action_candidate}",
             )
         return TransitionDecision("SUPPORT", "continue current runtime task")
@@ -39,6 +47,10 @@ class TransitionController:
     ) -> RuntimeTaskState:
         status = result.status
         blocked = status.startswith("BLOCK") or status.endswith("BLOCKED") or "FAIL" in status
+        support_completed = (
+            state.active_subtask_id is not None
+            and status in {"DONE", "PASS", "CLOSED"}
+        )
         return state.model_copy(
             update={
                 "current_progress": status,
@@ -47,6 +59,8 @@ class TransitionController:
                 "last_action_id": transition.kind,
                 "last_action_result": status,
                 "next_action_candidate": None if not blocked else state.next_action_candidate,
+                "active_subtask_id": None if support_completed else state.active_subtask_id,
+                "active_main_task_id": state.active_main_task_id,
                 "closure_state": "CLOSED" if status in {"DONE", "PASS", "CLOSED"} else state.closure_state,
                 "updated_at": datetime.now(UTC),
             }
