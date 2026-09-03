@@ -254,11 +254,6 @@ class TaskRequest(BaseModel):
     context: list[ContextItem] = Field(default_factory=list)
     retry_context: RetryContext | None = None
     risk_class: RiskClass | None = None
-    turn_contract: dict[str, Any] | None = None
-    action_plan: dict[str, Any] | None = None
-    research_evidence_packet: dict[str, Any] | None = None
-    final_response_object: dict[str, Any] | None = None
-    sources_callable: bool = False
 
 
 class AuthorityDocument(BaseModel):
@@ -379,11 +374,6 @@ class TaskContract(BaseModel):
     domain_contracts: list[DomainContract] = Field(default_factory=list)
     research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
     research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)
-    turn_contract: dict[str, Any] | None = None
-    action_plan: dict[str, Any] | None = None
-    research_evidence_packet: dict[str, Any] | None = None
-    final_response_object: dict[str, Any] | None = None
-    sources_callable: bool = False
 
 
 class ResearchEvidence(BaseModel):

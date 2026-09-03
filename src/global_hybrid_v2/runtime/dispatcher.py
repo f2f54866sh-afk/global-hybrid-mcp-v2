@@ -163,11 +163,6 @@ class Dispatcher:
             context_admission_receipts=context_admission.receipts,
             retry_context=request.retry_context,
             risk_class=risk_class,
-            turn_contract=request.turn_contract,
-            action_plan=request.action_plan,
-            research_evidence_packet=request.research_evidence_packet,
-            final_response_object=request.final_response_object,
-            sources_callable=request.sources_callable,
         )
 
         self.trace.emit(
@@ -681,16 +676,11 @@ class Dispatcher:
     def _validate_egress(self, contract: TaskContract, result: DomainResult) -> DomainResult:
         result = result.model_copy(
             update={
-                "turn_contract": result.turn_contract or contract.turn_contract,
-                "action_plan": result.action_plan or contract.action_plan,
-                "research_evidence_packet": (
-                    result.research_evidence_packet or contract.research_evidence_packet
-                ),
-                "final_response_object": (result.final_response_object or contract.final_response_object),
                 "evidence": {
                     **result.evidence,
-                    "sources_callable": bool(
-                        result.evidence.get("sources_callable", contract.sources_callable)
+                    "sources_callable": any(
+                        item.origin.value in {"current_tool_result", "current_authority"}
+                        for item in contract.context
                     ),
                 },
             }

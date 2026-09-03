@@ -1,4 +1,12 @@
-from global_hybrid_v2.contracts import AuthoritySnapshot, DomainResult, Intent, Owner, TaskRequest
+from global_hybrid_v2.contracts import (
+    AuthoritySnapshot,
+    ContextItem,
+    ContextOrigin,
+    DomainResult,
+    Intent,
+    Owner,
+    TaskRequest,
+)
 from global_hybrid_v2.governance.egress import UNKNOWN_WITH_EXACT_BLOCKER, ResponseEgressValidator
 from global_hybrid_v2.governance.research_consumption import (
     ActionKind,
@@ -56,32 +64,22 @@ def test_dispatcher_assembles_terminal_inputs_and_blocks_self_retrievable_ask_us
 
     class Domain:
         def run(self, contract):
-            return DomainResult(owner=Owner.EXECUTION, status="OK")
+            return _result(action=ActionKind.ASK_USER)
 
-    packet = ResearchEvidencePacket(
-        task_id="placeholder",
-        user_goal="goal",
-        research_question="q",
-        source_refs=["github"],
-        verified_findings=["finding"],
-        decision_inputs=["finding"],
-    )
     request = TaskRequest(
         request_text="status",
         intent=Intent.EXECUTION,
-        turn_contract=TurnContract(
-            task_id="placeholder",
-            current_authority_version="v",
-            current_user_goal="goal",
-            next_external_user_action="ANSWER",
-            deliverable_contract="answer",
-        ).model_dump(),
-        action_plan=ActionPlan(kind=ActionKind.ASK_USER, payload="paste SHA").model_dump(),
-        research_evidence_packet=packet.model_dump(mode="json"),
-        final_response_object=FinalResponseObject(
-            task_id="placeholder", consumed_packet_id=packet.packet_id, claims=["finding"]
-        ).model_dump(),
-        sources_callable=True,
+        context=[
+            ContextItem(
+                id="github",
+                origin=ContextOrigin.CURRENT_TOOL_RESULT,
+                purpose="read",
+                task_scope="status",
+                payload={},
+            )
+        ],
+        turn_contract={"forged": "PASS"},
+        sources_callable=False,
     )
     result = Dispatcher(
         authority=Authority(), domains={Owner.EXECUTION: Domain()}, trace=TraceBus()
