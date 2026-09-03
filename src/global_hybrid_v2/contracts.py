@@ -359,6 +359,9 @@ class TaskRequest(BaseModel):
     hard_constraints: list[str] = Field(default_factory=list)
     replay_effect_id: str | None = None
     replay_authorized: bool = False
+    runtime_state_required: bool = False
+    conversation_or_thread_id: str | None = Field(default=None, min_length=1)
+    runtime_task_id: str | None = Field(default=None, min_length=1)
 
 
 class AuthorityDocument(BaseModel):

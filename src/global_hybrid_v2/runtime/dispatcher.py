@@ -44,7 +44,9 @@ from global_hybrid_v2.governance.resume import ResumeGate
 from global_hybrid_v2.governance.risk import TaskRiskClassifier
 from global_hybrid_v2.governance.router import OwnerRouter
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
+from global_hybrid_v2.runtime.state import RuntimeStateError, RuntimeStateStore, RuntimeTaskState
 from global_hybrid_v2.runtime.trace import TraceBus
+from global_hybrid_v2.runtime.transition import TransitionController
 
 MAX_RESEARCH_ATTEMPTS = 2
 PRE_RESEARCH_EGRESS_SUPPRESSION = "PRE_RESEARCH_EGRESS_SUPPRESSION"
@@ -103,6 +105,8 @@ class Dispatcher:
         resume_gate: ResumeGate | None = None,
         runtime_commit: str | None = None,
         runtime_branch: str | None = None,
+        runtime_state_store: RuntimeStateStore | None = None,
+        transition_controller: TransitionController | None = None,
     ):
         self.authority = authority
         self.domains = domains
@@ -119,6 +123,8 @@ class Dispatcher:
         self.resume_gate = resume_gate or ResumeGate()
         self.runtime_commit = runtime_commit
         self.runtime_branch = runtime_branch
+        self.runtime_state_store = runtime_state_store
+        self.transition_controller = transition_controller or TransitionController()
         self.research_executor = research_executor or ResearchExecutor(UnavailableResearchPort())
         self.egress = egress or ResponseEgressValidator(
             research_available=(self.research_executor.availability is ResearchProviderAvailability.CALLABLE)
@@ -128,6 +134,42 @@ class Dispatcher:
         task_id = str(uuid4())
         task_trace_id = self.trace.start_task(task_id)
         contract_id = str(uuid4())
+        runtime_state: RuntimeTaskState | None = None
+        transition = None
+        if request.runtime_state_required:
+            if (
+                self.runtime_state_store is None
+                or not request.conversation_or_thread_id
+                or not request.runtime_task_id
+            ):
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="RUNTIME_STATE_BINDING_REQUIRED",
+                    evidence={"runtime_state": "BLOCK"},
+                )
+            try:
+                runtime_state = self.runtime_state_store.load(
+                    request.conversation_or_thread_id, request.runtime_task_id
+                )
+            except RuntimeStateError as exc:
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="RUNTIME_STATE_LOAD_BLOCKED",
+                    evidence={"runtime_state": "BLOCK", "blocker": type(exc).__name__},
+                )
+            transition = self.transition_controller.decide(runtime_state, request)
+            if transition.kind == "WAIT":
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="RUNTIME_STATE_WAIT",
+                    evidence={"transition": transition.kind},
+                )
+            if transition.kind == "CLOSE":
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="RUNTIME_STATE_CLOSED",
+                    evidence={"transition": transition.kind},
+                )
         try:
             snapshot = self.authority.resolve()
         except Exception as exc:
@@ -532,6 +574,20 @@ class Dispatcher:
                 },
             )
         result = self._validate_egress(contract, domain_result)
+        if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
+            runtime_state = self.transition_controller.consume_result(
+                runtime_state, request, result, transition
+            )
+            self.runtime_state_store.update(runtime_state)
+            result = result.model_copy(
+                update={
+                    "evidence": {
+                        **result.evidence,
+                        "runtime_state": "COMMITTED",
+                        "runtime_transition": transition.kind,
+                    }
+                }
+            )
         if resume_receipt is not None:
             result = result.model_copy(
                 update={
