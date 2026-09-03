@@ -33,6 +33,7 @@ from global_hybrid_v2.governance.egress import (
 from global_hybrid_v2.governance.firewall import TaskFirewall
 from global_hybrid_v2.governance.fitness import SystemFitnessFunctions
 from global_hybrid_v2.governance.library_boundary import LibraryReadWriteBoundary
+from global_hybrid_v2.governance.pre_action import PreActionConstraintGate
 from global_hybrid_v2.governance.repeat_action import (
     REPEAT_BLOCKED_NO_NEW_EVIDENCE,
     RepeatActionGate,
@@ -88,6 +89,7 @@ class Dispatcher:
         risk_classifier: TaskRiskClassifier | None = None,
         domain_contract_gate: DomainContractGate | None = None,
         library_boundary: LibraryReadWriteBoundary | None = None,
+        pre_action_gate: PreActionConstraintGate | None = None,
     ):
         self.authority = authority
         self.domains = domains
@@ -99,6 +101,7 @@ class Dispatcher:
         self.risk_classifier = risk_classifier or TaskRiskClassifier()
         self.domain_contract_gate = domain_contract_gate or DomainContractGate()
         self.library_boundary = library_boundary or LibraryReadWriteBoundary()
+        self.pre_action_gate = pre_action_gate or PreActionConstraintGate()
         self.research_executor = research_executor or ResearchExecutor(UnavailableResearchPort())
         self.egress = egress or ResponseEgressValidator(
             research_available=(self.research_executor.availability is ResearchProviderAvailability.CALLABLE)
@@ -253,6 +256,22 @@ class Dispatcher:
                 "enforcement_point": effect_decision.enforcement_point,
             },
         )
+
+        pre_action = self.pre_action_gate.admit(
+            target_system=request.target_system,
+            action_class=request.action_class,
+            effects=request.effects,
+            context=safe_context,
+        )
+        self.trace.emit(
+            task_id=contract.task_id,
+            stage="pre_action_constraint",
+            decision="PASS" if pre_action.allowed else "BLOCK",
+            owner=owner,
+            metadata={"blocker": pre_action.blocker},
+        )
+        if not pre_action.allowed:
+            return DomainResult(owner=owner, status="PRE_ACTION_BLOCKED")
 
         repeat_admission = self.repeat_action_gate.evaluate(
             effects=request.effects,
