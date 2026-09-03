@@ -34,8 +34,10 @@ class TransitionController:
                 return TransitionDecision("SUPPORT", "complete support and resume parent task")
             return TransitionDecision(
                 "EXECUTE" if is_executable else "SUPPORT",
-                f"continue candidate {state.next_action_candidate}",
+                state.next_action_candidate,
             )
+        if state.last_action_result in {"DONE", "PASS", "CLOSED"}:
+            return TransitionDecision("WAIT", "completed action has no new candidate")
         return TransitionDecision("SUPPORT", "continue current runtime task")
 
     def consume_result(
@@ -51,17 +53,26 @@ class TransitionController:
             state.active_subtask_id is not None
             and status in {"DONE", "PASS", "CLOSED"}
         )
+        action_id = transition.reason if transition.kind in {"EXECUTE", "SUPPORT"} else transition.kind
         return state.model_copy(
             update={
                 "current_progress": status,
-                "current_phase": "BLOCKED" if blocked else "COMPLETED",
                 "active_blocker": status if blocked else None,
-                "last_action_id": transition.kind,
+                "last_action_id": action_id,
                 "last_action_result": status,
                 "next_action_candidate": None if not blocked else state.next_action_candidate,
                 "active_subtask_id": None if support_completed else state.active_subtask_id,
                 "active_main_task_id": state.active_main_task_id,
-                "closure_state": "CLOSED" if status in {"DONE", "PASS", "CLOSED"} else state.closure_state,
+                "closure_state": (
+                    "OPEN"
+                    if support_completed
+                    else "CLOSED" if status in {"DONE", "PASS", "CLOSED"} else state.closure_state
+                ),
+                "current_phase": (
+                    "PARENT_CONTINUATION"
+                    if support_completed
+                    else "BLOCKED" if blocked else "COMPLETED"
+                ),
                 "updated_at": datetime.now(UTC),
             }
         )
