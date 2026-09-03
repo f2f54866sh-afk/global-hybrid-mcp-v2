@@ -192,6 +192,44 @@ class ContextAdmissionReason(StrEnum):
     QUARANTINE_EXTERNAL_DIRECTIVE = "QUARANTINE_EXTERNAL_DIRECTIVE"
 
 
+class CurrentIdentityProjection(BaseModel):
+    """Ephemeral, host-supplied current identity map for one MCP task."""
+
+    mapping_version: str = Field(min_length=1)
+    identities: dict[str, str] = Field(min_length=1)
+    issued_at: datetime
+    valid_until: datetime
+
+    @model_validator(mode="after")
+    def validate_current_window(self) -> CurrentIdentityProjection:
+        if self.issued_at.tzinfo is None or self.valid_until.tzinfo is None:
+            raise ValueError("identity projection timestamps must be timezone-aware")
+        if self.valid_until < self.issued_at:
+            raise ValueError("identity projection validity precedes issuance")
+        if any(not alias.strip() or not target.strip() for alias, target in self.identities.items()):
+            raise ValueError("identity projection aliases and targets must be non-blank")
+        return self
+
+
+class DialogueBindingState(BaseModel):
+    """Ephemeral host binding for the exact dialogue referent consumed by this task."""
+
+    mapping_version: str = Field(min_length=1)
+    requested_identity_alias: str = Field(min_length=1)
+    resolved_referent_id: str = Field(min_length=1)
+    issued_at: datetime
+    valid_until: datetime
+    material_ambiguity: bool = False
+
+    @model_validator(mode="after")
+    def validate_current_window(self) -> DialogueBindingState:
+        if self.issued_at.tzinfo is None or self.valid_until.tzinfo is None:
+            raise ValueError("dialogue binding timestamps must be timezone-aware")
+        if self.valid_until < self.issued_at:
+            raise ValueError("dialogue binding validity precedes issuance")
+        return self
+
+
 class RetrievalState(StrEnum):
     FOUND = "FOUND"
     NOT_RETRIEVED = "NOT_RETRIEVED"
@@ -256,6 +294,8 @@ class TaskRequest(BaseModel):
     risk_class: RiskClass | None = None
     target_system: str | None = None
     action_class: str | None = None
+    current_identity_projection: CurrentIdentityProjection | None = None
+    dialogue_binding_state: DialogueBindingState | None = None
 
 
 class AuthorityDocument(BaseModel):
@@ -373,6 +413,8 @@ class TaskContract(BaseModel):
     context_admission_receipts: list[ContextAdmissionReceipt] = Field(default_factory=list)
     retry_context: RetryContext | None = None
     risk_class: RiskClass = RiskClass.R0
+    current_mapping_version: str | None = None
+    resolved_referent_id: str | None = None
     domain_contracts: list[DomainContract] = Field(default_factory=list)
     research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
     research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)

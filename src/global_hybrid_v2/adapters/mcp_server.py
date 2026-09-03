@@ -137,6 +137,13 @@ def create_mcp_server(application: Application) -> MCPServer:
         result = application.dispatcher.dispatch(request)
         return result.model_dump(mode="json")
 
+    @server.tool()
+    def dispatch_host_task(payload: dict) -> dict:
+        """Dispatch one stateless task with its current Host identity projection."""
+        request = TaskRequest.model_validate(payload)
+        result = application.dispatcher.dispatch(request, require_host_projection=True)
+        return result.model_dump(mode="json")
+
     return server
 
 

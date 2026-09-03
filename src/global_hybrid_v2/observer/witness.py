@@ -52,6 +52,24 @@ class ReadOnlyWitness:
     def observe(self, event: TraceEvent) -> WitnessFinding | None:
         observed = self._observed_runtime.setdefault(event.task_id, {})
         observed[event.stage] = event.model_copy(deep=True)
+        if event.stage in {"owner_route", "response_egress"}:
+            projection = observed.get("host_projection_validation")
+            if (
+                projection is not None
+                and projection.decision == "PASS"
+                and (
+                    event.metadata.get("current_mapping_version")
+                    != projection.metadata.get("current_mapping_version")
+                    or event.metadata.get("resolved_referent_id")
+                    != projection.metadata.get("resolved_referent_id")
+                )
+            ):
+                return WitnessFinding(
+                    task_id=event.task_id,
+                    severity="error",
+                    code="HOST_BINDING_CONSUMPTION_DRIFT",
+                    message="Owner routing or egress consumed a different Host dialogue binding.",
+                )
         if event.stage == "effect_gate" and event.decision == "DENY":
             return WitnessFinding(
                 task_id=event.task_id,

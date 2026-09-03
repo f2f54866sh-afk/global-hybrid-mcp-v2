@@ -32,6 +32,7 @@ from global_hybrid_v2.governance.egress import (
 )
 from global_hybrid_v2.governance.firewall import TaskFirewall
 from global_hybrid_v2.governance.fitness import SystemFitnessFunctions
+from global_hybrid_v2.governance.host_projection import HostProjectionGate
 from global_hybrid_v2.governance.library_boundary import LibraryReadWriteBoundary
 from global_hybrid_v2.governance.pre_action import PreActionConstraintGate
 from global_hybrid_v2.governance.repeat_action import (
@@ -90,6 +91,7 @@ class Dispatcher:
         domain_contract_gate: DomainContractGate | None = None,
         library_boundary: LibraryReadWriteBoundary | None = None,
         pre_action_gate: PreActionConstraintGate | None = None,
+        host_projection_gate: HostProjectionGate | None = None,
     ):
         self.authority = authority
         self.domains = domains
@@ -102,12 +104,13 @@ class Dispatcher:
         self.domain_contract_gate = domain_contract_gate or DomainContractGate()
         self.library_boundary = library_boundary or LibraryReadWriteBoundary()
         self.pre_action_gate = pre_action_gate or PreActionConstraintGate()
+        self.host_projection_gate = host_projection_gate or HostProjectionGate()
         self.research_executor = research_executor or ResearchExecutor(UnavailableResearchPort())
         self.egress = egress or ResponseEgressValidator(
             research_available=(self.research_executor.availability is ResearchProviderAvailability.CALLABLE)
         )
 
-    def dispatch(self, request: TaskRequest):
+    def dispatch(self, request: TaskRequest, *, require_host_projection: bool = False):
         task_id = str(uuid4())
         task_trace_id = self.trace.start_task(task_id)
         contract_id = str(uuid4())
@@ -142,6 +145,32 @@ class Dispatcher:
             },
         )
 
+        host_projection = self.host_projection_gate.admit(
+            request,
+            required=require_host_projection,
+        )
+        self.trace.emit(
+            task_id=task_id,
+            stage="host_projection_validation",
+            decision="PASS" if host_projection.allowed else "BLOCK",
+            span_owner="GLOBAL",
+            metadata={
+                "state": "HOST_STATE_VALIDATED" if host_projection.allowed else "VALIDATION_PENDING",
+                "blocker": host_projection.blocker,
+                "current_mapping_version": host_projection.mapping_version,
+                "resolved_referent_id": host_projection.resolved_referent_id,
+            },
+        )
+        if not host_projection.allowed:
+            return DomainResult(
+                owner=Owner.GLOBAL,
+                status=host_projection.blocker or "HOST_STATE_PROJECTION_UNAVAILABLE",
+                evidence={
+                    "host_state_validation": "VALIDATION_PENDING",
+                    "blocker": host_projection.blocker,
+                },
+            )
+
         owner = self.router.route(request.intent)
         sales_media_task = owner is Owner.SALES_HUMAN and SalesMediaDomain.supports(request.request_text)
         authority_entry = snapshot.entries.get(owner)
@@ -166,6 +195,8 @@ class Dispatcher:
             context_admission_receipts=context_admission.receipts,
             retry_context=request.retry_context,
             risk_class=risk_class,
+            current_mapping_version=host_projection.mapping_version,
+            resolved_referent_id=host_projection.resolved_referent_id,
         )
 
         self.trace.emit(
@@ -181,6 +212,8 @@ class Dispatcher:
                 "result": "PASS",
                 "failure_class": None,
                 "context_count": len(safe_context),
+                "current_mapping_version": contract.current_mapping_version,
+                "resolved_referent_id": contract.resolved_referent_id,
             },
         )
 
@@ -196,6 +229,8 @@ class Dispatcher:
                 "output_ref": owner.value,
                 "result": "PASS",
                 "failure_class": None,
+                "current_mapping_version": contract.current_mapping_version,
+                "resolved_referent_id": contract.resolved_referent_id,
             },
         )
 
@@ -716,6 +751,36 @@ class Dispatcher:
                     }
                 )
                 return result
+        if contract.current_mapping_version is not None:
+            host_terminal = (
+                result.turn_contract,
+                result.research_evidence_packet,
+                result.final_response_object,
+                result.action_plan,
+            )
+            if any(host_terminal):
+                expected = {
+                    "current_mapping_version": contract.current_mapping_version,
+                    "resolved_referent_id": contract.resolved_referent_id,
+                }
+                if not all(
+                    isinstance(item, dict)
+                    and all(item.get(key) == value for key, value in expected.items())
+                    for item in host_terminal
+                ):
+                    return DomainResult(
+                        owner=result.owner,
+                        status=UNKNOWN_WITH_EXACT_BLOCKER,
+                        output={
+                            "state": UNKNOWN_WITH_EXACT_BLOCKER,
+                            "blocker": "NO_SERIALIZE: host mapping or dialogue referent drift",
+                        },
+                        evidence={
+                            **result.evidence,
+                            "egress_decision": "BLOCK",
+                            "host_binding_consumption": "FAIL",
+                        },
+                    )
         result = result.model_copy(
             update={
                 "evidence": {
@@ -723,6 +788,11 @@ class Dispatcher:
                     "sources_callable": any(
                         item.origin.value in {"current_tool_result", "current_authority"}
                         for item in contract.context
+                    ),
+                    "current_mapping_version": contract.current_mapping_version,
+                    "resolved_referent_id": contract.resolved_referent_id,
+                    "host_binding_consumption": (
+                        "PASS" if contract.current_mapping_version is not None else "NOT_APPLICABLE"
                     ),
                 },
             }
@@ -743,6 +813,9 @@ class Dispatcher:
                 "defect_family": validated.evidence.get("defect_family"),
                 "fix_claimed": bool(validated.evidence.get("fix_claimed", False)),
                 "user_reported_recurrence": bool(validated.evidence.get("user_reported_recurrence", False)),
+                "current_mapping_version": contract.current_mapping_version,
+                "resolved_referent_id": contract.resolved_referent_id,
+                "host_binding_consumption": validated.evidence.get("host_binding_consumption"),
             },
         )
         return validated

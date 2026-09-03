@@ -108,6 +108,8 @@ class TraceBus:
                     "observed_stage": stage,
                     "finding_code": finding.code if finding else None,
                     "consumption_checks": consumption_checks,
+                    "current_mapping_version": event.metadata.get("current_mapping_version"),
+                    "resolved_referent_id": event.metadata.get("resolved_referent_id"),
                 },
             )
             self._print(witness_event)

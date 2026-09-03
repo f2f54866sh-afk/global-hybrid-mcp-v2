@@ -21,6 +21,8 @@ class ResearchEvidencePacket(BaseModel):
     decision_inputs: list[str] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     stale: bool = False
+    current_mapping_version: str | None = None
+    resolved_referent_id: str | None = None
 
 
 class FinalResponseObject(BaseModel):
@@ -28,6 +30,8 @@ class FinalResponseObject(BaseModel):
     consumed_packet_id: str
     claims: list[str] = Field(default_factory=list)
     labelled_inferences: list[str] = Field(default_factory=list)
+    current_mapping_version: str | None = None
+    resolved_referent_id: str | None = None
 
 
 class SelfResolvabilityDecision(BaseModel):
@@ -61,6 +65,8 @@ class TurnContract(BaseModel):
     required_information: list[str] = Field(default_factory=list)
     current_evidence_refs: list[str] = Field(default_factory=list)
     ask_user_admission_state: str = "UNDECIDED"
+    current_mapping_version: str | None = None
+    resolved_referent_id: str | None = None
 
 
 class ActionPlan(BaseModel):
@@ -69,6 +75,8 @@ class ActionPlan(BaseModel):
     deliverable_contract: str | None = None
     fulfilled_obligations: list[str] = Field(default_factory=list)
     input_required_receipt: InputRequiredReceipt | None = None
+    current_mapping_version: str | None = None
+    resolved_referent_id: str | None = None
 
 
 class FinalEgressVerdict(BaseModel):
