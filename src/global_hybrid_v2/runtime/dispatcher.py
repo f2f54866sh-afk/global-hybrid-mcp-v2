@@ -39,6 +39,7 @@ from global_hybrid_v2.governance.repeat_action import (
     REPEAT_BLOCKED_NO_NEW_EVIDENCE,
     RepeatActionGate,
 )
+from global_hybrid_v2.governance.resume import ResumeGate
 from global_hybrid_v2.governance.risk import TaskRiskClassifier
 from global_hybrid_v2.governance.router import OwnerRouter
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
@@ -92,6 +93,9 @@ class Dispatcher:
         library_boundary: LibraryReadWriteBoundary | None = None,
         pre_action_gate: PreActionConstraintGate | None = None,
         host_projection_gate: HostProjectionGate | None = None,
+        resume_gate: ResumeGate | None = None,
+        runtime_commit: str | None = None,
+        runtime_branch: str | None = None,
     ):
         self.authority = authority
         self.domains = domains
@@ -105,6 +109,9 @@ class Dispatcher:
         self.library_boundary = library_boundary or LibraryReadWriteBoundary()
         self.pre_action_gate = pre_action_gate or PreActionConstraintGate()
         self.host_projection_gate = host_projection_gate or HostProjectionGate()
+        self.resume_gate = resume_gate or ResumeGate()
+        self.runtime_commit = runtime_commit
+        self.runtime_branch = runtime_branch
         self.research_executor = research_executor or ResearchExecutor(UnavailableResearchPort())
         self.egress = egress or ResponseEgressValidator(
             research_available=(self.research_executor.availability is ResearchProviderAvailability.CALLABLE)
@@ -174,6 +181,47 @@ class Dispatcher:
                 },
             )
 
+        resume_receipt = None
+        if request.engineering_checkpoint is not None:
+            current_authority = {
+                owner.value: entry.revision
+                for owner, entry in snapshot.entries.items()
+            }
+            resume = self.resume_gate.admit(
+                request.engineering_checkpoint,
+                current_authority=current_authority,
+                current_commit=self.runtime_commit,
+                current_branch=self.runtime_branch,
+                current_item_id=request.engineering_item_id,
+                current_backlog_snapshot_id=request.engineering_backlog_snapshot_id,
+                current_capability_snapshot_id=request.capability_snapshot_id,
+                current_hard_constraints=request.hard_constraints,
+                replay_effect_id=request.replay_effect_id,
+                replay_authorized=request.replay_authorized,
+            )
+            self.trace.emit(
+                task_id=task_id,
+                stage="resume_rehydration",
+                decision="PASS" if resume.allowed else "BLOCK",
+                span_owner="GLOBAL",
+                metadata={
+                    "checkpoint_id": request.engineering_checkpoint.checkpoint_id,
+                    "checkpoint_version": request.engineering_checkpoint.checkpoint_version,
+                    "compatibility_result": "PASS" if resume.allowed else "FAIL",
+                    "blocker": resume.blocker,
+                    "resumed_step": (
+                        request.engineering_checkpoint.resume_step_id if resume.allowed else None
+                    ),
+                },
+            )
+            if not resume.allowed:
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status=resume.blocker or "RESUME_REHYDRATION_BLOCKED",
+                    evidence={"resume_rehydration": "BLOCK", "blocker": resume.blocker},
+                )
+            resume_receipt = resume.receipt
+
         owner = self.router.route(request.intent)
         sales_media_task = owner is Owner.SALES_HUMAN and SalesMediaDomain.supports(request.request_text)
         authority_entry = snapshot.entries.get(owner)
@@ -203,6 +251,8 @@ class Dispatcher:
             identity_source_id=host_projection.source_id,
             identity_source_version=host_projection.source_version,
             identity_currentness_token=host_projection.currentness_token,
+            engineering_checkpoint=request.engineering_checkpoint,
+            resume_rehydration_receipt=resume_receipt,
         )
 
         self.trace.emit(
@@ -450,6 +500,17 @@ class Dispatcher:
                 },
             )
         result = self._validate_egress(contract, domain_result)
+        if resume_receipt is not None:
+            result = result.model_copy(
+                update={
+                    "resume_rehydration_receipt": resume_receipt,
+                    "evidence": {
+                        **result.evidence,
+                        "resume_rehydration": "PASS",
+                        "resume_rehydration_receipt": resume_receipt.model_dump(mode="json"),
+                    },
+                }
+            )
         if result.status == RUN_REQUIRED_RESEARCH:
             result = self._run_research_loop(
                 contract=contract,

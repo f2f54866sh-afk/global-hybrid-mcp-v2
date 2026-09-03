@@ -50,6 +50,7 @@ def create_application(
         else Path(__file__).resolve().parents[2]
     )
     runtime_settings = settings or Settings()
+    effective_runtime_identity = runtime_identity or read_runtime_identity()
     registry_path = Path(runtime_settings.authority_registry)
     if not registry_path.is_absolute():
         registry_path = root / registry_path
@@ -85,6 +86,8 @@ def create_application(
         domains=domains,
         trace=runtime_trace,
         research_executor=research_executor,
+        runtime_commit=effective_runtime_identity.git_commit,
+        runtime_branch=effective_runtime_identity.git_branch,
         host_projection_gate=HostProjectionGate(verifier=host_current_state_verifier),
     )
     return Application(
@@ -92,7 +95,7 @@ def create_application(
         settings=runtime_settings,
         authority=authority,
         research_executor=research_executor,
-        runtime_identity=runtime_identity or read_runtime_identity(),
+        runtime_identity=effective_runtime_identity,
         trace=runtime_trace,
         dispatcher=dispatcher,
         composition_fitness=composition_fitness,

@@ -298,6 +298,49 @@ class ContextAdmissionReceipt(BaseModel):
     quarantined_paths: list[str] = Field(default_factory=list)
 
 
+class CompletedEffect(BaseModel):
+    effect_id: str = Field(min_length=1)
+    idempotency_key: str | None = Field(default=None, min_length=1)
+    replay_safe_proof: str | None = Field(default=None, min_length=1)
+
+
+class EngineeringCheckpoint(BaseModel):
+    checkpoint_id: str = Field(min_length=1)
+    checkpoint_version: str = Field(min_length=1)
+    state_schema_version: int = Field(ge=1)
+    engineering_item_id: str = Field(min_length=1)
+    engineering_backlog_snapshot_id: str = Field(min_length=1)
+    authority_revisions: dict[str, str] = Field(min_length=1)
+    commit_sha: str = Field(min_length=1)
+    branch: str = Field(min_length=1)
+    capability_snapshot_id: str = Field(min_length=1)
+    hard_constraints: list[str] = Field(min_length=1)
+    completed_steps: list[str] = Field(default_factory=list)
+    unfinished_steps: list[str] = Field(default_factory=list)
+    completed_effects: list[CompletedEffect] = Field(default_factory=list)
+    resume_step_id: str = Field(min_length=1)
+    fresh_regression: bool = False
+    fresh_capability_change_evidence: bool = False
+    replay_authorized: bool = False
+    terminal_blocker: str | None = None
+
+
+class ResumeRehydrationReceipt(BaseModel):
+    checkpoint_id: str
+    checkpoint_version: str
+    authority_revisions: dict[str, str]
+    commit_sha: str
+    branch: str
+    compatibility_result: str
+    capability_snapshot_id: str
+    engineering_backlog_snapshot_id: str
+    resumed_step: str | None = None
+    completed_effect_ids: list[str] = Field(default_factory=list)
+    replay_status: str
+    status: str
+    reason: str
+
+
 class TaskRequest(BaseModel):
     request_text: str = Field(min_length=1)
     intent: Intent
@@ -309,6 +352,13 @@ class TaskRequest(BaseModel):
     action_class: str | None = None
     current_identity_projection: CurrentIdentityProjection | None = None
     dialogue_binding_state: DialogueBindingState | None = None
+    engineering_checkpoint: EngineeringCheckpoint | None = None
+    engineering_item_id: str | None = None
+    engineering_backlog_snapshot_id: str | None = None
+    capability_snapshot_id: str | None = None
+    hard_constraints: list[str] = Field(default_factory=list)
+    replay_effect_id: str | None = None
+    replay_authorized: bool = False
 
 
 class AuthorityDocument(BaseModel):
@@ -431,6 +481,8 @@ class TaskContract(BaseModel):
     identity_source_id: str | None = None
     identity_source_version: str | None = None
     identity_currentness_token: str | None = None
+    engineering_checkpoint: EngineeringCheckpoint | None = None
+    resume_rehydration_receipt: ResumeRehydrationReceipt | None = None
     domain_contracts: list[DomainContract] = Field(default_factory=list)
     research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
     research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)
@@ -555,6 +607,7 @@ class DomainResult(BaseModel):
     final_response_object: dict[str, Any] | None = None
     turn_contract: dict[str, Any] | None = None
     action_plan: dict[str, Any] | None = None
+    resume_rehydration_receipt: ResumeRehydrationReceipt | None = None
 
 
 class TraceEvent(BaseModel):
