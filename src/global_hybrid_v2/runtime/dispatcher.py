@@ -49,9 +49,7 @@ RESEARCH_PROVIDER_EXECUTION_FAILED = "RESEARCH_PROVIDER_EXECUTION_FAILED"
 RESEARCH_COVERAGE_INSUFFICIENT = "RESEARCH_COVERAGE_INSUFFICIENT"
 RESEARCH_RECEIPT_INVALID = "RESEARCH_RECEIPT_INVALID"
 RESEARCH_MAX_ATTEMPTS_REACHED = "RESEARCH_MAX_ATTEMPTS_REACHED"
-RESEARCH_REPEAT_BLOCKED_NO_NEW_INFORMATION = (
-    "RESEARCH_REPEAT_BLOCKED_NO_NEW_INFORMATION"
-)
+RESEARCH_REPEAT_BLOCKED_NO_NEW_INFORMATION = "RESEARCH_REPEAT_BLOCKED_NO_NEW_INFORMATION"
 RESEARCH_RESUME_DIFFERENT_BLOCKER = "RESEARCH_RESUME_DIFFERENT_BLOCKER"
 NOT_EXECUTED_UPSTREAM_BLOCK = "NOT_EXECUTED_UPSTREAM_BLOCK"
 SNAPSHOT_COMPILATION_FAIL = "SNAPSHOT_COMPILATION_FAIL"
@@ -101,14 +99,9 @@ class Dispatcher:
         self.risk_classifier = risk_classifier or TaskRiskClassifier()
         self.domain_contract_gate = domain_contract_gate or DomainContractGate()
         self.library_boundary = library_boundary or LibraryReadWriteBoundary()
-        self.research_executor = research_executor or ResearchExecutor(
-            UnavailableResearchPort()
-        )
+        self.research_executor = research_executor or ResearchExecutor(UnavailableResearchPort())
         self.egress = egress or ResponseEgressValidator(
-            research_available=(
-                self.research_executor.availability
-                is ResearchProviderAvailability.CALLABLE
-            )
+            research_available=(self.research_executor.availability is ResearchProviderAvailability.CALLABLE)
         )
 
     def dispatch(self, request: TaskRequest):
@@ -147,10 +140,7 @@ class Dispatcher:
         )
 
         owner = self.router.route(request.intent)
-        sales_media_task = (
-            owner is Owner.SALES_HUMAN
-            and SalesMediaDomain.supports(request.request_text)
-        )
+        sales_media_task = owner is Owner.SALES_HUMAN and SalesMediaDomain.supports(request.request_text)
         authority_entry = snapshot.entries.get(owner)
         risk_class = self.risk_classifier.classify(request)
         context_admission = self.firewall.evaluate(request.context, snapshot)
@@ -173,6 +163,11 @@ class Dispatcher:
             context_admission_receipts=context_admission.receipts,
             retry_context=request.retry_context,
             risk_class=risk_class,
+            turn_contract=request.turn_contract,
+            action_plan=request.action_plan,
+            research_evidence_packet=request.research_evidence_packet,
+            final_response_object=request.final_response_object,
+            sources_callable=request.sources_callable,
         )
 
         self.trace.emit(
@@ -226,12 +221,9 @@ class Dispatcher:
                 ],
                 "admitted_context_ids": [item.id for item in safe_context],
                 "admitted_context_directive_free": all(
-                    not TaskFirewall.contains_external_directive(item.payload)
-                    for item in safe_context
+                    not TaskFirewall.contains_external_directive(item.payload) for item in safe_context
                 ),
-                "quarantined_external_count": len(
-                    context_admission.quarantined_external
-                ),
+                "quarantined_external_count": len(context_admission.quarantined_external),
             },
         )
 
@@ -407,8 +399,7 @@ class Dispatcher:
         elif (
             result.status == UNKNOWN_WITH_EXACT_BLOCKER
             and result.evidence.get("evidence_admission_check") == "FAIL"
-            and self.research_executor.availability
-            is ResearchProviderAvailability.UNAVAILABLE
+            and self.research_executor.availability is ResearchProviderAvailability.UNAVAILABLE
         ):
             result = self._research_block(
                 result,
@@ -638,9 +629,7 @@ class Dispatcher:
         )
         for stage in ordered[failed_index + 1 :]:
             downstream_owner = (
-                Owner.LIBRARY_FACT
-                if stage in {"library_boundary", "library_packet"}
-                else Owner.SALES_HUMAN
+                Owner.LIBRARY_FACT if stage in {"library_boundary", "library_packet"} else Owner.SALES_HUMAN
             )
             self.trace.emit(
                 task_id=contract.task_id,
@@ -690,30 +679,38 @@ class Dispatcher:
         return result
 
     def _validate_egress(self, contract: TaskContract, result: DomainResult) -> DomainResult:
+        result = result.model_copy(
+            update={
+                "turn_contract": result.turn_contract or contract.turn_contract,
+                "action_plan": result.action_plan or contract.action_plan,
+                "research_evidence_packet": (
+                    result.research_evidence_packet or contract.research_evidence_packet
+                ),
+                "final_response_object": (result.final_response_object or contract.final_response_object),
+                "evidence": {
+                    **result.evidence,
+                    "sources_callable": bool(
+                        result.evidence.get("sources_callable", contract.sources_callable)
+                    ),
+                },
+            }
+        )
         validated = self.egress.validate(result)
         self.trace.emit(
             task_id=contract.task_id,
             stage="response_egress",
             decision=(
-                "BLOCK"
-                if validated.status in {RUN_REQUIRED_RESEARCH, UNKNOWN_WITH_EXACT_BLOCKER}
-                else "PASS"
+                "BLOCK" if validated.status in {RUN_REQUIRED_RESEARCH, UNKNOWN_WITH_EXACT_BLOCKER} else "PASS"
             ),
             owner=contract.owner,
             metadata={
-                "classifications": sorted(
-                    item.value for item in validated.output_classifications
-                ),
+                "classifications": sorted(item.value for item in validated.output_classifications),
                 "status": validated.status,
-                "evidence_admission_check": validated.evidence.get(
-                    "evidence_admission_check"
-                ),
+                "evidence_admission_check": validated.evidence.get("evidence_admission_check"),
                 "finding_codes": validated.evidence.get("finding_codes", []),
                 "defect_family": validated.evidence.get("defect_family"),
                 "fix_claimed": bool(validated.evidence.get("fix_claimed", False)),
-                "user_reported_recurrence": bool(
-                    validated.evidence.get("user_reported_recurrence", False)
-                ),
+                "user_reported_recurrence": bool(validated.evidence.get("user_reported_recurrence", False)),
             },
         )
         return validated
@@ -799,10 +796,7 @@ class Dispatcher:
                     "retrieval_strategy": research_request.retrieval_strategy,
                 },
             )
-            if (
-                self.research_executor.availability
-                is not ResearchProviderAvailability.CALLABLE
-            ):
+            if self.research_executor.availability is not ResearchProviderAvailability.CALLABLE:
                 return self._close_research_loop(
                     contract,
                     self._research_block(
@@ -901,9 +895,7 @@ class Dispatcher:
                 owner=contract.owner,
                 metadata={
                     "request_id": receipt.request_id,
-                    "admitted_semantic_keys": [
-                        item.semantic_key.value for item in admitted
-                    ],
+                    "admitted_semantic_keys": [item.semantic_key.value for item in admitted],
                     "missing_semantic_keys": [item.value for item in missing],
                 },
             )
@@ -914,8 +906,7 @@ class Dispatcher:
                         self._research_block(
                             initial_result,
                             RESEARCH_MAX_ATTEMPTS_REACHED,
-                            "fresh evidence admission still fails after the maximum "
-                            "research attempts",
+                            "fresh evidence admission still fails after the maximum research attempts",
                             execution_receipts=execution_receipts,
                             admission_receipts=admission_receipts,
                         ),
@@ -964,8 +955,7 @@ class Dispatcher:
                     self._research_block(
                         resumed,
                         RESEARCH_RESUME_DIFFERENT_BLOCKER,
-                        "resume validation requires a materially different research scope "
-                        "or semantic key",
+                        "resume validation requires a materially different research scope or semantic key",
                         execution_receipts=execution_receipts,
                         admission_receipts=admission_receipts,
                     ),
@@ -1009,10 +999,7 @@ class Dispatcher:
             if alternate
             else "Verify current evidence for"
         )
-        queries = [
-            f"{query_prefix} {item.value} within the bounded scope: {scope}"
-            for item in required
-        ]
+        queries = [f"{query_prefix} {item.value} within the bounded scope: {scope}" for item in required]
         return ResearchRequest(
             task_id=contract.task_id,
             original_owner=contract.owner,
@@ -1030,9 +1017,7 @@ class Dispatcher:
             authority_revision=authority_revision,
             attempt=attempt,
             retrieval_strategy=(
-                "ALTERNATE_CURRENT_SOURCE_CONFIRMATION"
-                if alternate
-                else "PRIMARY_CURRENT_SOURCE"
+                "ALTERNATE_CURRENT_SOURCE_CONFIRMATION" if alternate else "PRIMARY_CURRENT_SOURCE"
             ),
         )
 
@@ -1044,9 +1029,7 @@ class Dispatcher:
         self.trace.emit(
             task_id=contract.task_id,
             stage="research_loop_closed",
-            decision=(
-                "BLOCK" if result.status == UNKNOWN_WITH_EXACT_BLOCKER else "PASS"
-            ),
+            decision=("BLOCK" if result.status == UNKNOWN_WITH_EXACT_BLOCKER else "PASS"),
             owner=contract.owner,
             metadata={
                 "status": result.status,
@@ -1098,9 +1081,7 @@ class Dispatcher:
             return "research execution receipt request_id mismatch"
         if receipt.provider != self.research_executor.provider:
             return "research execution receipt provider mismatch"
-        if not set(item.reference for item in receipt.evidence).issubset(
-            set(receipt.source_references)
-        ):
+        if not set(item.reference for item in receipt.evidence).issubset(set(receipt.source_references)):
             return "research execution receipt source references do not cover evidence"
         return None
 
@@ -1110,10 +1091,7 @@ class Dispatcher:
         additional: list[ResearchAdmissionReceipt],
     ) -> list[ResearchAdmissionReceipt]:
         merged = list(existing)
-        identities = {
-            (item.semantic_key, item.scope, item.issued_at, item.valid_until)
-            for item in existing
-        }
+        identities = {(item.semantic_key, item.scope, item.issued_at, item.valid_until) for item in existing}
         for item in additional:
             identity = (item.semantic_key, item.scope, item.issued_at, item.valid_until)
             if identity not in identities:
