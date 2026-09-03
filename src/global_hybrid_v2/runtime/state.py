@@ -33,6 +33,11 @@ class RuntimeTaskState(BaseModel):
     last_action_result: str | None = None
     closure_state: str = Field(min_length=1)
     resume_cursor: str | None = Field(default=None, min_length=1)
+    action_id: str | None = Field(default=None, min_length=1)
+    idempotency_key: str | None = Field(default=None, min_length=1)
+    action_status: str | None = Field(default=None, min_length=1)
+    action_effect_type: str | None = Field(default=None, min_length=1)
+    action_result_status: str | None = Field(default=None, min_length=1)
     updated_at: datetime
 
     @model_validator(mode="after")

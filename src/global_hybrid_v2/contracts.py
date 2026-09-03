@@ -489,6 +489,8 @@ class TaskContract(BaseModel):
     domain_contracts: list[DomainContract] = Field(default_factory=list)
     research_admission_receipts: list[ResearchAdmissionReceipt] = Field(default_factory=list)
     research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)
+    action_id: str | None = None
+    idempotency_key: str | None = None
 
 
 class ResearchEvidence(BaseModel):

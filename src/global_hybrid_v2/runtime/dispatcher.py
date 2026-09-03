@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from global_hybrid_v2.contracts import (
     AuthoritySnapshot,
@@ -170,6 +170,16 @@ class Dispatcher:
                     status="RUNTIME_STATE_CLOSED",
                     evidence={"transition": transition.kind},
                 )
+            if (
+                runtime_state.action_status == "COMPLETED"
+                and runtime_state.action_result_status
+                and runtime_state.next_action_candidate is None
+            ):
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status=runtime_state.action_result_status,
+                    evidence={"runtime_state": "REPLAYED_COMMITTED_RESULT"},
+                )
         try:
             snapshot = self.authority.resolve()
         except Exception as exc:
@@ -307,6 +317,14 @@ class Dispatcher:
             context_admission.quarantined_external,
         )
 
+        action_id = idempotency_key = None
+        if runtime_state is not None and transition is not None:
+            action_id = runtime_state.action_id or str(
+                uuid5(NAMESPACE_URL, f"{runtime_state.task_id}:{transition.reason}")
+            )
+            idempotency_key = runtime_state.idempotency_key or (
+                f"runtime:{runtime_state.conversation_or_thread_id}:{action_id}"
+            )
         contract = TaskContract(
             task_id=task_id,
             task_trace_id=task_trace_id,
@@ -327,6 +345,8 @@ class Dispatcher:
             identity_currentness_token=host_projection.currentness_token,
             engineering_checkpoint=request.engineering_checkpoint,
             resume_rehydration_receipt=resume_receipt,
+            action_id=action_id,
+            idempotency_key=idempotency_key,
         )
 
         self.trace.emit(
