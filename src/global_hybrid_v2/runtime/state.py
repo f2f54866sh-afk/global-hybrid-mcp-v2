@@ -38,6 +38,8 @@ class RuntimeTaskState(BaseModel):
     action_status: str | None = Field(default=None, min_length=1)
     action_effect_type: str | None = Field(default=None, min_length=1)
     action_result_status: str | None = Field(default=None, min_length=1)
+    action_result_output: object = None
+    action_result_evidence: dict[str, object] = Field(default_factory=dict)
     updated_at: datetime
 
     @model_validator(mode="after")

@@ -63,6 +63,8 @@ class TransitionController:
                 "action_id": action_id,
                 "action_status": "COMPLETED" if not blocked else "FAILED",
                 "action_result_status": status,
+                "action_result_output": result.output,
+                "action_result_evidence": result.evidence,
                 "next_action_candidate": (
                     state.resume_cursor
                     if support_completed

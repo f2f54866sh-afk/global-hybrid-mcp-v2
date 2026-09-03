@@ -178,7 +178,17 @@ class Dispatcher:
                 return DomainResult(
                     owner=Owner.GLOBAL,
                     status=runtime_state.action_result_status,
-                    evidence={"runtime_state": "REPLAYED_COMMITTED_RESULT"},
+                    output=runtime_state.action_result_output,
+                    evidence={
+                        **runtime_state.action_result_evidence,
+                        "runtime_state": "REPLAYED_COMMITTED_RESULT",
+                    },
+                )
+            if runtime_state.action_status in {"STARTED", "PENDING"}:
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="RUNTIME_EFFECT_OUTCOME_UNKNOWN",
+                    evidence={"runtime_state": "BLOCK"},
                 )
         try:
             snapshot = self.authority.resolve()
@@ -348,6 +358,17 @@ class Dispatcher:
             action_id=action_id,
             idempotency_key=idempotency_key,
         )
+
+        if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
+            runtime_state = runtime_state.model_copy(
+                update={
+                    "action_id": action_id,
+                    "idempotency_key": idempotency_key,
+                    "action_status": "STARTED",
+                    "action_effect_type": request.effects[0].value if request.effects else None,
+                }
+            )
+            self.runtime_state_store.update(runtime_state)
 
         self.trace.emit(
             task_id=contract.task_id,
