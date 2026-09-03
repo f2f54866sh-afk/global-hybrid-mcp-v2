@@ -60,7 +60,11 @@ class TransitionController:
                 "active_blocker": status if blocked else None,
                 "last_action_id": action_id,
                 "last_action_result": status,
-                "next_action_candidate": None if not blocked else state.next_action_candidate,
+                "next_action_candidate": (
+                    state.resume_cursor
+                    if support_completed
+                    else None if not blocked else state.next_action_candidate
+                ),
                 "active_subtask_id": None if support_completed else state.active_subtask_id,
                 "active_main_task_id": state.active_main_task_id,
                 "closure_state": (

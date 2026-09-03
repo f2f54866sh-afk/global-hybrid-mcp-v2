@@ -114,7 +114,11 @@ def test_transition_controller_marks_mutation_candidate_executable():
 
 
 def test_completed_support_clears_subtask_and_keeps_parent():
-    state = _state(active_subtask_id="support-1", active_main_task_id="main-1")
+    state = _state(
+        active_subtask_id="support-1",
+        active_main_task_id="main-1",
+        resume_cursor="parent-next",
+    )
     result = DomainResult(owner=Owner.GLOBAL, status="DONE")
     updated = TransitionController().consume_result(
         state, _request(runtime_state_required=False), result,
@@ -122,6 +126,32 @@ def test_completed_support_clears_subtask_and_keeps_parent():
     )
     assert updated.active_subtask_id is None
     assert updated.active_main_task_id == "main-1"
+    assert updated.next_action_candidate == "parent-next"
+    assert updated.closure_state == "OPEN"
+
+
+def test_support_child_completion_resumes_parent_on_next_dispatch(tmp_path):
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    store.create(
+        _state(
+            task="task-a",
+            active_subtask_id="support-1",
+            active_main_task_id="main-1",
+            resume_cursor="parent-next",
+        )
+    )
+    domain = _Domain()
+    dispatcher = _dispatcher(store, domain)
+    first = dispatcher.dispatch(_request(runtime_task_id="task-a"))
+    assert first.status == "DONE"
+    persisted = store.load("thread-a", "task-a")
+    assert persisted.active_subtask_id is None
+    assert persisted.active_main_task_id == "main-1"
+    assert persisted.next_action_candidate == "parent-next"
+    assert persisted.closure_state == "OPEN"
+    second = dispatcher.dispatch(_request(runtime_task_id="task-a"))
+    assert second.status == "DONE"
+    assert domain.calls == 2
 
 
 def test_stateless_request_remains_unchanged(tmp_path):
