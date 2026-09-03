@@ -175,9 +175,7 @@ class ContextAdmissionReason(StrEnum):
     CASE_HISTORY_NOT_CURRENTLY_BOUND = "CASE_HISTORY_NOT_CURRENTLY_BOUND"
     CASE_HISTORY_CURRENTLY_BOUND = "CASE_HISTORY_CURRENTLY_BOUND"
     LEGACY_AUTHORITY_FORBIDDEN = "LEGACY_AUTHORITY_FORBIDDEN"
-    CURRENT_CAPABILITY_REQUIRES_FRESH_EVIDENCE = (
-        "CURRENT_CAPABILITY_REQUIRES_FRESH_EVIDENCE"
-    )
+    CURRENT_CAPABILITY_REQUIRES_FRESH_EVIDENCE = "CURRENT_CAPABILITY_REQUIRES_FRESH_EVIDENCE"
     STALE_RULE_BLOCKED = "STALE_RULE_BLOCKED"
     MISSING_SCOPE = "MISSING_SCOPE"
     MISSING_PURPOSE = "MISSING_PURPOSE"
@@ -185,9 +183,7 @@ class ContextAdmissionReason(StrEnum):
     UNKNOWN_CONTEXT_CLASS = "UNKNOWN_CONTEXT_CLASS"
     AUTHORITY_METADATA_MISSING = "AUTHORITY_METADATA_MISSING"
     AUTHORITY_REVISION_MISMATCH = "AUTHORITY_REVISION_MISMATCH"
-    NORMATIVE_AUTHORITY_REQUIRES_CURRENT_AUTHORITY = (
-        "NORMATIVE_AUTHORITY_REQUIRES_CURRENT_AUTHORITY"
-    )
+    NORMATIVE_AUTHORITY_REQUIRES_CURRENT_AUTHORITY = "NORMATIVE_AUTHORITY_REQUIRES_CURRENT_AUTHORITY"
     LEGACY_FACT_RETRIEVAL_HINT = "LEGACY_FACT_RETRIEVAL_HINT"
     CURRENT_FACT_REQUIRES_VERIFIED_SOURCE = "CURRENT_FACT_REQUIRES_VERIFIED_SOURCE"
     UNSUPPORTED_CONTEXT_ORIGIN = "UNSUPPORTED_CONTEXT_ORIGIN"
@@ -441,9 +437,7 @@ class ResearchExecutionReceipt(BaseModel):
             raise ValueError("research execution timestamps must be timezone-aware")
         if self.completed_at < self.started_at:
             raise ValueError("research execution completion precedes start")
-        if self.status is ResearchExecutionStatus.PASS and (
-            not self.queries_executed or not self.evidence
-        ):
+        if self.status is ResearchExecutionStatus.PASS and (not self.queries_executed or not self.evidence):
             raise ValueError("successful research execution requires queries and evidence")
         if self.status is ResearchExecutionStatus.FAILED and not (self.error or self.blocker):
             raise ValueError("failed research execution requires an error or blocker")
@@ -496,11 +490,11 @@ class DomainResult(BaseModel):
     research_execution_receipts: list[ResearchExecutionReceipt] = Field(default_factory=list)
     retrieval_key: str | None = None
     retrieval_receipts: list[RetrievalReceipt] = Field(default_factory=list)
-    retrieval_false_negative_evidence: list[RetrievalFalseNegativeEvidence] = Field(
-        default_factory=list
-    )
+    retrieval_false_negative_evidence: list[RetrievalFalseNegativeEvidence] = Field(default_factory=list)
     research_evidence_packet: dict[str, Any] | None = None
     final_response_object: dict[str, Any] | None = None
+    turn_contract: dict[str, Any] | None = None
+    action_plan: dict[str, Any] | None = None
 
 
 class TraceEvent(BaseModel):

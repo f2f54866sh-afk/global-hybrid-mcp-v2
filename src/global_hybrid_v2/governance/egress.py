@@ -16,22 +16,20 @@ from global_hybrid_v2.contracts import (
     RetrievalState,
 )
 from global_hybrid_v2.governance.research_consumption import (
+    ActionPlan,
     FinalResponseObject,
     ResearchConsumptionGate,
     ResearchEvidencePacket,
+    TurnContract,
 )
 
 RUN_REQUIRED_RESEARCH = "RUN_REQUIRED_RESEARCH"
 UNKNOWN_WITH_EXACT_BLOCKER = "UNKNOWN_WITH_EXACT_BLOCKER"
 
 ASSUMPTION_USED_AS_EVIDENCE = "ASSUMPTION_USED_AS_EVIDENCE"
-CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE = (
-    "CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE"
-)
+CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE = "CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE"
 RESEARCH_GATE_BYPASS = "RESEARCH_GATE_BYPASS"
-NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE = (
-    "NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE"
-)
+NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE = "NEGATIVE_RETRIEVAL_CLAIM_WITHOUT_VERIFIED_ABSENCE"
 RETRIEVAL_FALSE_NEGATIVE = "RETRIEVAL_FALSE_NEGATIVE"
 
 
@@ -172,9 +170,7 @@ class ResponseEgressValidator:
                 "finding_codes": finding_codes,
                 "defect_family": result.evidence.get("defect_family"),
                 "fix_claimed": bool(result.evidence.get("fix_claimed", False)),
-                "user_reported_recurrence": bool(
-                    result.evidence.get("user_reported_recurrence", False)
-                ),
+                "user_reported_recurrence": bool(result.evidence.get("user_reported_recurrence", False)),
             },
             output_classifications=classifications,
             research_scope=result.research_scope,
@@ -187,22 +183,42 @@ class ResponseEgressValidator:
 
     @staticmethod
     def _validate_packet_consumption(result: DomainResult) -> DomainResult | None:
-        if result.research_evidence_packet is None or result.final_response_object is None:
+        required = (
+            result.research_evidence_packet,
+            result.final_response_object,
+            result.turn_contract,
+            result.action_plan,
+        )
+        if not any(required):
             return None
+        if not all(required):
+            return ResponseEgressValidator._packet_block(result, "NO_SERIALIZE: terminal inputs incomplete")
         try:
             packet = ResearchEvidencePacket.model_validate(result.research_evidence_packet)
             final = FinalResponseObject.model_validate(result.final_response_object)
-            ResearchConsumptionGate.validate_final(packet, final)
-        except ValueError as exc:
-            return DomainResult(
-                owner=result.owner,
-                status=UNKNOWN_WITH_EXACT_BLOCKER,
-                output={"state": UNKNOWN_WITH_EXACT_BLOCKER, "blocker": str(exc)},
-                evidence={**result.evidence, "egress_decision": "BLOCK", "evidence_packet_check": "FAIL"},
-                research_evidence_packet=result.research_evidence_packet,
-                final_response_object=result.final_response_object,
+            contract = TurnContract.model_validate(result.turn_contract)
+            plan = ActionPlan.model_validate(result.action_plan)
+            ResearchConsumptionGate.admit_action(
+                contract,
+                plan,
+                sources_callable=bool(result.evidence.get("sources_callable", False)),
             )
+            verdict = ResearchConsumptionGate.validate_terminal(contract, plan, final, packet)
+            if not verdict.serialize:
+                return ResponseEgressValidator._packet_block(result, verdict.reason)
+        except ValueError as exc:
+            return ResponseEgressValidator._packet_block(result, str(exc))
         return result.model_copy(update={"evidence": {**result.evidence, "evidence_packet_check": "PASS"}})
+
+    @staticmethod
+    def _packet_block(result: DomainResult, blocker: str) -> DomainResult:
+        return result.model_copy(
+            update={
+                "status": UNKNOWN_WITH_EXACT_BLOCKER,
+                "output": {"state": UNKNOWN_WITH_EXACT_BLOCKER, "blocker": blocker},
+                "evidence": {**result.evidence, "egress_decision": "BLOCK", "evidence_packet_check": "FAIL"},
+            }
+        )
 
     def classify(self, result: DomainResult) -> set[OutputClassification]:
         classifications = set(result.output_classifications)
@@ -364,10 +380,7 @@ class ResponseEgressValidator:
         )
         if architecture_affecting:
             required.update(current_claims)
-        if (
-            OutputClassification.ARCHITECTURE_AFFECTING_ASSUMPTION in classifications
-            and not current_claims
-        ):
+        if OutputClassification.ARCHITECTURE_AFFECTING_ASSUMPTION in classifications and not current_claims:
             required.add(OutputClassification.ARCHITECTURE_AFFECTING_ASSUMPTION)
         return required
 
@@ -386,10 +399,7 @@ class ResponseEgressValidator:
                 continue
             if receipt.semantic_key is not semantic_key or receipt.scope != scope:
                 continue
-            if not any(
-                cls._admissible_evidence(item, semantic_key)
-                for item in receipt.evidence
-            ):
+            if not any(cls._admissible_evidence(item, semantic_key) for item in receipt.evidence):
                 continue
             if receipt.issued_at.tzinfo is None or receipt.valid_until.tzinfo is None:
                 continue
@@ -412,9 +422,7 @@ class ResponseEgressValidator:
             return admitted, list(semantic_keys)
 
         for semantic_key in semantic_keys:
-            matching = [
-                item for item in evidence if self._admissible_evidence(item, semantic_key)
-            ]
+            matching = [item for item in evidence if self._admissible_evidence(item, semantic_key)]
             if not matching:
                 missing.append(semantic_key)
                 continue
@@ -445,8 +453,7 @@ class ResponseEgressValidator:
         return not (
             evidence.source is ResearchEvidenceSource.CURRENT_USER_PROVIDED_OBSERVATION
             and semantic_key in cls.CAPABILITY_CLAIMS
-            and cls.USER_OBSERVATION_INFERENCE_PATTERN.search(evidence.observed_result)
-            is not None
+            and cls.USER_OBSERVATION_INFERENCE_PATTERN.search(evidence.observed_result) is not None
         )
 
     @classmethod
