@@ -4,6 +4,9 @@ import pytest
 
 from global_hybrid_v2.contracts import (
     AuthoritySnapshot,
+    ContextClass,
+    ContextItem,
+    ContextOrigin,
     DomainResult,
     EffectType,
     Intent,
@@ -49,12 +52,40 @@ def _dispatch(
         domains={Owner.EXECUTION: domain},
         trace=TraceBus(),
     )
+    mutation = effect in {
+        EffectType.EXTERNAL_WRITE,
+        EffectType.FILE_WRITE,
+        EffectType.IMAGE_GENERATE,
+    }
+    target_system = "repeat-action-test" if mutation else None
+    action_class = effect.value if mutation else None
+    context = (
+        [
+            ContextItem(
+                id="repeat-action-current-capability",
+                origin=ContextOrigin.CURRENT_TOOL_RESULT,
+                context_class=ContextClass.CURRENT_CAPABILITY_FACT,
+                purpose="admitted current capability for repeat-action testing",
+                task_scope="repeat-action",
+                payload={
+                    "target_system": target_system,
+                    "action_class": action_class,
+                },
+                provenance=["test:current-runtime-readback"],
+            )
+        ]
+        if mutation
+        else []
+    )
     return dispatcher.dispatch(
         TaskRequest(
             request_text="perform operation",
             intent=Intent.EXECUTION,
             effects=[effect],
             retry_context=retry_context,
+            target_system=target_system,
+            action_class=action_class,
+            context=context,
         )
     )
 
