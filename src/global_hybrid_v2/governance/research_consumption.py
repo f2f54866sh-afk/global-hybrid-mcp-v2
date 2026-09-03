@@ -1,4 +1,5 @@
 """ENG-006: immutable retrieval-to-decision-to-egress consumption."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -35,6 +36,44 @@ class SelfResolvabilityDecision(BaseModel):
     blocker: str | None = None
 
 
+class ActionKind(str):
+    SELF_RETRIEVE = "SELF_RETRIEVE"
+    ASK_USER = "ASK_USER"
+    ANSWER = "ANSWER"
+    DELIVER_HANDOFF = "DELIVER_HANDOFF"
+    EXECUTE_EFFECT = "EXECUTE_EFFECT"
+    BLOCK = "BLOCK"
+
+
+class InputRequiredReceipt(BaseModel):
+    reason: str
+    exact_missing_input: str
+
+
+class TurnContract(BaseModel):
+    task_id: str
+    current_authority_version: str
+    current_user_goal: str
+    next_external_user_action: str
+    deliverable_contract: str
+    required_obligations: list[str] = Field(default_factory=list)
+    prohibited_actions: list[str] = Field(default_factory=list)
+    required_information: list[str] = Field(default_factory=list)
+    current_evidence_refs: list[str] = Field(default_factory=list)
+    ask_user_admission_state: str = "UNDECIDED"
+
+
+class ActionPlan(BaseModel):
+    kind: str
+    payload: str = ""
+    input_required_receipt: InputRequiredReceipt | None = None
+
+
+class FinalEgressVerdict(BaseModel):
+    serialize: bool
+    reason: str
+
+
 class ResearchConsumptionGate:
     """Single final-consumption gate; prose never mutates a packet."""
 
@@ -51,6 +90,35 @@ class ResearchConsumptionGate:
     @staticmethod
     def invalidate_for_scope_change(packet: ResearchEvidencePacket) -> ResearchEvidencePacket:
         return packet.model_copy(update={"stale": True, "currentness": "STALE"})
+
+    @staticmethod
+    def admit_action(contract: TurnContract, plan: ActionPlan, *, sources_callable: bool) -> ActionPlan:
+        if plan.kind == ActionKind.ASK_USER:
+            if sources_callable:
+                raise ValueError("NO_SERIALIZE: self-retrievable information requires SELF_RETRIEVE")
+            if plan.input_required_receipt is None:
+                raise ValueError("NO_SERIALIZE: ASK_USER requires INPUT_REQUIRED_RECEIPT")
+        if contract.next_external_user_action == "DELIVER_ENGINEER_INSTRUCTION":
+            if plan.kind != ActionKind.DELIVER_HANDOFF or not plan.payload.strip():
+                raise ValueError("NO_SERIALIZE: required engineer instruction is not delivered")
+        return plan
+
+    @staticmethod
+    def validate_terminal(
+        contract: TurnContract,
+        plan: ActionPlan,
+        final: FinalResponseObject,
+        packet: ResearchEvidencePacket,
+    ) -> FinalEgressVerdict:
+        ResearchConsumptionGate.admit_action(contract, plan, sources_callable=False)
+        ResearchConsumptionGate.validate_final(packet, final)
+        if any(
+            item not in final.claims and item not in plan.payload for item in contract.required_obligations
+        ):
+            return FinalEgressVerdict(serialize=False, reason="NO_SERIALIZE: required obligation unconsumed")
+        if any(item in plan.payload for item in contract.prohibited_actions):
+            return FinalEgressVerdict(serialize=False, reason="NO_SERIALIZE: prohibited action serialized")
+        return FinalEgressVerdict(serialize=True, reason="PASS")
 
     @staticmethod
     def validate_final(packet: ResearchEvidencePacket, final: FinalResponseObject) -> FinalResponseObject:
