@@ -1,5 +1,17 @@
-from global_hybrid_v2.contracts import ContextClass, ContextItem, ContextOrigin, EffectType
+from global_hybrid_v2.contracts import (
+    AuthoritySnapshot,
+    ContextClass,
+    ContextItem,
+    ContextOrigin,
+    DomainResult,
+    EffectType,
+    Intent,
+    Owner,
+    TaskRequest,
+)
 from global_hybrid_v2.governance.pre_action import PreActionConstraintGate
+from global_hybrid_v2.runtime.dispatcher import Dispatcher
+from global_hybrid_v2.runtime.trace import TraceBus
 
 
 def _context(*, blocker="QUOTA_5_OF_5", changed=False, target="automation", action="create"):
@@ -16,6 +28,7 @@ def _context(*, blocker="QUOTA_5_OF_5", changed=False, target="automation", acti
                 "terminal_blocker": blocker,
                 "capability_change_evidence": changed,
             },
+            provenance=["tool:current-readback"],
         )
     ]
 
@@ -60,3 +73,40 @@ def test_fresh_capability_change_reopens_admission():
         )
         .allowed
     )
+
+
+def test_dispatcher_consumes_admitted_current_constraint_before_mutation():
+    class Authority:
+        def resolve(self):
+            return AuthoritySnapshot(entries={})
+
+    class Domain:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, contract):
+            self.calls += 1
+            return DomainResult(owner=Owner.EXECUTION, status="DONE")
+
+    domain = Domain()
+    result = Dispatcher(authority=Authority(), domains={Owner.EXECUTION: domain}, trace=TraceBus()).dispatch(
+        TaskRequest(
+            request_text="create",
+            intent=Intent.EXECUTION,
+            effects=[EffectType.EXTERNAL_WRITE],
+            target_system="automation",
+            action_class="create",
+            context=_context(),
+        )
+    )
+    assert result.status == "PRE_ACTION_BLOCKED" and domain.calls == 0
+
+
+def test_mutation_missing_state_blocks_but_read_only_passes():
+    gate = PreActionConstraintGate()
+    assert not gate.admit(
+        target_system=None, action_class=None, effects=[EffectType.EXTERNAL_WRITE], context=[]
+    ).allowed
+    assert gate.admit(
+        target_system=None, action_class=None, effects=[EffectType.READ_ONLY], context=[]
+    ).allowed

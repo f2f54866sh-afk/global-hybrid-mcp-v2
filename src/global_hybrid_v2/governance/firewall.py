@@ -68,10 +68,7 @@ class TaskFirewall:
             if self._is_external(item) and receipt.decision is not ContextAdmissionDecision.QUARANTINE:
                 sanitized, quarantined_paths = self._sanitize_external_payload(item.payload)
                 directive_detected = bool(quarantined_paths)
-                if (
-                    item.content_role is ContextContentRole.EXECUTABLE_INSTRUCTION
-                    and not directive_detected
-                ):
+                if item.content_role is ContextContentRole.EXECUTABLE_INSTRUCTION and not directive_detected:
                     sanitized = None
                     quarantined_paths = ["$"]
                     directive_detected = True
@@ -86,9 +83,7 @@ class TaskFirewall:
                                 if safe_payload_exists
                                 else ContextAdmissionDecision.QUARANTINE
                             ),
-                            "reason_code": (
-                                ContextAdmissionReason.QUARANTINE_EXTERNAL_DIRECTIVE
-                            ),
+                            "reason_code": (ContextAdmissionReason.QUARANTINE_EXTERNAL_DIRECTIVE),
                             "admitted_content_role": ContextContentRole.DATA_ONLY,
                             "authority_effect": ContextAuthorityEffect.NO_AUTHORITY_EFFECT,
                             "raw_evidence_stored_for_audit": True,
@@ -106,9 +101,7 @@ class TaskFirewall:
             receipts.append(receipt)
             if receipt.decision is not ContextAdmissionDecision.QUARANTINE:
                 admitted.append(
-                    self._sanitized_external_item(item, item.payload)
-                    if self._is_external(item)
-                    else item
+                    self._sanitized_external_item(item, item.payload) if self._is_external(item) else item
                 )
         return ContextAdmissionResult(
             admitted=admitted,
@@ -370,7 +363,7 @@ class TaskFirewall:
                 ContextAdmissionDecision.RETRIEVAL_HINT,
                 ContextAdmissionReason.LEGACY_FACT_RETRIEVAL_HINT,
             )
-        if item.origin is ContextOrigin.CURRENT_TOOL_RESULT:
+        if item.origin is ContextOrigin.CURRENT_TOOL_RESULT and self._has_provenance(item):
             return self._receipt(
                 item,
                 ContextAdmissionDecision.EXECUTABLE,
@@ -408,9 +401,7 @@ class TaskFirewall:
         authority_effect: ContextAuthorityEffect | None = None,
     ) -> ContextAdmissionReceipt:
         external = item.origin in TaskFirewall.EXTERNAL_ORIGINS
-        admitted_content_role = (
-            ContextContentRole.DATA_ONLY if external else item.content_role
-        )
+        admitted_content_role = ContextContentRole.DATA_ONLY if external else item.content_role
         effective_authority = authority_effect
         if effective_authority is None:
             effective_authority = (
