@@ -499,6 +499,8 @@ class DomainResult(BaseModel):
     retrieval_false_negative_evidence: list[RetrievalFalseNegativeEvidence] = Field(
         default_factory=list
     )
+    research_evidence_packet: dict[str, Any] | None = None
+    final_response_object: dict[str, Any] | None = None
 
 
 class TraceEvent(BaseModel):

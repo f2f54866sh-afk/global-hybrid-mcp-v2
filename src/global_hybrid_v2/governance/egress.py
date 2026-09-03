@@ -15,6 +15,11 @@ from global_hybrid_v2.contracts import (
     RetrievalReceipt,
     RetrievalState,
 )
+from global_hybrid_v2.governance.research_consumption import (
+    FinalResponseObject,
+    ResearchConsumptionGate,
+    ResearchEvidencePacket,
+)
 
 RUN_REQUIRED_RESEARCH = "RUN_REQUIRED_RESEARCH"
 UNKNOWN_WITH_EXACT_BLOCKER = "UNKNOWN_WITH_EXACT_BLOCKER"
@@ -100,6 +105,9 @@ class ResponseEgressValidator:
         self.research_available = research_available
 
     def validate(self, result: DomainResult) -> DomainResult:
+        packet_decision = self._validate_packet_consumption(result)
+        if packet_decision is not None:
+            return packet_decision
         result = self._record_retrieval_false_negative(result)
         classifications = self.classify(result)
         retrieval_decision = self._validate_prior_context_absence(result, classifications)
@@ -176,6 +184,25 @@ class ResponseEgressValidator:
             retrieval_receipts=result.retrieval_receipts,
             retrieval_false_negative_evidence=result.retrieval_false_negative_evidence,
         )
+
+    @staticmethod
+    def _validate_packet_consumption(result: DomainResult) -> DomainResult | None:
+        if result.research_evidence_packet is None or result.final_response_object is None:
+            return None
+        try:
+            packet = ResearchEvidencePacket.model_validate(result.research_evidence_packet)
+            final = FinalResponseObject.model_validate(result.final_response_object)
+            ResearchConsumptionGate.validate_final(packet, final)
+        except ValueError as exc:
+            return DomainResult(
+                owner=result.owner,
+                status=UNKNOWN_WITH_EXACT_BLOCKER,
+                output={"state": UNKNOWN_WITH_EXACT_BLOCKER, "blocker": str(exc)},
+                evidence={**result.evidence, "egress_decision": "BLOCK", "evidence_packet_check": "FAIL"},
+                research_evidence_packet=result.research_evidence_packet,
+                final_response_object=result.final_response_object,
+            )
+        return result.model_copy(update={"evidence": {**result.evidence, "evidence_packet_check": "PASS"}})
 
     def classify(self, result: DomainResult) -> set[OutputClassification]:
         classifications = set(result.output_classifications)
