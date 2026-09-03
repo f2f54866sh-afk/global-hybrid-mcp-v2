@@ -85,3 +85,19 @@ def test_dispatcher_assembles_terminal_inputs_and_blocks_self_retrievable_ask_us
         authority=Authority(), domains={Owner.EXECUTION: Domain()}, trace=TraceBus()
     ).dispatch(request)
     assert result.status == UNKNOWN_WITH_EXACT_BLOCKER
+
+
+def test_dispatcher_blocks_self_consistent_terminal_state_for_another_task():
+    class Authority:
+        def resolve(self):
+            return AuthoritySnapshot(entries={})
+
+    class Domain:
+        def run(self, contract):
+            return _result()
+
+    result = Dispatcher(
+        authority=Authority(), domains={Owner.EXECUTION: Domain()}, trace=TraceBus()
+    ).dispatch(TaskRequest(request_text="status", intent=Intent.EXECUTION))
+    assert result.status == UNKNOWN_WITH_EXACT_BLOCKER
+    assert result.evidence["terminal_task_binding"] == "FAIL"

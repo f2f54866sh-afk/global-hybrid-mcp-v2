@@ -674,6 +674,29 @@ class Dispatcher:
         return result
 
     def _validate_egress(self, contract: TaskContract, result: DomainResult) -> DomainResult:
+        terminal = (
+            result.turn_contract,
+            result.research_evidence_packet,
+            result.final_response_object,
+        )
+        if all(terminal):
+            task_ids = {item.get("task_id") for item in terminal if isinstance(item, dict)}
+            if task_ids != {contract.task_id}:
+                result = result.model_copy(
+                    update={
+                        "status": UNKNOWN_WITH_EXACT_BLOCKER,
+                        "output": {
+                            "state": UNKNOWN_WITH_EXACT_BLOCKER,
+                            "blocker": "NO_SERIALIZE: terminal state task id mismatch",
+                        },
+                        "evidence": {
+                            **result.evidence,
+                            "egress_decision": "BLOCK",
+                            "terminal_task_binding": "FAIL",
+                        },
+                    }
+                )
+                return result
         result = result.model_copy(
             update={
                 "evidence": {
