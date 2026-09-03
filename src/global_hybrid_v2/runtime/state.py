@@ -50,6 +50,7 @@ class RuntimeTaskState(BaseModel):
     action_result_status: str | None = Field(default=None, min_length=1)
     action_result_output: object = None
     action_result_evidence: dict[str, object] = Field(default_factory=dict)
+    logical_action_identity: str | None = Field(default=None, min_length=1)
     interrupted_task_stack: list[RuntimeTaskFrame] = Field(default_factory=list)
     updated_at: datetime
 

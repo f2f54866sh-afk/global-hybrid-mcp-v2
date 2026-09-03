@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from global_hybrid_v2.contracts import DomainResult, TaskRequest
-from global_hybrid_v2.runtime.state import RuntimeTaskState
+from global_hybrid_v2.runtime.state import RuntimeTaskFrame, RuntimeTaskState
 
 
 @dataclass(frozen=True)
@@ -61,6 +61,7 @@ class TransitionController:
                 "last_action_id": action_id,
                 "last_action_result": status,
                 "action_id": action_id,
+                "logical_action_identity": transition.reason,
                 "action_status": "COMPLETED" if not blocked else "FAILED",
                 "action_result_status": status,
                 "action_result_output": result.output,
@@ -85,3 +86,18 @@ class TransitionController:
                 "updated_at": datetime.now(UTC),
             }
         )
+    def interrupt(self, state: RuntimeTaskState, child_task_id: str) -> RuntimeTaskState:
+        frame = RuntimeTaskFrame(
+            task_id=state.task_id,
+            primary_user_outcome=state.primary_user_outcome,
+            current_phase=state.current_phase,
+            next_action_candidate=state.next_action_candidate,
+            resume_cursor=state.resume_cursor,
+            action_id=state.action_id,
+            requirement_ids=state.current_requirement_ids,
+        )
+        return state.model_copy(update={
+            "interrupted_task_stack": [*state.interrupted_task_stack, frame],
+            "active_subtask_id": child_task_id,
+            "current_phase": "INTERRUPTED",
+        })

@@ -329,7 +329,7 @@ class Dispatcher:
 
         action_id = idempotency_key = None
         if runtime_state is not None and transition is not None:
-            if runtime_state.action_id and runtime_state.last_action_id != transition.reason:
+            if runtime_state.action_id and runtime_state.logical_action_identity != transition.reason:
                 runtime_state = runtime_state.model_copy(update={"action_id": None, "idempotency_key": None})
             action_id = runtime_state.action_id or str(
                 uuid5(NAMESPACE_URL, f"{runtime_state.task_id}:{transition.reason}")
