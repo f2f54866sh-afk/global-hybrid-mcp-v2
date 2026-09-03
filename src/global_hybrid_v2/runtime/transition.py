@@ -53,7 +53,7 @@ class TransitionController:
             state.active_subtask_id is not None
             and status in {"DONE", "PASS", "CLOSED"}
         )
-        action_id = transition.reason if transition.kind in {"EXECUTE", "SUPPORT"} else transition.kind
+        action_id = state.action_id or transition.reason
         return state.model_copy(
             update={
                 "current_progress": status,

@@ -13,6 +13,16 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 CURRENT_RUNTIME_STATE_VERSION = 1
 
 
+class RuntimeTaskFrame(BaseModel):
+    task_id: str = Field(min_length=1)
+    primary_user_outcome: str = Field(min_length=1)
+    current_phase: str = Field(min_length=1)
+    next_action_candidate: str | None = None
+    resume_cursor: str | None = None
+    action_id: str | None = None
+    requirement_ids: list[str] = Field(default_factory=list)
+
+
 class RuntimeTaskState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -40,6 +50,7 @@ class RuntimeTaskState(BaseModel):
     action_result_status: str | None = Field(default=None, min_length=1)
     action_result_output: object = None
     action_result_evidence: dict[str, object] = Field(default_factory=dict)
+    interrupted_task_stack: list[RuntimeTaskFrame] = Field(default_factory=list)
     updated_at: datetime
 
     @model_validator(mode="after")
