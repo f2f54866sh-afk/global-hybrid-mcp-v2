@@ -10,6 +10,7 @@ from global_hybrid_v2.domains.library_projection import LibraryProjectionDomain
 from global_hybrid_v2.domains.sales_media import SalesMediaDomain
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.governance.authority import AuthorityResolver
+from global_hybrid_v2.governance.effects import EffectGate
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
 from global_hybrid_v2.governance.host_projection import HostCurrentStateVerifier, HostProjectionGate
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
@@ -89,6 +90,7 @@ def create_application(
         runtime_commit=effective_runtime_identity.git_commit,
         runtime_branch=effective_runtime_identity.git_branch,
         host_projection_gate=HostProjectionGate(verifier=host_current_state_verifier),
+        effect_gate=EffectGate(live_execution=runtime_settings.live_execution),
     )
     return Application(
         repo_root=root,

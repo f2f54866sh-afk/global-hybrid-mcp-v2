@@ -17,6 +17,7 @@ class EffectDecision:
     allowed: bool
     policy_decision_point: str = "GLOBAL_EFFECT_POLICY"
     enforcement_point: str = "DISPATCHER_PRE_DOMAIN"
+    blocker: str | None = None
 
 
 OWNER_EFFECTS: dict[Owner, set[EffectType]] = {
@@ -33,19 +34,33 @@ OWNER_EFFECTS: dict[Owner, set[EffectType]] = {
 
 
 class EffectGate:
+    def __init__(self, *, live_execution: bool = True):
+        self.live_execution = live_execution
+
     def decide(self, owner: Owner, effects: list[EffectType]) -> EffectDecision:
         allowed = OWNER_EFFECTS[owner]
-        denied = tuple(effect for effect in effects if effect not in allowed)
+        mutation = {EffectType.EXTERNAL_WRITE, EffectType.FILE_WRITE, EffectType.IMAGE_GENERATE}
+        denied = tuple(
+            effect for effect in effects
+            if effect not in allowed or (not self.live_execution and effect in mutation)
+        )
         return EffectDecision(
             owner=owner,
             requested=tuple(effects),
             denied=denied,
             allowed=not denied,
+            blocker=(
+                "LIVE_EXECUTION_DISABLED"
+                if not self.live_execution and any(e in mutation for e in effects)
+                else None
+            ),
         )
 
     def authorize(self, owner: Owner, effects: list[EffectType]) -> EffectDecision:
         decision = self.decide(owner, effects)
         if not decision.allowed:
             names = ", ".join(effect.value for effect in decision.denied)
-            raise EffectAuthorizationError(f"{owner.value} cannot perform effects: {names}")
+            raise EffectAuthorizationError(
+                decision.blocker or f"{owner.value} cannot perform effects: {names}"
+            )
         return decision
