@@ -7,13 +7,20 @@ from typing import Any
 
 from global_hybrid_v2.contracts import (
     DomainResult,
+    FailureLocus,
     OutputClassification,
+    RC01StopCondition,
     ResearchAdmissionReceipt,
     ResearchAdmissionStatus,
     ResearchEvidence,
     ResearchEvidenceSource,
     RetrievalReceipt,
     RetrievalState,
+)
+from global_hybrid_v2.governance.failure_locus import (
+    classify_failure_locus,
+    may_reopen_existing,
+    may_repair,
 )
 from global_hybrid_v2.governance.research_consumption import (
     ActionPlan,
@@ -108,6 +115,44 @@ class ResponseEgressValidator:
             return packet_decision
         result = self._record_retrieval_false_negative(result)
         classifications = self.classify(result)
+        if (
+            OutputClassification.PERSISTENT_REPAIR_DESIGN in classifications
+            and isinstance(result.action_plan, dict)
+            and result.action_plan.get("kind") == "DELIVER_HANDOFF"
+        ):
+            locus = classify_failure_locus(
+                entered_user_controlled_runtime=bool(result.evidence.get("entered_user_controlled_runtime")),
+                platform_bypass=bool(result.evidence.get("platform_bypass")),
+            )
+            matching = bool(result.evidence.get("matching_scope_regression"))
+            allowed = may_repair(locus=locus) and (
+                not bool(result.action_plan.get("reopen_existing"))
+                or may_reopen_existing(locus=locus, matching_scope_regression=matching)
+            )
+            if not allowed:
+                blocker = (
+                    "BLOCK_REOPEN_NO_MATCHING_SCOPE_REGRESSION"
+                    if locus is FailureLocus.OWNED_RUNTIME and result.action_plan.get("reopen_existing")
+                    else "FAILURE_LOCUS_EVIDENCE_REQUIRED"
+                    if locus is FailureLocus.UNKNOWN_LOCUS
+                    else "UNKNOWN_WITH_EXACT_BLOCKER"
+                )
+                return result.model_copy(update={
+                    "status": "NO_SERIALIZE / UNKNOWN_WITH_EXACT_BLOCKER",
+                    "evidence": {
+                        **result.evidence,
+                        "failure_locus": locus.value,
+                        "repair_admission": (
+                            "EVIDENCE_ONLY" if locus is FailureLocus.UNKNOWN_LOCUS else "BLOCK"
+                        ),
+                        "stop_condition": (
+                            RC01StopCondition.PLATFORM_BOUNDARY_PARKED.value
+                            if locus is FailureLocus.HOST_PLATFORM
+                            else None
+                        ),
+                        "blocker": blocker,
+                    },
+                })
         retrieval_decision = self._validate_prior_context_absence(result, classifications)
         if retrieval_decision is not None:
             if retrieval_decision.evidence.get("negative_retrieval_egress_check") == "FAIL":
