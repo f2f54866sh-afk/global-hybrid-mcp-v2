@@ -28,6 +28,12 @@ from global_hybrid_v2.governance.egress import (
     UNKNOWN_WITH_EXACT_BLOCKER,
     ResponseEgressValidator,
 )
+from global_hybrid_v2.governance.research_consumption import (
+    ActionPlan,
+    FinalResponseObject,
+    ResearchEvidencePacket,
+    TurnContract,
+)
 from global_hybrid_v2.runtime.dispatcher import RESEARCH_PROVIDER_UNAVAILABLE, Dispatcher
 from global_hybrid_v2.runtime.trace import TraceBus
 
@@ -66,6 +72,73 @@ def _validator(*, research_available: bool = True) -> ResponseEgressValidator:
         clock=lambda: NOW,
         research_available=research_available,
     )
+
+
+def _full_repair_packet(*, entered: bool, bypass: bool) -> DomainResult:
+    task_id = "task-repair"
+    packet = ResearchEvidencePacket(
+        task_id=task_id,
+        user_goal="repair",
+        research_question="repair",
+        source_refs=["current:source"],
+        verified_findings=["repair finding"],
+        decision_inputs=["repair"],
+    )
+    contract = TurnContract(
+        task_id=task_id,
+        current_authority_version="current",
+        current_user_goal="repair",
+        next_external_user_action="none",
+        deliverable_contract="repair",
+        required_obligations=["repair"],
+        current_evidence_refs=["current:source"],
+    )
+    plan = ActionPlan(
+        kind="DELIVER_HANDOFF",
+        payload="REPAIR_DIRECTION",
+        deliverable_contract="repair",
+        fulfilled_obligations=["repair"],
+    )
+    final = FinalResponseObject(
+        task_id=task_id,
+        consumed_packet_id=packet.packet_id,
+        claims=["repair finding"],
+    )
+    return DomainResult(
+        owner=Owner.GLOBAL,
+        status="READY",
+        output="REPAIR_DIRECTION",
+        output_classifications={OutputClassification.PERSISTENT_REPAIR_DESIGN},
+        research_scope=SCOPE,
+        research_admission_receipts=[
+            _receipt(semantic_key=OutputClassification.PERSISTENT_REPAIR_DESIGN)
+        ],
+        research_evidence_packet=packet.model_dump(mode="json"),
+        final_response_object=final.model_dump(mode="json"),
+        turn_contract=contract.model_dump(mode="json"),
+        action_plan=plan.model_dump(mode="json"),
+        evidence={
+            "sources_callable": True,
+            "entered_user_controlled_runtime": entered,
+            "platform_bypass": bypass,
+        },
+    )
+
+
+def test_full_packet_host_platform_repair_is_blocked():
+    validated = _validator().validate(_full_repair_packet(entered=False, bypass=True))
+    assert validated.evidence["evidence_packet_check"] == "PASS"
+    assert validated.evidence["failure_locus"] == "HOST_PLATFORM"
+    assert validated.evidence["repair_admission"] == "BLOCK"
+    assert validated.evidence["stop_condition"] == "PLATFORM_BOUNDARY_PARKED"
+    assert validated.status == "NO_SERIALIZE / UNKNOWN_WITH_EXACT_BLOCKER"
+
+
+def test_full_packet_owned_runtime_repair_continues():
+    validated = _validator().validate(_full_repair_packet(entered=True, bypass=False))
+    assert validated.evidence["evidence_packet_check"] == "PASS"
+    assert "failure_locus" not in validated.evidence or validated.evidence["failure_locus"] == "OWNED_RUNTIME"
+    assert validated.status == "READY"
 
 
 def test_case_a_chatgpt_github_assumption_blocks_architecture_decision():
