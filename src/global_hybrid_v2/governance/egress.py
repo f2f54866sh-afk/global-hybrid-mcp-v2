@@ -112,7 +112,9 @@ class ResponseEgressValidator:
     def validate(self, result: DomainResult) -> DomainResult:
         packet_decision = self._validate_packet_consumption(result)
         if packet_decision is not None:
-            return packet_decision
+            if packet_decision.evidence.get("evidence_packet_check") == "FAIL":
+                return packet_decision
+            result = packet_decision
         result = self._record_retrieval_false_negative(result)
         classifications = self.classify(result)
         if (
