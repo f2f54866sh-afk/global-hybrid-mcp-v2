@@ -35,7 +35,7 @@ from global_hybrid_v2.governance.firewall import TaskFirewall
 from global_hybrid_v2.governance.fitness import SystemFitnessFunctions
 from global_hybrid_v2.governance.host_projection import HostProjectionGate
 from global_hybrid_v2.governance.library_boundary import LibraryReadWriteBoundary
-from global_hybrid_v2.governance.pre_action import PreActionConstraintGate
+from global_hybrid_v2.governance.pre_action import CurrentPreActionBinding, PreActionConstraintGate
 from global_hybrid_v2.governance.repeat_action import (
     REPEAT_BLOCKED_NO_NEW_EVIDENCE,
     RepeatActionGate,
@@ -476,6 +476,17 @@ class Dispatcher:
             action_class=request.action_class,
             effects=request.effects,
             context=safe_context,
+            current_binding=(
+                CurrentPreActionBinding(
+                    goal_id=runtime_state.primary_user_outcome,
+                    task_id=runtime_state.task_id,
+                    selected_next_action=runtime_state.next_action_candidate or "",
+                    responsibility_owner=owner.value,
+                    effect_class=request.effects[0],
+                )
+                if runtime_state is not None and request.effects else None
+            ),
+            proposed_owner=owner.value,
         )
         self.trace.emit(
             task_id=contract.task_id,

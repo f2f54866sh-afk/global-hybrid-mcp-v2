@@ -11,6 +11,16 @@ class PreActionDecision:
     blocker: str | None = None
 
 
+@dataclass(frozen=True)
+class CurrentPreActionBinding:
+    goal_id: str
+    task_id: str
+    selected_next_action: str
+    responsibility_owner: str
+    effect_class: EffectType
+    current_constraint: str | None = None
+
+
 class PreActionConstraintGate:
     MUTATIONS = {EffectType.EXTERNAL_WRITE, EffectType.FILE_WRITE, EffectType.IMAGE_GENERATE}
 
@@ -21,6 +31,8 @@ class PreActionConstraintGate:
         action_class: str | None,
         effects: list[EffectType],
         context: list[ContextItem],
+        current_binding: CurrentPreActionBinding | None = None,
+        proposed_owner: str | None = None,
     ) -> PreActionDecision:
         if not self.MUTATIONS & set(effects):
             return PreActionDecision(allowed=True)
@@ -39,4 +51,11 @@ class PreActionConstraintGate:
                 return PreActionDecision(allowed=False, blocker=blocker)
         if not matched:
             return PreActionDecision(allowed=False, blocker="PRE_ACTION_CAPABILITY_UNRESOLVED")
+        if current_binding is not None:
+            if (
+                proposed_owner != current_binding.responsibility_owner
+                or current_binding.effect_class not in effects
+                or not current_binding.selected_next_action
+            ):
+                return PreActionDecision(allowed=False, blocker="BLOCK_ACTION_SELECTION_DRIFT")
         return PreActionDecision(allowed=True)
