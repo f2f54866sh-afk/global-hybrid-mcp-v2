@@ -42,6 +42,10 @@ class TraceBus:
     def quarantined_evidence_for_task(self, task_id: str) -> dict[str, Any]:
         return deepcopy(self._quarantined_evidence.get(task_id, {}))
 
+    def findings_for_task(self, task_id: str) -> list[Any]:
+        """Read-only view of Witness findings bound to one task."""
+        return [finding for finding in self.findings if finding.task_id == task_id]
+
     def _span_id(self, task_id: str, span_owner: str) -> str:
         key = (task_id, span_owner)
         return self._task_spans.setdefault(key, str(uuid4()))

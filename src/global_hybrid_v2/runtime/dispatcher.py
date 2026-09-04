@@ -736,6 +736,27 @@ class Dispatcher:
                 ),
             },
         )
+        witness_findings = self.trace.findings_for_task(contract.task_id)
+        blocking = [item for item in witness_findings if item.severity in {"error", "critical"}]
+        self.trace.emit(
+            task_id=contract.task_id,
+            stage="terminal_witness_consumption",
+            decision="BLOCK" if blocking else "PASS",
+            owner=owner,
+            metadata={
+                "finding_codes": [item.code for item in blocking],
+                "terminal_status": result.status,
+            },
+        )
+        if blocking:
+            return result.model_copy(update={
+                "status": "NO_SERIALIZE / UNKNOWN_WITH_EXACT_BLOCKER",
+                "evidence": {
+                    **result.evidence,
+                    "witness_finding_codes": [item.code for item in blocking],
+                    "witness_task_id": contract.task_id,
+                },
+            })
         return result
 
     def _compile_sales_snapshot(

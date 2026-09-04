@@ -473,7 +473,7 @@ def test_observer_only_observes_research_trace():
 
     result = _dispatcher(domain, provider, trace=trace).dispatch(_request())
 
-    assert result.status == "READY"
+    assert result.status == "NO_SERIALIZE / UNKNOWN_WITH_EXACT_BLOCKER"
     assert not {"write", "execute", "promote"}.intersection(dir(witness))
     assert len(provider.requests) == 1
 

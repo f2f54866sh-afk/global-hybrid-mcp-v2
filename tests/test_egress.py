@@ -486,8 +486,9 @@ def test_dispatcher_enforces_evidence_admission_before_closure(capsys):
     assert CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE in egress["metadata"][
         "finding_codes"
     ]
-    assert [event["stage"] for event in events[-3:]] == [
+    assert [event["stage"] for event in events[-4:]] == [
         "research_request_created",
         "research_loop_closed",
         "closure",
+        "terminal_witness_consumption",
     ]
