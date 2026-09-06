@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from global_hybrid_v2.contracts import Owner, TraceEvent
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
+from global_hybrid_v2.runtime.state import SQLiteRuntimeStateStore
 
 
 class TraceBus:
@@ -20,6 +21,14 @@ class TraceBus:
         self._quarantined_evidence: dict[str, dict[str, Any]] = {}
         self._task_trace_ids: dict[str, str] = {}
         self._task_spans: dict[tuple[str, str], str] = {}
+        self._journal: SQLiteRuntimeStateStore | None = None
+        self._runtime_binding: tuple[str, str] | None = None
+
+    def bind_runtime(
+        self, journal: SQLiteRuntimeStateStore, conversation_or_thread_id: str, runtime_task_id: str
+    ) -> None:
+        self._journal = journal
+        self._runtime_binding = (conversation_or_thread_id, runtime_task_id)
 
     def attach_witness(self, witness: ReadOnlyWitness) -> None:
         if self.witness is None:
@@ -73,11 +82,7 @@ class TraceBus:
             task_trace_id = self.start_task(task_id)
         effective_span_owner = span_owner or (owner.value if owner is not None else "GLOBAL")
         span_id = self._span_id(task_id, effective_span_owner)
-        parent_span_id = (
-            None
-            if effective_span_owner == "GLOBAL"
-            else self._span_id(task_id, "GLOBAL")
-        )
+        parent_span_id = None if effective_span_owner == "GLOBAL" else self._span_id(task_id, "GLOBAL")
         event = TraceEvent(
             trace_id=task_trace_id,
             task_id=task_id,
@@ -88,12 +93,49 @@ class TraceBus:
             owner=owner,
             decision=decision,
             metadata=metadata or {},
+            action_id=(metadata or {}).get("action_id"),
+            conversation_or_thread_id=self._runtime_binding[0] if self._runtime_binding else None,
+            runtime_task_id=self._runtime_binding[1] if self._runtime_binding else None,
         )
+        if self._journal and self._runtime_binding:
+            event_id = self._journal.append_event(
+                {
+                    "conversation_or_thread_id": self._runtime_binding[0],
+                    "runtime_task_id": self._runtime_binding[1],
+                    "dispatch_task_id": task_id,
+                    "trace_id": task_trace_id,
+                    "stage": stage,
+                    "event_type": "TRACE",
+                    "action_id": event.action_id,
+                    "payload": event.model_dump(mode="json"),
+                }
+            )
+            event = event.model_copy(update={"event_id": event_id})
         self._print(event)
         if self.witness:
             finding = self.witness.observe(event.model_copy(deep=True))
             if finding:
+                finding = finding.model_copy(
+                    update={
+                        "observed_event_id": event.event_id,
+                        "action_id": event.action_id,
+                        "checkpoint_id": event.checkpoint_id,
+                    }
+                )
                 self.findings.append(finding)
+                if self._journal and self._runtime_binding:
+                    self._journal.append_event(
+                        {
+                            "conversation_or_thread_id": self._runtime_binding[0],
+                            "runtime_task_id": self._runtime_binding[1],
+                            "dispatch_task_id": task_id,
+                            "trace_id": task_trace_id,
+                            "stage": "witness_finding",
+                            "event_type": "WITNESS_FINDING",
+                            "action_id": finding.action_id,
+                            "payload": finding.model_dump(mode="json"),
+                        }
+                    )
             consumption_checks = self.witness.consumption_assessment_for_task(task_id)
             witness_event = TraceEvent(
                 trace_id=task_trace_id,

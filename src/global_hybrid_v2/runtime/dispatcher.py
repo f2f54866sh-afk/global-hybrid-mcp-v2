@@ -157,6 +157,22 @@ class Dispatcher:
                     status="RUNTIME_STATE_LOAD_BLOCKED",
                     evidence={"runtime_state": "BLOCK", "blocker": type(exc).__name__},
                 )
+            self.trace.bind_runtime(
+                self.runtime_state_store,
+                request.conversation_or_thread_id,
+                request.runtime_task_id,
+            )
+            self.trace.emit(
+                task_id=task_id,
+                stage="runtime_state_loaded",
+                decision="PASS",
+                span_owner="GLOBAL",
+                metadata={
+                    "state": "STATE_BEFORE",
+                    "runtime_checkpoint_id": runtime_state.runtime_checkpoint_id,
+                    "runtime_checkpoint_event_id": runtime_state.runtime_checkpoint_event_id,
+                },
+            )
             transition = self.transition_controller.decide(runtime_state, request)
             if transition.kind == "WAIT":
                 return DomainResult(
@@ -622,7 +638,15 @@ class Dispatcher:
                     "action_effect_type": request.effects[0].value if request.effects else None,
                 }
             )
-            self.runtime_state_store.update(runtime_state)
+            self.runtime_state_store.checkpoint(
+                runtime_state,
+                stage="invocation_boundary",
+                event_type="STARTED",
+                dispatch_task_id=task_id,
+                trace_id=task_trace_id,
+                action_id=action_id,
+                idempotency_key=idempotency_key,
+            )
 
         try:
             domain_result = domain.run(contract)
@@ -679,21 +703,6 @@ class Dispatcher:
                 result,
                 RESEARCH_PROVIDER_UNAVAILABLE,
                 "no callable production research provider is configured",
-            )
-
-        if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
-            runtime_state = self.transition_controller.consume_result(
-                runtime_state, request, result, transition
-            )
-            self.runtime_state_store.update(runtime_state)
-            result = result.model_copy(
-                update={
-                    "evidence": {
-                        **result.evidence,
-                        "runtime_state": "COMMITTED",
-                        "runtime_transition": transition.kind,
-                    }
-                }
             )
 
         if sales_media_task:
@@ -773,14 +782,40 @@ class Dispatcher:
             },
         )
         if blocking:
-            return result.model_copy(update={
-                "status": "NO_SERIALIZE / UNKNOWN_WITH_EXACT_BLOCKER",
-                "evidence": {
-                    **result.evidence,
-                    "witness_finding_codes": [item.code for item in blocking],
-                    "witness_task_id": contract.task_id,
-                },
-            })
+            result = result.model_copy(
+                update={
+                    "status": "NO_SERIALIZE / UNKNOWN_WITH_EXACT_BLOCKER",
+                    "evidence": {
+                        **result.evidence,
+                        "witness_finding_codes": [item.code for item in blocking],
+                        "witness_task_id": contract.task_id,
+                    },
+                }
+            )
+        if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
+            runtime_state = self.transition_controller.consume_result(
+                runtime_state, request, result, transition
+            )
+            runtime_state = self.runtime_state_store.checkpoint(
+                runtime_state,
+                stage="state_after",
+                dispatch_task_id=task_id,
+                trace_id=task_trace_id,
+                action_id=runtime_state.action_id,
+                idempotency_key=runtime_state.idempotency_key,
+                payload={"status": result.status, "evidence": result.evidence},
+            )
+            result = result.model_copy(
+                update={
+                    "evidence": {
+                        **runtime_state.action_result_evidence,
+                        "runtime_state": "COMMITTED",
+                        "runtime_transition": transition.kind,
+                        "runtime_checkpoint_id": runtime_state.runtime_checkpoint_id,
+                        "runtime_checkpoint_event_id": runtime_state.runtime_checkpoint_event_id,
+                    }
+                }
+            )
         return result
 
     def _compile_sales_snapshot(

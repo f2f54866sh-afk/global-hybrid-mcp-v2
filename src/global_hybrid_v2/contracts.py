@@ -638,6 +638,11 @@ class TraceEvent(BaseModel):
     decision: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    event_id: str | None = None
+    checkpoint_id: str | None = None
+    action_id: str | None = None
+    conversation_or_thread_id: str | None = None
+    runtime_task_id: str | None = None
 
 
 class WitnessFinding(BaseModel):
@@ -645,6 +650,9 @@ class WitnessFinding(BaseModel):
     severity: str
     code: str
     message: str
+    observed_event_id: str | None = None
+    action_id: str | None = None
+    checkpoint_id: str | None = None
 
 
 TaskContract.model_rebuild()
