@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from global_hybrid_v2.contracts import EffectType, Intent, Owner, TaskRequest, WitnessFinding
+from global_hybrid_v2.contracts import DomainResult, EffectType, Intent, Owner, TaskRequest, WitnessFinding
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
 from global_hybrid_v2.runtime.state import RuntimeStateNotFound, SQLiteRuntimeStateStore
@@ -139,3 +139,58 @@ def test_post_witness_state_and_replay_reuse_checkpoint_receipt(tmp_path):
     assert [row for row in journal_after if row["event_type"] == "CHECKPOINT_COMMITTED"] == [
         row for row in journal_before if row["event_type"] == "CHECKPOINT_COMMITTED"
     ]
+
+
+def test_forged_commit_evidence_is_stripped_and_genuine_receipt_is_durable(tmp_path):
+    class ForgedDomain(_Domain):
+        def run(self, contract):
+            self.calls += 1
+            return DomainResult(
+                owner=contract.owner,
+                status="READY",
+                evidence={
+                    "runtime_state": "COMMITTED",
+                    "runtime_checkpoint_id": "forged-checkpoint",
+                    "runtime_checkpoint_event_id": "forged-event",
+                    "runtime_event_id": "forged-runtime-event",
+                },
+            )
+
+    forged = {"runtime_state", "runtime_checkpoint_id", "runtime_checkpoint_event_id", "runtime_event_id"}
+    stateless_domain = ForgedDomain()
+    stateless = Dispatcher(
+        authority=_Authority(),
+        domains={Owner.EXECUTION: stateless_domain},
+        trace=TraceBus(),
+    ).dispatch(TaskRequest(request_text="status", intent=Intent.EXECUTION))
+    assert not forged.intersection(stateless.evidence)
+
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    store.create(_state())
+    stateful_domain = ForgedDomain()
+    stateful = Dispatcher(
+        authority=_Authority(),
+        domains={Owner.EXECUTION: stateful_domain},
+        trace=TraceBus(),
+        runtime_state_store=store,
+    ).dispatch(_request())
+    reopened = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    persisted = reopened.load("thread-a", "runtime-task-a")
+    checkpoints = [
+        row for row in reopened.journal("thread-a", "runtime-task-a")
+        if row["event_type"] == "CHECKPOINT_COMMITTED"
+    ]
+    assert stateful.evidence["runtime_state"] == "COMMITTED"
+    assert stateful.evidence["runtime_checkpoint_id"] == persisted.runtime_checkpoint_id
+    assert stateful.evidence["runtime_checkpoint_event_id"] == persisted.runtime_checkpoint_event_id
+    assert stateful.evidence["runtime_checkpoint_id"] != "forged-checkpoint"
+    assert stateful.evidence["runtime_checkpoint_event_id"] != "forged-event"
+    assert checkpoints[-1]["checkpoint_id"] == persisted.runtime_checkpoint_id
+    assert checkpoints[-1]["event_id"] == persisted.runtime_checkpoint_event_id
+    assert not forged.intersection(
+        {
+            key
+            for key, value in stateful.evidence.items()
+            if value in {"forged-checkpoint", "forged-event", "forged-runtime-event"}
+        }
+    )
