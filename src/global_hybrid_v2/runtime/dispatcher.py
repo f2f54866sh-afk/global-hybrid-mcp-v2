@@ -131,6 +131,12 @@ class Dispatcher:
         )
 
     def dispatch(self, request: TaskRequest, *, require_host_projection: bool = False):
+        try:
+            return self._dispatch(request, require_host_projection=require_host_projection)
+        finally:
+            self.trace.unbind_runtime()
+
+    def _dispatch(self, request: TaskRequest, *, require_host_projection: bool = False):
         task_id = str(uuid4())
         task_trace_id = self.trace.start_task(task_id)
         contract_id = str(uuid4())
@@ -638,7 +644,7 @@ class Dispatcher:
                     "action_effect_type": request.effects[0].value if request.effects else None,
                 }
             )
-            self.runtime_state_store.checkpoint(
+            runtime_state = self.runtime_state_store.checkpoint(
                 runtime_state,
                 stage="invocation_boundary",
                 event_type="STARTED",
@@ -646,6 +652,10 @@ class Dispatcher:
                 trace_id=task_trace_id,
                 action_id=action_id,
                 idempotency_key=idempotency_key,
+            )
+            self.trace.bind_runtime_context(
+                action_id=action_id,
+                checkpoint_id=runtime_state.runtime_checkpoint_id,
             )
 
         try:

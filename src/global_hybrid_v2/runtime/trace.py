@@ -23,12 +23,24 @@ class TraceBus:
         self._task_spans: dict[tuple[str, str], str] = {}
         self._journal: SQLiteRuntimeStateStore | None = None
         self._runtime_binding: tuple[str, str] | None = None
+        self._action_id: str | None = None
+        self._checkpoint_id: str | None = None
 
     def bind_runtime(
         self, journal: SQLiteRuntimeStateStore, conversation_or_thread_id: str, runtime_task_id: str
     ) -> None:
         self._journal = journal
         self._runtime_binding = (conversation_or_thread_id, runtime_task_id)
+
+    def bind_runtime_context(self, *, action_id: str | None = None, checkpoint_id: str | None = None) -> None:
+        self._action_id = action_id
+        self._checkpoint_id = checkpoint_id
+
+    def unbind_runtime(self) -> None:
+        self._journal = None
+        self._runtime_binding = None
+        self._action_id = None
+        self._checkpoint_id = None
 
     def attach_witness(self, witness: ReadOnlyWitness) -> None:
         if self.witness is None:
@@ -93,7 +105,8 @@ class TraceBus:
             owner=owner,
             decision=decision,
             metadata=metadata or {},
-            action_id=(metadata or {}).get("action_id"),
+            action_id=(metadata or {}).get("action_id") or self._action_id,
+            checkpoint_id=self._checkpoint_id,
             conversation_or_thread_id=self._runtime_binding[0] if self._runtime_binding else None,
             runtime_task_id=self._runtime_binding[1] if self._runtime_binding else None,
         )

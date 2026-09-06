@@ -199,7 +199,7 @@ class SQLiteRuntimeStateStore:
         body = json.dumps(payload or state.model_dump(mode="json"), ensure_ascii=False)
         with self._connect() as connection:
             connection.execute("BEGIN")
-            connection.execute(
+            cursor = connection.execute(
                 (
                     "UPDATE runtime_task_state SET runtime_state_version = ?, payload = ? "
                     "WHERE conversation_or_thread_id = ? AND task_id = ?"
@@ -211,6 +211,10 @@ class SQLiteRuntimeStateStore:
                     state.task_id,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise RuntimeStateNotFound(
+                    f"runtime state not found: {state.conversation_or_thread_id}/{state.task_id}"
+                )
             connection.execute(
                 "INSERT INTO runtime_event_journal VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
