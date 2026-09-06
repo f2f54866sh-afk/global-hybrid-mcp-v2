@@ -53,26 +53,60 @@ class TransitionController:
             state.active_subtask_id is not None
             and status in {"DONE", "PASS", "CLOSED"}
         )
+        restored_frame = (
+            state.interrupted_task_stack[-1]
+            if support_completed and state.interrupted_task_stack
+            else None
+        )
         action_id = state.action_id or transition.reason
+        restored_action_id = (
+            restored_frame.action_id
+            if restored_frame is not None and restored_frame.action_id
+            else action_id
+        )
         return state.model_copy(
             update={
                 "current_progress": status,
                 "active_blocker": status if blocked else None,
                 "last_action_id": action_id,
                 "last_action_result": status,
-                "action_id": action_id,
+                "action_id": restored_action_id,
                 "logical_action_identity": transition.reason,
                 "action_status": "COMPLETED" if not blocked else "FAILED",
                 "action_result_status": status,
                 "action_result_output": result.output,
                 "action_result_evidence": result.evidence,
                 "next_action_candidate": (
-                    state.resume_cursor
+                    restored_frame.next_action_candidate
+                    if restored_frame is not None
+                    else state.resume_cursor
                     if support_completed
                     else None if not blocked else state.next_action_candidate
                 ),
                 "active_subtask_id": None if support_completed else state.active_subtask_id,
-                "active_main_task_id": state.active_main_task_id,
+                "active_main_task_id": (
+                    restored_frame.task_id if restored_frame is not None else state.active_main_task_id
+                ),
+                "primary_user_outcome": (
+                    restored_frame.primary_user_outcome
+                    if restored_frame is not None
+                    else state.primary_user_outcome
+                ),
+                "current_requirement_ids": (
+                    restored_frame.requirement_ids
+                    if restored_frame is not None
+                    else state.current_requirement_ids
+                ),
+                "resume_cursor": (
+                    restored_frame.resume_cursor
+                    if restored_frame is not None
+                    else state.resume_cursor
+                ),
+                "interrupted_task_stack": (
+                    state.interrupted_task_stack[:-1]
+                    if restored_frame is not None
+                    else state.interrupted_task_stack
+                ),
                 "closure_state": (
                     "OPEN"
                     if support_completed

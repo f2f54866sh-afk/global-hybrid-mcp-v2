@@ -385,17 +385,6 @@ class Dispatcher:
             idempotency_key=idempotency_key,
         )
 
-        if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
-            runtime_state = runtime_state.model_copy(
-                update={
-                    "action_id": action_id,
-                    "idempotency_key": idempotency_key,
-                    "action_status": "STARTED",
-                    "action_effect_type": request.effects[0].value if request.effects else None,
-                }
-            )
-            self.runtime_state_store.update(runtime_state)
-
         self.trace.emit(
             task_id=contract.task_id,
             stage="task_contract",
@@ -623,6 +612,17 @@ class Dispatcher:
                     "actual_consumed_context": sorted(packet.used_fields),
                 },
             )
+
+        if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
+            runtime_state = runtime_state.model_copy(
+                update={
+                    "action_id": action_id,
+                    "idempotency_key": idempotency_key,
+                    "action_status": "STARTED",
+                    "action_effect_type": request.effects[0].value if request.effects else None,
+                }
+            )
+            self.runtime_state_store.update(runtime_state)
 
         try:
             domain_result = domain.run(contract)
