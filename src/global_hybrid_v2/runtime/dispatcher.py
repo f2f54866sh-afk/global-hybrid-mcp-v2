@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -44,7 +45,14 @@ from global_hybrid_v2.governance.resume import ResumeGate
 from global_hybrid_v2.governance.risk import TaskRiskClassifier
 from global_hybrid_v2.governance.router import OwnerRouter
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
-from global_hybrid_v2.runtime.state import RuntimeStateError, RuntimeStateStore, RuntimeTaskState
+from global_hybrid_v2.runtime.state import (
+    CURRENT_RUNTIME_STATE_VERSION,
+    RuntimeStateAlreadyExists,
+    RuntimeStateError,
+    RuntimeStateNotFound,
+    RuntimeStateStore,
+    RuntimeTaskState,
+)
 from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.runtime.transition import TransitionController
 
@@ -142,6 +150,7 @@ class Dispatcher:
         contract_id = str(uuid4())
         runtime_state: RuntimeTaskState | None = None
         transition = None
+        pending_initialization = False
         if request.runtime_state_required:
             if (
                 self.runtime_state_store is None
@@ -157,30 +166,45 @@ class Dispatcher:
                 runtime_state = self.runtime_state_store.load(
                     request.conversation_or_thread_id, request.runtime_task_id
                 )
+            except RuntimeStateNotFound:
+                if not request.runtime_state_initialize:
+                    return DomainResult(
+                        owner=Owner.GLOBAL,
+                        status="RUNTIME_STATE_LOAD_BLOCKED",
+                        evidence={"runtime_state": "BLOCK", "blocker": "RuntimeStateNotFound"},
+                    )
+                pending_initialization = True
             except RuntimeStateError as exc:
                 return DomainResult(
                     owner=Owner.GLOBAL,
                     status="RUNTIME_STATE_LOAD_BLOCKED",
                     evidence={"runtime_state": "BLOCK", "blocker": type(exc).__name__},
                 )
-            self.trace.bind_runtime(
-                self.runtime_state_store,
-                request.conversation_or_thread_id,
-                request.runtime_task_id,
-            )
-            self.trace.emit(
-                task_id=task_id,
-                stage="runtime_state_loaded",
-                decision="PASS",
-                span_owner="GLOBAL",
-                metadata={
-                    "state": "STATE_BEFORE",
-                    "runtime_checkpoint_id": runtime_state.runtime_checkpoint_id,
-                    "runtime_checkpoint_event_id": runtime_state.runtime_checkpoint_event_id,
-                },
-            )
-            transition = self.transition_controller.decide(runtime_state, request)
-            if (
+            if runtime_state is not None:
+                if request.runtime_state_initialize:
+                    return DomainResult(
+                        owner=Owner.GLOBAL,
+                        status="RUNTIME_STATE_ALREADY_INITIALIZED",
+                        evidence={"runtime_state": "BLOCK"},
+                    )
+                self.trace.bind_runtime(
+                    self.runtime_state_store,
+                    request.conversation_or_thread_id,
+                    request.runtime_task_id,
+                )
+                self.trace.emit(
+                    task_id=task_id,
+                    stage="runtime_state_loaded",
+                    decision="PASS",
+                    span_owner="GLOBAL",
+                    metadata={
+                        "state": "STATE_BEFORE",
+                        "runtime_checkpoint_id": runtime_state.runtime_checkpoint_id,
+                        "runtime_checkpoint_event_id": runtime_state.runtime_checkpoint_event_id,
+                    },
+                )
+                transition = self.transition_controller.decide(runtime_state, request)
+            if runtime_state is not None and (
                 runtime_state.action_status == "COMPLETED"
                 and runtime_state.action_result_status
                 and runtime_state.next_action_candidate is None
@@ -199,19 +223,19 @@ class Dispatcher:
                         "runtime_state": "REPLAYED_COMMITTED_RESULT",
                     },
                 )
-            if transition.kind == "WAIT":
+            if transition is not None and transition.kind == "WAIT":
                 return DomainResult(
                     owner=Owner.GLOBAL,
                     status="RUNTIME_STATE_WAIT",
                     evidence={"transition": transition.kind},
                 )
-            if transition.kind == "CLOSE":
+            if transition is not None and transition.kind == "CLOSE":
                 return DomainResult(
                     owner=Owner.GLOBAL,
                     status="RUNTIME_STATE_CLOSED",
                     evidence={"transition": transition.kind},
                 )
-            if (
+            if runtime_state is not None and transition is not None and (
                 transition.kind == "SUPPORT"
                 and runtime_state.action_status == "COMPLETED"
                 and runtime_state.action_result_status is not None
@@ -235,7 +259,7 @@ class Dispatcher:
                     status="RUNTIME_STATE_WAIT",
                     evidence={"transition": "SUPPORT", "reason": "support has no new action-changing value"},
                 )
-            if runtime_state.action_status in {"STARTED", "PENDING"}:
+            if runtime_state is not None and runtime_state.action_status in {"STARTED", "PENDING"}:
                 return DomainResult(
                     owner=Owner.GLOBAL,
                     status="RUNTIME_EFFECT_OUTCOME_UNKNOWN",
@@ -368,6 +392,24 @@ class Dispatcher:
             resume_receipt = resume.receipt
 
         owner = self.router.route(request.intent)
+        if pending_initialization:
+            runtime_state = RuntimeTaskState(
+                runtime_state_version=CURRENT_RUNTIME_STATE_VERSION,
+                conversation_or_thread_id=request.conversation_or_thread_id,
+                task_id=request.runtime_task_id,
+                primary_user_outcome=request.request_text,
+                current_progress="NOT_STARTED",
+                active_main_task_id=request.runtime_task_id,
+                current_phase="INITIALIZED",
+                current_authority_revisions={
+                    item.value: entry.revision for item, entry in snapshot.entries.items()
+                },
+                selected_route=owner.value,
+                next_action_candidate=request.request_text,
+                closure_state="OPEN",
+                updated_at=datetime.now(UTC),
+            )
+            transition = self.transition_controller.decide(runtime_state, request)
         sales_media_task = owner is Owner.SALES_HUMAN and SalesMediaDomain.supports(request.request_text)
         authority_entry = snapshot.entries.get(owner)
         risk_class = self.risk_classifier.classify(request)
@@ -649,15 +691,36 @@ class Dispatcher:
                     "action_effect_type": request.effects[0].value if request.effects else None,
                 }
             )
-            runtime_state = self.runtime_state_store.checkpoint(
-                runtime_state,
-                stage="invocation_boundary",
-                event_type="STARTED",
-                dispatch_task_id=task_id,
-                trace_id=task_trace_id,
-                action_id=action_id,
-                idempotency_key=idempotency_key,
-            )
+            try:
+                if pending_initialization:
+                    runtime_state = self.runtime_state_store.create(runtime_state)
+                    self.trace.bind_runtime(
+                        self.runtime_state_store,
+                        request.conversation_or_thread_id,
+                        request.runtime_task_id,
+                    )
+                    self.trace.emit(
+                        task_id=task_id,
+                        stage="runtime_state_initialized",
+                        decision="PASS",
+                        span_owner="GLOBAL",
+                        metadata={"state": "STATE_CREATED"},
+                    )
+                runtime_state = self.runtime_state_store.checkpoint(
+                    runtime_state,
+                    stage="invocation_boundary",
+                    event_type="STARTED",
+                    dispatch_task_id=task_id,
+                    trace_id=task_trace_id,
+                    action_id=action_id,
+                    idempotency_key=idempotency_key,
+                )
+            except RuntimeStateAlreadyExists:
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="RUNTIME_STATE_ALREADY_INITIALIZED",
+                    evidence={"runtime_state": "BLOCK"},
+                )
             self.trace.bind_runtime_context(
                 action_id=action_id,
                 checkpoint_id=runtime_state.runtime_checkpoint_id,

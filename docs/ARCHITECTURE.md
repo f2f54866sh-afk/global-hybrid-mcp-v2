@@ -263,3 +263,7 @@ conclusion。有可用 research adapter 時回傳 `RUN_REQUIRED_RESEARCH`；沒�
 辨識 `ASSUMPTION_USED_AS_EVIDENCE`、`CURRENT_CAPABILITY_CLAIM_WITHOUT_CURRENT_EVIDENCE`、
 `RESEARCH_GATE_BYPASS`，並在同一 defect 曾宣稱修好後再次被使用者指出時標記
 `RECURRENT_DEFECT`。
+
+### Durable runtime initialization (ENG-001 Stage 5B)
+
+The existing Dispatcher owns explicit first-turn durable runtime initialization. It accepts only the runtime_state_initialize flag on the existing TaskRequest; ordinary missing or stale state remains fail-closed, and MCP exposes no separate initialization tool. Persistence occurs at the existing invocation boundary before STARTED, without a second control path.
