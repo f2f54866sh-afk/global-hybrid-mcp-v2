@@ -20,6 +20,7 @@ from global_hybrid_v2.research import (
 )
 from global_hybrid_v2.runtime.deployment import RuntimeIdentity, read_runtime_identity
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
+from global_hybrid_v2.runtime.state import RuntimeStateStore, SQLiteRuntimeStateStore
 from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.settings import Settings
 
@@ -44,6 +45,7 @@ def create_application(
     research: ResearchPort | None = None,
     runtime_identity: RuntimeIdentity | None = None,
     host_current_state_verifier: HostCurrentStateVerifier | None = None,
+    runtime_state_store: RuntimeStateStore | None = None,
 ) -> Application:
     root = (
         Path(repo_root).resolve()
@@ -51,6 +53,12 @@ def create_application(
         else Path(__file__).resolve().parents[2]
     )
     runtime_settings = settings or Settings()
+    effective_runtime_state_store = runtime_state_store
+    if effective_runtime_state_store is None and runtime_settings.runtime_state_path:
+        state_path = Path(runtime_settings.runtime_state_path)
+        if not state_path.is_absolute():
+            state_path = root / state_path
+        effective_runtime_state_store = SQLiteRuntimeStateStore(state_path)
     effective_runtime_identity = runtime_identity or read_runtime_identity()
     registry_path = Path(runtime_settings.authority_registry)
     if not registry_path.is_absolute():
@@ -91,6 +99,7 @@ def create_application(
         runtime_branch=effective_runtime_identity.git_branch,
         host_projection_gate=HostProjectionGate(verifier=host_current_state_verifier),
         effect_gate=EffectGate(live_execution=runtime_settings.live_execution),
+        runtime_state_store=effective_runtime_state_store,
     )
     return Application(
         repo_root=root,
