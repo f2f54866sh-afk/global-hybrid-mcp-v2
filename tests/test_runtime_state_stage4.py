@@ -2,12 +2,26 @@ from pathlib import Path
 
 import pytest
 
-from global_hybrid_v2.contracts import Intent, Owner, TaskRequest
+from global_hybrid_v2.contracts import EffectType, Intent, Owner, TaskRequest, WitnessFinding
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
 from global_hybrid_v2.runtime.state import RuntimeStateNotFound, SQLiteRuntimeStateStore
 from global_hybrid_v2.runtime.trace import TraceBus
+from tests.test_pre_action_constraints import _context
 from tests.test_runtime_state_stage2 import _Authority, _Domain, _request, _state
+
+
+class _ProducedFindingWitness(ReadOnlyWitness):
+    def observe(self, event):
+        super().observe(event)
+        if event.stage == "response_egress":
+            return WitnessFinding(
+                task_id=event.task_id,
+                severity="error",
+                code="PRODUCED_TEST_BLOCK",
+                message="produced-path test finding",
+            )
+        return None
 
 
 def test_journal_chain_survives_reopen_and_stateless_isolated(tmp_path: Path):
@@ -58,3 +72,70 @@ def test_witness_finding_has_committed_identity(tmp_path):
     assert rows[1]["event_type"] == "WITNESS_FINDING"
     assert rows[1]["checkpoint_id"] == "checkpoint-1"
     assert rows[1]["payload"]["observed_event_id"] == rows[0]["event_id"]
+
+
+def test_produced_dispatcher_witness_links_started_checkpoint(tmp_path):
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    store.create(_state())
+    trace = TraceBus(witness=_ProducedFindingWitness())
+    domain = _Domain()
+    dispatcher = Dispatcher(
+        authority=_Authority(),
+        domains={Owner.EXECUTION: domain},
+        trace=trace,
+        runtime_state_store=store,
+    )
+    result = dispatcher.dispatch(_request())
+    rows = SQLiteRuntimeStateStore(tmp_path / "runtime.db").journal("thread-a", "runtime-task-a")
+    started = next(row for row in rows if row["event_type"] == "STARTED")
+    observed = next(row for row in rows if row["stage"] == "response_egress")
+    finding = next(row for row in rows if row["event_type"] == "WITNESS_FINDING")
+    assert result.status.startswith("NO_SERIALIZE")
+    assert observed["action_id"] == started["action_id"]
+    assert observed["checkpoint_id"] == started["checkpoint_id"]
+    assert finding["action_id"] == started["action_id"]
+    assert finding["checkpoint_id"] == started["checkpoint_id"]
+    assert finding["payload"]["observed_event_id"] == observed["event_id"]
+
+
+def test_post_witness_state_and_replay_reuse_checkpoint_receipt(tmp_path):
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    store.create(_state())
+    dispatcher = Dispatcher(
+        authority=_Authority(),
+        domains={Owner.EXECUTION: _Domain()},
+        trace=TraceBus(witness=_ProducedFindingWitness()),
+        runtime_state_store=store,
+    )
+    request = _request(
+        effects=[EffectType.FILE_WRITE],
+        target_system="local-file",
+        action_class="write",
+        context=_context(blocker=None, target="local-file", action="write"),
+    )
+    first = dispatcher.dispatch(request)
+    persisted = SQLiteRuntimeStateStore(tmp_path / "runtime.db").load("thread-a", "runtime-task-a")
+    assert persisted.action_result_status == first.status
+    assert persisted.action_result_output == first.output
+    assert persisted.action_result_evidence == {
+        key: value for key, value in first.evidence.items()
+        if key
+        not in {
+            "runtime_state",
+            "runtime_transition",
+            "runtime_checkpoint_id",
+            "runtime_checkpoint_event_id",
+        }
+    } | {
+        "runtime_checkpoint_id": persisted.runtime_checkpoint_id,
+        "runtime_checkpoint_event_id": persisted.runtime_checkpoint_event_id,
+    }
+    journal_before = SQLiteRuntimeStateStore(tmp_path / "runtime.db").journal("thread-a", "runtime-task-a")
+    replay = dispatcher.dispatch(request)
+    journal_after = SQLiteRuntimeStateStore(tmp_path / "runtime.db").journal("thread-a", "runtime-task-a")
+    assert replay.status == first.status
+    assert replay.evidence["runtime_checkpoint_id"] == persisted.runtime_checkpoint_id
+    assert replay.evidence["runtime_checkpoint_event_id"] == persisted.runtime_checkpoint_event_id
+    assert [row for row in journal_after if row["event_type"] == "CHECKPOINT_COMMITTED"] == [
+        row for row in journal_before if row["event_type"] == "CHECKPOINT_COMMITTED"
+    ]

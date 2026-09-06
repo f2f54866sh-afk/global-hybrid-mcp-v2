@@ -180,6 +180,25 @@ class Dispatcher:
                 },
             )
             transition = self.transition_controller.decide(runtime_state, request)
+            if (
+                runtime_state.action_status == "COMPLETED"
+                and runtime_state.action_result_status
+                and runtime_state.next_action_candidate is None
+                and runtime_state.runtime_checkpoint_id is not None
+                and (
+                    runtime_state.closure_state == "CLOSED"
+                    or runtime_state.action_result_status.startswith("NO_SERIALIZE")
+                )
+            ):
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status=runtime_state.action_result_status,
+                    output=runtime_state.action_result_output,
+                    evidence={
+                        **runtime_state.action_result_evidence,
+                        "runtime_state": "REPLAYED_COMMITTED_RESULT",
+                    },
+                )
             if transition.kind == "WAIT":
                 return DomainResult(
                     owner=Owner.GLOBAL,
@@ -215,20 +234,6 @@ class Dispatcher:
                     owner=Owner.GLOBAL,
                     status="RUNTIME_STATE_WAIT",
                     evidence={"transition": "SUPPORT", "reason": "support has no new action-changing value"},
-                )
-            if (
-                runtime_state.action_status == "COMPLETED"
-                and runtime_state.action_result_status
-                and runtime_state.next_action_candidate is None
-            ):
-                return DomainResult(
-                    owner=Owner.GLOBAL,
-                    status=runtime_state.action_result_status,
-                    output=runtime_state.action_result_output,
-                    evidence={
-                        **runtime_state.action_result_evidence,
-                        "runtime_state": "REPLAYED_COMMITTED_RESULT",
-                    },
                 )
             if runtime_state.action_status in {"STARTED", "PENDING"}:
                 return DomainResult(
