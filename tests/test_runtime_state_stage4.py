@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from global_hybrid_v2.contracts import Intent, Owner, TaskRequest, WitnessFinding
+from global_hybrid_v2.contracts import Intent, Owner, TaskRequest
+from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
 from global_hybrid_v2.runtime.state import RuntimeStateNotFound, SQLiteRuntimeStateStore
 from global_hybrid_v2.runtime.trace import TraceBus
@@ -44,25 +45,16 @@ def test_checkpoint_missing_row_rolls_back_journal(tmp_path):
 
 
 def test_witness_finding_has_committed_identity(tmp_path):
-    class FindingWitness:
-        def observe(self, event):
-            return WitnessFinding(
-                task_id=event.task_id,
-                severity="error",
-                code="TEST_FINDING",
-                message="test",
-            )
-
-        def consumption_assessment_for_task(self, task_id):
-            return {}
-
-    bus = TraceBus(witness=FindingWitness())
+    bus = TraceBus(witness=ReadOnlyWitness())
     bus.bind_runtime(SQLiteRuntimeStateStore(tmp_path / "runtime.db"), "thread", "task")
-    # The identity propagation is asserted on the real emitted event shape;
-    # persistence is covered by the produced dispatcher test above.
     bus.bind_runtime_context(action_id="action-1", checkpoint_id="checkpoint-1")
-    event = bus.emit(task_id="dispatch", stage="response_egress", decision="PASS")
+    event = bus.emit(task_id="dispatch", stage="effect_gate", decision="DENY")
     finding = bus.findings_for_task("dispatch")[0]
+    rows = SQLiteRuntimeStateStore(tmp_path / "runtime.db").journal("thread", "task")
     assert finding.observed_event_id == event.event_id
     assert finding.action_id == "action-1"
     assert finding.checkpoint_id == "checkpoint-1"
+    assert rows[0]["checkpoint_id"] == "checkpoint-1"
+    assert rows[1]["event_type"] == "WITNESS_FINDING"
+    assert rows[1]["checkpoint_id"] == "checkpoint-1"
+    assert rows[1]["payload"]["observed_event_id"] == rows[0]["event_id"]

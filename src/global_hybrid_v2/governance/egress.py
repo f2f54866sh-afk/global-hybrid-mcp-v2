@@ -110,6 +110,21 @@ class ResponseEgressValidator:
         self.research_available = research_available
 
     def validate(self, result: DomainResult) -> DomainResult:
+        reserved_commit_fields = {
+            "runtime_state",
+            "runtime_checkpoint_id",
+            "runtime_checkpoint_event_id",
+            "runtime_event_id",
+        }
+        forged = reserved_commit_fields.intersection(result.evidence)
+        if forged:
+            result = result.model_copy(
+                update={
+                    "evidence": {
+                        key: value for key, value in result.evidence.items() if key not in forged
+                    }
+                }
+            )
         packet_decision = self._validate_packet_consumption(result)
         if packet_decision is not None:
             if packet_decision.evidence.get("evidence_packet_check") == "FAIL":

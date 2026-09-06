@@ -120,6 +120,7 @@ class TraceBus:
                     "stage": stage,
                     "event_type": "TRACE",
                     "action_id": event.action_id,
+                    "checkpoint_id": event.checkpoint_id,
                     "payload": event.model_dump(mode="json"),
                 }
             )
@@ -146,6 +147,7 @@ class TraceBus:
                             "stage": "witness_finding",
                             "event_type": "WITNESS_FINDING",
                             "action_id": finding.action_id,
+                            "checkpoint_id": finding.checkpoint_id,
                             "payload": finding.model_dump(mode="json"),
                         }
                     )
