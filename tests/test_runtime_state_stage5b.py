@@ -1,15 +1,68 @@
+import asyncio
+import json
 from pathlib import Path
 
+from mcp import Client
+from mcp.types import TextContent
+
 from global_hybrid_v2.adapters.mcp_server import create_mcp_server
-from global_hybrid_v2.runtime.state import SQLiteRuntimeStateStore
+from global_hybrid_v2.runtime.state import (
+    RuntimeStateAlreadyExists,
+    RuntimeStateNotFound,
+    SQLiteRuntimeStateStore,
+)
 from tests._host_projection import host_projection_payload
 from tests.test_mcp_server import _copy_authority_repo, _test_settings
+from tests.test_pre_action_constraints import _context
 from tests.test_runtime_state_stage2 import _state
 from tests.test_runtime_state_stage5 import _application, _CountingDomain, _dispatch, _payload
 
 
 def _init_payload(text="first durable turn"):
     return {**_payload(), "request_text": text, "runtime_state_initialize": True}
+
+
+def _dispatch_allow_error(server, payload):
+    async def scenario():
+        async with Client(server) as client:
+            result = await client.call_tool("dispatch_task", {"payload": payload})
+            if result.is_error:
+                return None
+            assert isinstance(result.content[0], TextContent)
+            return json.loads(result.content[0].text)
+
+    return asyncio.run(scenario())
+
+
+class _CaptureStore:
+    def __init__(self, store, *, crash_started=False, race=False):
+        self.store = store
+        self.created = []
+        self.crash_started = crash_started
+        self.race = race
+
+    def load(self, thread, task):
+        if self.race and not self.created:
+            raise RuntimeStateNotFound()
+        return self.store.load(thread, task)
+
+    def create(self, state):
+        self.created.append(state)
+        if self.race:
+            self.store.create(state)
+            raise RuntimeStateAlreadyExists()
+        return self.store.create(state)
+
+    def checkpoint(self, state, **kwargs):
+        if self.crash_started and kwargs.get("event_type") == "STARTED":
+            raise RuntimeError("simulated crash")
+        return self.store.checkpoint(state, **kwargs)
+
+    def update(self, state):
+        return self.store.update(state)
+
+    def __getattr__(self, name):
+        return getattr(self.store, name)
 
 
 def test_first_explicit_initialization_real_mcp(tmp_path: Path):
@@ -101,3 +154,84 @@ def test_stateless_initialization_flag_does_not_create_runtime_state(tmp_path: P
     result = _dispatch(create_mcp_server(_application(repo, settings, _CountingDomain())), payload)
     assert result["status"] == "READY"
     assert SQLiteRuntimeStateStore(repo / "runtime.db").journal("thread-a", "runtime-task-a") == []
+
+
+def test_initial_create_receives_non_started_state(tmp_path: Path):
+    repo = _copy_authority_repo(tmp_path / "repo")
+    db = repo / "runtime.db"
+    settings = _test_settings().model_copy(update={"runtime_state_path": "runtime.db"})
+    app = _application(repo, settings, _CountingDomain())
+    capture = _CaptureStore(SQLiteRuntimeStateStore(db))
+    app.dispatcher.runtime_state_store = capture
+    result = _dispatch(create_mcp_server(app), _init_payload())
+    assert result["status"] == "READY"
+    initial = capture.created[0]
+    assert initial.current_progress == "NOT_STARTED"
+    assert initial.current_phase == "INITIALIZED"
+    assert initial.action_status is None
+    assert initial.action_effect_type is None
+    assert SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a").action_status == "COMPLETED"
+
+
+def test_create_then_started_checkpoint_crash_leaves_non_started_row(tmp_path: Path):
+    repo = _copy_authority_repo(tmp_path / "repo")
+    db = repo / "runtime.db"
+    settings = _test_settings().model_copy(update={"runtime_state_path": "runtime.db"})
+    app = _application(repo, settings, _CountingDomain())
+    capture = _CaptureStore(SQLiteRuntimeStateStore(db), crash_started=True)
+    app.dispatcher.runtime_state_store = capture
+    assert _dispatch_allow_error(create_mcp_server(app), _init_payload()) is None
+    state = SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
+    assert state.action_status is None
+    assert state.current_progress == "NOT_STARTED"
+    assert not any(
+        row["event_type"] == "STARTED"
+        for row in SQLiteRuntimeStateStore(db).journal("thread-a", "runtime-task-a")
+    )
+
+
+def test_create_race_fails_closed_without_domain(tmp_path: Path):
+    repo = _copy_authority_repo(tmp_path / "repo")
+    db = repo / "runtime.db"
+    settings = _test_settings().model_copy(update={"runtime_state_path": "runtime.db"})
+    domain = _CountingDomain()
+    app = _application(repo, settings, domain)
+    app.dispatcher.runtime_state_store = _CaptureStore(SQLiteRuntimeStateStore(db), race=True)
+    result = _dispatch(create_mcp_server(app), _init_payload())
+    assert result["status"] == "RUNTIME_STATE_ALREADY_INITIALIZED"
+    assert domain.calls == 0
+    assert SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a").action_status is None
+
+
+def test_first_turn_mutation_initializes_once_and_reopens(tmp_path: Path):
+    repo = _copy_authority_repo(tmp_path / "repo")
+    db = repo / "runtime.db"
+    settings = _test_settings().model_copy(
+        update={"runtime_state_path": "runtime.db", "live_execution": True}
+    )
+    mutation = {
+        **_init_payload("write first file"),
+        "intent": "execution",
+        "effects": ["file_write"],
+        "target_system": "local-file",
+        "action_class": "write",
+        "context": _context(blocker=None, target="local-file", action="write"),
+    }
+    first_domain = _CountingDomain()
+    first = _dispatch(create_mcp_server(_application(repo, settings, first_domain)), mutation)
+    state = SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
+    before = SQLiteRuntimeStateStore(db).journal("thread-a", "runtime-task-a")
+    second_domain = _CountingDomain()
+    second = _dispatch(
+        create_mcp_server(_application(repo, settings, second_domain)),
+        {**mutation, "runtime_state_initialize": False},
+    )
+    after = SQLiteRuntimeStateStore(db).journal("thread-a", "runtime-task-a")
+    assert first["status"] == "READY"
+    assert second["status"] == "RUNTIME_STATE_WAIT"
+    assert first_domain.calls == 1
+    assert second_domain.calls == 0
+    assert state.action_id and state.idempotency_key
+    assert len([row for row in after if row["event_type"] == "CHECKPOINT_COMMITTED"]) == len(
+        [row for row in before if row["event_type"] == "CHECKPOINT_COMMITTED"]
+    )

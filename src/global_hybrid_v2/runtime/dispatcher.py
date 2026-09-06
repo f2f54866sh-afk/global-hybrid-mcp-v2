@@ -683,14 +683,6 @@ class Dispatcher:
             )
 
         if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
-            runtime_state = runtime_state.model_copy(
-                update={
-                    "action_id": action_id,
-                    "idempotency_key": idempotency_key,
-                    "action_status": "STARTED",
-                    "action_effect_type": request.effects[0].value if request.effects else None,
-                }
-            )
             try:
                 if pending_initialization:
                     runtime_state = self.runtime_state_store.create(runtime_state)
@@ -706,6 +698,14 @@ class Dispatcher:
                         span_owner="GLOBAL",
                         metadata={"state": "STATE_CREATED"},
                     )
+                runtime_state = runtime_state.model_copy(
+                    update={
+                        "action_id": action_id,
+                        "idempotency_key": idempotency_key,
+                        "action_status": "STARTED",
+                        "action_effect_type": request.effects[0].value if request.effects else None,
+                    }
+                )
                 runtime_state = self.runtime_state_store.checkpoint(
                     runtime_state,
                     stage="invocation_boundary",
