@@ -45,21 +45,58 @@ def test_pre_domain_block_does_not_strand_started_state(tmp_path):
 
 
 def test_completed_mutation_repeat_does_not_duplicate_effect(tmp_path):
+    class ReadyDomain(_Domain):
+        def run(self, contract):
+            self.calls += 1
+            self.contracts.append(contract)
+            return DomainResult(owner=contract.owner, status="READY", output="written")
+
     store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
     store.create(_state())
-    domain = _Domain()
-    request = _mutation_request()
-    # The existing pre-action gate is authoritative; use a read-only completion
-    # to prove durable replay suppression without inventing a second sink.
-    request = request.model_copy(update={"effects": [EffectType.READ_ONLY]})
+    domain = ReadyDomain()
+    request = _mutation_request(
+        context=_context(blocker=None, target="local-file", action="write")
+    )
     dispatcher = _dispatcher(store, domain)
     first = dispatcher.dispatch(request)
+    persisted = SQLiteRuntimeStateStore(tmp_path / "runtime.db").load("thread-a", "runtime-task-a")
     second = dispatcher.dispatch(request)
-    persisted = store.load("thread-a", "runtime-task-a")
-    assert first.status == "DONE"
-    assert second.status in {"RUNTIME_STATE_CLOSED", "RUNTIME_STATE_WAIT"}
+    assert first.status == "READY"
+    assert second.status == "RUNTIME_STATE_WAIT"
     assert domain.calls == 1
     assert persisted.action_id and persisted.idempotency_key
+    assert store.load("thread-a", "runtime-task-a") == persisted
+
+
+def test_different_next_action_gets_distinct_action_key(tmp_path):
+    class ReadyDomain(_Domain):
+        def run(self, contract):
+            self.calls += 1
+            self.contracts.append(contract)
+            return DomainResult(owner=contract.owner, status="READY")
+
+    prior = _state(
+        next_action_candidate="new-action",
+        current_progress="prior-ready",
+        last_action_result="prior-ready",
+        action_status="COMPLETED",
+        action_result_status="prior-ready",
+        action_id="prior-action",
+        idempotency_key="runtime:thread-a:prior-action",
+        logical_action_identity="prior-action",
+    )
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    store.create(prior)
+    domain = ReadyDomain()
+    result = _dispatcher(store, domain).dispatch(
+        _mutation_request(context=_context(blocker=None, target="local-file", action="write"))
+    )
+    persisted = store.load("thread-a", "runtime-task-a")
+    assert result.status == "READY"
+    assert domain.contracts[0].action_id != "prior-action"
+    assert domain.contracts[0].idempotency_key != "runtime:thread-a:prior-action"
+    assert persisted.action_id == domain.contracts[0].action_id
+    assert persisted.idempotency_key == domain.contracts[0].idempotency_key
 
 
 def test_inflight_mutation_retry_fails_closed_without_duplicate(tmp_path):
@@ -94,8 +131,16 @@ def test_interrupt_persist_reopen_resume_pops_frame(tmp_path):
         next_action_candidate="parent-next",
         resume_cursor="parent-cursor",
         current_requirement_ids=["REQ-PARENT"],
+        action_id="parent-action",
+        idempotency_key="runtime:thread-a:parent-action",
     )
     interrupted = TransitionController().interrupt(state, "child-task")
+    interrupted = interrupted.model_copy(
+        update={
+            "action_id": "child-action",
+            "idempotency_key": "runtime:thread-a:child-action",
+        }
+    )
     store.create(interrupted)
     reopened = SQLiteRuntimeStateStore(tmp_path / "runtime.db").load("thread-a", "runtime-task-a")
     completed = TransitionController().consume_result(
@@ -113,4 +158,6 @@ def test_interrupt_persist_reopen_resume_pops_frame(tmp_path):
     assert resumed.resume_cursor == "parent-cursor"
     assert resumed.next_action_candidate == "parent-next"
     assert resumed.current_phase == "PARENT_CONTINUATION"
+    assert resumed.action_id == "parent-action"
+    assert resumed.idempotency_key == "runtime:thread-a:parent-action"
     assert TransitionController().decide(resumed, _request(runtime_state_required=False)).kind == "SUPPORT"

@@ -71,6 +71,11 @@ class TransitionController:
                 "last_action_id": action_id,
                 "last_action_result": status,
                 "action_id": restored_action_id,
+                "idempotency_key": (
+                    restored_frame.idempotency_key
+                    if restored_frame is not None
+                    else state.idempotency_key
+                ),
                 "logical_action_identity": transition.reason,
                 "action_status": "COMPLETED" if not blocked else "FAILED",
                 "action_result_status": status,
@@ -128,6 +133,7 @@ class TransitionController:
             next_action_candidate=state.next_action_candidate,
             resume_cursor=state.resume_cursor,
             action_id=state.action_id,
+            idempotency_key=state.idempotency_key,
             requirement_ids=state.current_requirement_ids,
         )
         return state.model_copy(update={

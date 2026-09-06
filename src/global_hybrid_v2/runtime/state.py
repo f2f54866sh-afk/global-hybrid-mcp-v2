@@ -20,6 +20,7 @@ class RuntimeTaskFrame(BaseModel):
     next_action_candidate: str | None = None
     resume_cursor: str | None = None
     action_id: str | None = None
+    idempotency_key: str | None = None
     requirement_ids: list[str] = Field(default_factory=list)
 
 
