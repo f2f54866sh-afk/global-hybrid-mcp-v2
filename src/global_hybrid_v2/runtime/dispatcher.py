@@ -171,6 +171,20 @@ class Dispatcher:
                     evidence={"transition": transition.kind},
                 )
             if (
+                transition.kind == "SUPPORT"
+                and runtime_state.action_status == "COMPLETED"
+                and runtime_state.action_result_status is not None
+                and runtime_state.logical_action_identity == transition.reason
+                and runtime_state.current_progress == runtime_state.action_result_status
+                and runtime_state.active_subtask_id is None
+                and runtime_state.current_phase != "PARENT_CONTINUATION"
+            ):
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="RUNTIME_STATE_WAIT",
+                    evidence={"transition": "SUPPORT", "reason": "support has no new action-changing value"},
+                )
+            if (
                 runtime_state.action_status == "COMPLETED"
                 and runtime_state.action_result_status
                 and runtime_state.next_action_candidate is None
