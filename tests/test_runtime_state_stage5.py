@@ -39,6 +39,15 @@ def _dispatch(server, payload):
     return asyncio.run(scenario())
 
 
+def _journal_dispatch_rows(db: Path, thread="thread-a", task="runtime-task-a"):
+    with SQLiteRuntimeStateStore(db)._connect() as connection:
+        return connection.execute(
+            "SELECT dispatch_task_id, trace_id, stage, event_type FROM runtime_event_journal "
+            "WHERE conversation_or_thread_id = ? AND task_id = ? ORDER BY rowid",
+            (thread, task),
+        ).fetchall()
+
+
 class _CountingDomain:
     def __init__(self, status="READY"):
         self.calls = 0
@@ -73,6 +82,7 @@ def test_real_application_mcp_reopens_existing_runtime_state(tmp_path: Path):
     )
     first = _dispatch(create_mcp_server(app1), _payload())
     state1 = SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
+    journal1 = _journal_dispatch_rows(db)
     assert first["evidence"]["runtime_state"] == "COMMITTED"
     assert state1.runtime_checkpoint_id == first["evidence"]["runtime_checkpoint_id"]
     app2 = create_application(
@@ -82,9 +92,17 @@ def test_real_application_mcp_reopens_existing_runtime_state(tmp_path: Path):
     )
     second = _dispatch(create_mcp_server(app2), _payload())
     state2 = SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
+    journal2 = _journal_dispatch_rows(db)
     assert state2.conversation_or_thread_id == "thread-a"
     assert state2.task_id == "runtime-task-a"
-    assert second["status"] in {"RUNTIME_STATE_WAIT", "BLOCKED_NOT_CONFIGURED", "DONE"}
+    assert second["status"] == "RUNTIME_STATE_WAIT"
+    dispatches = []
+    for rows in (journal1, journal2):
+        row = [row for row in rows if row[2] == "runtime_state_loaded"][-1]
+        dispatches.append(row)
+    assert dispatches[0][0] != dispatches[1][0]
+    assert dispatches[0][1] != dispatches[1][1]
+    assert all(row[0] and row[1] for row in dispatches)
 
 
 def test_runtime_path_is_optional_and_explicit_store_wins(tmp_path: Path):
@@ -125,9 +143,18 @@ def test_real_mcp_support_child_parent_resume_across_reopen(tmp_path: Path):
     assert resumed.resume_cursor == "parent-cursor"
     assert resumed.primary_user_outcome == "parent goal"
     assert resumed.closure_state == "OPEN"
+    resumed_before = SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
+    assert resumed_before.current_phase == "PARENT_CONTINUATION"
     app2 = _application(repo_root, settings, _CountingDomain(status="DONE"))
     second = _dispatch(create_mcp_server(app2), _payload())
-    assert second["status"] in {"DONE", "RUNTIME_STATE_WAIT"}
+    assert second["status"] == "DONE"
+    resumed_after = SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
+    assert resumed_after.current_progress == second["status"]
+    assert resumed_after.current_phase == "COMPLETED"
+    assert resumed_after.active_subtask_id is None
+    assert resumed_after.primary_user_outcome == "parent goal"
+    assert resumed_after.next_action_candidate is None
+    assert resumed_after.resume_cursor == "parent-cursor"
 
 
 def test_real_mcp_support_suppression_across_reopen(tmp_path: Path):
@@ -202,9 +229,31 @@ def test_real_mcp_returned_evidence_and_stateless_isolation(tmp_path: Path):
     state = SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
     assert returned["evidence"]["runtime_checkpoint_id"] == state.runtime_checkpoint_id
     assert returned["evidence"]["runtime_checkpoint_event_id"] == state.runtime_checkpoint_event_id
-    assert returned["evidence"]["runtime_checkpoint_id"] in {
-        row["checkpoint_id"] for row in before if row["event_type"] == "CHECKPOINT_COMMITTED"
+    checkpoint_rows = [
+        row for row in before if row["event_type"] == "CHECKPOINT_COMMITTED"
+    ]
+    assert len(checkpoint_rows) == 1
+    checkpoint = checkpoint_rows[0]
+    assert checkpoint["event_id"] == state.runtime_checkpoint_event_id
+    assert checkpoint["checkpoint_id"] == state.runtime_checkpoint_id
+    started_rows = [row for row in before if row["event_type"] == "STARTED"]
+    assert len(started_rows) == 1
+    started = started_rows[0]
+    assert state.action_id == started["action_id"] == checkpoint["action_id"]
+    assert state.idempotency_key == started["idempotency_key"] == checkpoint["idempotency_key"]
+    expected_state = {
+        "primary_user_outcome": "finish work",
+        "current_progress": "READY",
+        "current_phase": "COMPLETED",
+        "active_main_task_id": "runtime-task-a",
+        "active_subtask_id": None,
+        "resume_cursor": None,
+        "next_action_candidate": None,
     }
+    for field, expected in expected_state.items():
+        assert getattr(state, field) == expected
+    reopened = SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
+    assert reopened.model_dump(mode="json") == state.model_dump(mode="json")
     stateless = _dispatch(
         server,
         {
