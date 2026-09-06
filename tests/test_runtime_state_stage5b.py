@@ -2,10 +2,14 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
 from mcp import Client
 from mcp.types import TextContent
 
 from global_hybrid_v2.adapters.mcp_server import create_mcp_server
+from global_hybrid_v2.application import create_application
+from global_hybrid_v2.contracts import Owner
+from global_hybrid_v2.governance.host_projection import HostCurrentStateVerification
 from global_hybrid_v2.runtime.state import (
     RuntimeStateAlreadyExists,
     RuntimeStateNotFound,
@@ -32,6 +36,18 @@ def _dispatch_allow_error(server, payload):
             return json.loads(result.content[0].text)
 
     return asyncio.run(scenario())
+
+
+class _FailingHostVerifier:
+    def verify(self, projection):
+        return HostCurrentStateVerification(False, "HOST_STATE_PROJECTION_STALE")
+
+
+def _journal_without_execution(db):
+    rows = SQLiteRuntimeStateStore(db).journal("thread-a", "runtime-task-a")
+    assert not any(row["event_type"] == "STARTED" for row in rows)
+    assert not any(row["event_type"] == "CHECKPOINT_COMMITTED" for row in rows)
+    return rows
 
 
 class _CaptureStore:
@@ -235,3 +251,48 @@ def test_first_turn_mutation_initializes_once_and_reopens(tmp_path: Path):
     assert len([row for row in after if row["event_type"] == "CHECKPOINT_COMMITTED"]) == len(
         [row for row in before if row["event_type"] == "CHECKPOINT_COMMITTED"]
     )
+
+
+def test_host_rejection_does_not_create_durable_state(tmp_path: Path):
+    repo = _copy_authority_repo(tmp_path / "repo")
+    db = repo / "runtime.db"
+    settings = _test_settings().model_copy(update={"runtime_state_path": "runtime.db"})
+    domain = _CountingDomain()
+    app = create_application(
+        repo_root=repo,
+        settings=settings,
+        host_current_state_verifier=_FailingHostVerifier(),
+    )
+    app.dispatcher.domains[Owner.GLOBAL] = domain
+    app.dispatcher.domains[Owner.EXECUTION] = domain
+    payload = _init_payload()
+    result = _dispatch(create_mcp_server(app), payload)
+    assert result["status"] == "HOST_STATE_PROJECTION_STALE"
+    assert domain.calls == 0
+    with pytest.raises(RuntimeStateNotFound):
+        SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
+    _journal_without_execution(db)
+
+
+def test_pre_action_rejection_does_not_create_durable_state(tmp_path: Path):
+    repo = _copy_authority_repo(tmp_path / "repo")
+    db = repo / "runtime.db"
+    settings = _test_settings().model_copy(
+        update={"runtime_state_path": "runtime.db", "live_execution": True}
+    )
+    domain = _CountingDomain()
+    app = _application(repo, settings, domain)
+    mutation = {
+        **_init_payload("blocked first write"),
+        "intent": "execution",
+        "effects": ["file_write"],
+        "target_system": "local-file",
+        "action_class": "write",
+        "context": _context(blocker="QUOTA_5_OF_5", target="local-file", action="write"),
+    }
+    result = _dispatch(create_mcp_server(app), mutation)
+    assert result["status"] == "PRE_ACTION_BLOCKED"
+    assert domain.calls == 0
+    with pytest.raises(RuntimeStateNotFound):
+        SQLiteRuntimeStateStore(db).load("thread-a", "runtime-task-a")
+    _journal_without_execution(db)
