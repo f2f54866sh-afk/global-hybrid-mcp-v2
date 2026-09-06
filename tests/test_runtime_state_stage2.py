@@ -191,6 +191,28 @@ def test_repeated_support_without_new_value_does_not_execute_or_change_state(tmp
     assert SQLiteRuntimeStateStore(tmp_path / "runtime.db").load("thread-a", "runtime-task-a") == original
 
 
+def test_produced_support_state_suppresses_identical_second_dispatch(tmp_path):
+    class ReadyDomain(_Domain):
+        def run(self, contract):
+            self.calls += 1
+            self.contracts.append(contract)
+            return DomainResult(owner=contract.owner, status="READY", output="still working")
+
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    store.create(_state(next_action_candidate="continue"))
+    domain = ReadyDomain()
+    dispatcher = _dispatcher(store, domain)
+    first = dispatcher.dispatch(_request())
+    assert first.status == "READY"
+    produced = SQLiteRuntimeStateStore(tmp_path / "runtime.db").load("thread-a", "runtime-task-a")
+    assert produced.next_action_candidate is None
+    assert produced.current_phase == "COMPLETED"
+    second = dispatcher.dispatch(_request())
+    assert second.status == "RUNTIME_STATE_WAIT"
+    assert domain.calls == 1
+    assert SQLiteRuntimeStateStore(tmp_path / "runtime.db").load("thread-a", "runtime-task-a") == produced
+
+
 @pytest.mark.parametrize("updates", [
     {"next_action_candidate": "new support"},
     {"current_progress": "new evidence available"},

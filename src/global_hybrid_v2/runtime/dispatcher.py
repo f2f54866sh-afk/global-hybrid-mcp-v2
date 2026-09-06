@@ -178,6 +178,16 @@ class Dispatcher:
                 and runtime_state.current_progress == runtime_state.action_result_status
                 and runtime_state.active_subtask_id is None
                 and runtime_state.current_phase != "PARENT_CONTINUATION"
+                or (
+                    transition.kind == "SUPPORT"
+                    and runtime_state.action_status == "COMPLETED"
+                    and runtime_state.action_result_status is not None
+                    and runtime_state.logical_action_identity is not None
+                    and runtime_state.current_progress == runtime_state.action_result_status
+                    and runtime_state.next_action_candidate is None
+                    and runtime_state.active_subtask_id is None
+                    and runtime_state.current_phase == "COMPLETED"
+                )
             ):
                 return DomainResult(
                     owner=Owner.GLOBAL,
