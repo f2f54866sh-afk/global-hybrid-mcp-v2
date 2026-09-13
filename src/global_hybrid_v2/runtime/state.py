@@ -14,6 +14,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 CURRENT_RUNTIME_STATE_VERSION = 1
 
 
+class ImageAttemptState(BaseModel):
+    attempts: int = Field(default=0, ge=0)
+    active: bool = False
+    active_attempt_id: str | None = None
+    consumed_authorization_ids: list[str] = Field(default_factory=list)
+    last_terminal_result_id: str | None = None
+    last_terminal_status: str | None = None
+
+
 class RuntimeTaskFrame(BaseModel):
     task_id: str = Field(min_length=1)
     primary_user_outcome: str = Field(min_length=1)
@@ -125,6 +134,10 @@ class SQLiteRuntimeStateStore:
                 source_key TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                 active INTEGER NOT NULL DEFAULT 0, consumed_authorizations TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (conversation_or_thread_id, task_id, source_key))""")
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(image_attempt_budget)")}
+            for name in ("active_attempt_id", "last_terminal_result_id", "last_terminal_status"):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE image_attempt_budget ADD COLUMN {name} TEXT NULL")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
@@ -339,6 +352,27 @@ class SQLiteRuntimeStateStore:
                 "UPDATE image_attempt_budget SET active=0, attempts=attempts-1 WHERE conversation_or_thread_id=? AND task_id=? AND source_key=? AND active=1",  # noqa: E501
                 (conversation_or_thread_id, task_id, source_key),
             )
+
+    def read_image_attempt_state(
+        self, conversation_or_thread_id: str, task_id: str, source_key: str
+    ) -> ImageAttemptState:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT attempts, active, active_attempt_id, consumed_authorizations, "
+                "last_terminal_result_id, last_terminal_status FROM image_attempt_budget "
+                "WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?",
+                (conversation_or_thread_id, task_id, source_key),
+            ).fetchone()
+        if row is None:
+            return ImageAttemptState()
+        return ImageAttemptState(
+            attempts=row[0],
+            active=bool(row[1]),
+            active_attempt_id=row[2],
+            consumed_authorization_ids=json.loads(row[3]),
+            last_terminal_result_id=row[4],
+            last_terminal_status=row[5],
+        )
 
     def complete_image_attempt(self, conversation_or_thread_id: str, task_id: str, source_key: str) -> None:
         with self._connect() as connection:
