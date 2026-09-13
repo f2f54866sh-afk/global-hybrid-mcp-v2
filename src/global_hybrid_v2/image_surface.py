@@ -346,7 +346,12 @@ class ImageSurfaceController:
         self.port = port or UnavailableImageExecutionPort()
         self.invocation_guard = invocation_guard
 
-    def execute(self, spec: ImageTaskSpec) -> ImageExecutionReceipt:
+    def execute(
+        self,
+        spec: ImageTaskSpec,
+        *,
+        invocation_guard: ImageInvocationGuard | None = None,
+    ) -> ImageExecutionReceipt:
         fingerprint = self.port.fingerprint()
         expected_evidence = ImageCapabilityEvidence(
             route_family=spec.selected_lane,
@@ -462,7 +467,7 @@ class ImageSurfaceController:
                 )
 
         token = str(uuid4())
-        guard = self.invocation_guard
+        guard = invocation_guard or self.invocation_guard
         if guard is not None and not guard.reserve(spec):
             return self._blocked(spec, fingerprint, constraints, "IMAGE_ATTEMPT_RESERVATION_BLOCKED")
         try:
