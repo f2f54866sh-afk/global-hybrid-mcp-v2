@@ -303,6 +303,14 @@ class ImageExecutionPort(Protocol):
     ) -> ImageRenderOutcome: ...
 
 
+class ImageInvocationGuard(Protocol):
+    """Durable reservation edge invoked only after controller preflight passes."""
+
+    def reserve(self, spec: ImageTaskSpec) -> bool: ...
+
+    def complete(self) -> None: ...
+
+
 @dataclass
 class UnavailableImageExecutionPort:
     """Production default until a controlled API adapter is configured."""
@@ -330,8 +338,13 @@ class UnavailableImageExecutionPort:
 class ImageSurfaceController:
     """The sole pre-call admission point for repository-controlled image effects."""
 
-    def __init__(self, port: ImageExecutionPort | None = None):
+    def __init__(
+        self,
+        port: ImageExecutionPort | None = None,
+        invocation_guard: ImageInvocationGuard | None = None,
+    ):
         self.port = port or UnavailableImageExecutionPort()
+        self.invocation_guard = invocation_guard
 
     def execute(self, spec: ImageTaskSpec) -> ImageExecutionReceipt:
         fingerprint = self.port.fingerprint()
@@ -449,6 +462,9 @@ class ImageSurfaceController:
                 )
 
         token = str(uuid4())
+        guard = self.invocation_guard
+        if guard is not None and not guard.reserve(spec):
+            return self._blocked(spec, fingerprint, constraints, "IMAGE_ATTEMPT_RESERVATION_BLOCKED")
         try:
             if envelope is None:
                 outcome = self.port.invoke(
@@ -487,6 +503,9 @@ class ImageSurfaceController:
                 audit={},
                 blocker=str(exc),
             )
+        finally:
+            if guard is not None:
+                guard.complete()
         if outcome.actual_tool_family is not spec.allowed_tool_family:
             return self._blocked(
                 spec, fingerprint, constraints, "ACTUAL_TOOL_FAMILY_MISMATCH", token, outcome

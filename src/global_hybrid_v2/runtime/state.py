@@ -320,7 +320,7 @@ class SQLiteRuntimeStateStore:
             ).fetchone()
             attempts, active, consumed = row if row else (0, 0, "[]")
             ids = json.loads(consumed)
-            if active or attempts >= 2 or (authorization_id is not None and authorization_id in ids):
+            if active or (authorization_id is not None and authorization_id in ids):
                 raise RuntimeStateError("IMAGE_ATTEMPT_QUOTA_BLOCKED")
             if attempts >= 1 and authorization_id is None:
                 raise RuntimeStateError("IMAGE_RETRY_AUTHORIZATION_REQUIRED")
