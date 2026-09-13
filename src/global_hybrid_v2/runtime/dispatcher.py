@@ -8,6 +8,7 @@ from global_hybrid_v2.contracts import (
     AuthoritySnapshot,
     DomainResult,
     EffectType,
+    EffectType,
     LibraryAccessKind,
     LibraryAccessRequest,
     OutputClassification,
@@ -44,6 +45,7 @@ from global_hybrid_v2.governance.repeat_action import (
 from global_hybrid_v2.governance.resume import ResumeGate
 from global_hybrid_v2.governance.risk import TaskRiskClassifier
 from global_hybrid_v2.governance.router import OwnerRouter
+from global_hybrid_v2.image_surface import ImageSurfaceController, ImageTaskSpec
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
 from global_hybrid_v2.runtime.state import (
     CURRENT_RUNTIME_STATE_VERSION,
@@ -108,6 +110,7 @@ class Dispatcher:
         risk_classifier: TaskRiskClassifier | None = None,
         domain_contract_gate: DomainContractGate | None = None,
         library_boundary: LibraryReadWriteBoundary | None = None,
+        image_controller: ImageSurfaceController | None = None,
         pre_action_gate: PreActionConstraintGate | None = None,
         host_projection_gate: HostProjectionGate | None = None,
         resume_gate: ResumeGate | None = None,
@@ -126,6 +129,7 @@ class Dispatcher:
         self.risk_classifier = risk_classifier or TaskRiskClassifier()
         self.domain_contract_gate = domain_contract_gate or DomainContractGate()
         self.library_boundary = library_boundary or LibraryReadWriteBoundary()
+        self.image_controller = image_controller or ImageSurfaceController()
         self.pre_action_gate = pre_action_gate or PreActionConstraintGate()
         self.host_projection_gate = host_projection_gate or HostProjectionGate()
         self.resume_gate = resume_gate or ResumeGate()
@@ -618,6 +622,13 @@ class Dispatcher:
                 },
             )
             return result
+
+        if request.image_task is not None:
+            if owner is not Owner.EXECUTION or EffectType.IMAGE_GENERATE not in request.effects:
+                raise RuntimeError("image task requires EXECUTION owner and IMAGE_GENERATE effect")
+            receipt = self.image_controller.execute(ImageTaskSpec.model_validate(request.image_task))
+            self.trace.emit(task_id=contract.task_id, stage="image_surface_dispatch", decision=receipt.state.value, owner=owner, span_owner="EXECUTION", metadata=receipt.model_dump(mode="json"))
+            return DomainResult(owner=owner, status=receipt.state.value, output=receipt.model_dump(mode="json"), evidence={"image_execution_receipt": receipt.model_dump(mode="json")})
 
         if sales_media_task:
             try:

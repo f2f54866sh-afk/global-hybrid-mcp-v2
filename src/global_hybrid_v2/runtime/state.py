@@ -120,6 +120,11 @@ class SQLiteRuntimeStateStore:
                 )
                 """
             )
+            connection.execute("""CREATE TABLE IF NOT EXISTS image_attempt_budget (
+                conversation_or_thread_id TEXT NOT NULL, task_id TEXT NOT NULL,
+                source_key TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 0, consumed_authorizations TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (conversation_or_thread_id, task_id, source_key))""")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
@@ -298,3 +303,27 @@ class SQLiteRuntimeStateStore:
             return RuntimeTaskState.model_validate(json.loads(payload))
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             raise RuntimeStateVersionError("invalid or stale runtime state payload") from exc
+
+    def reserve_image_attempt(self, conversation_or_thread_id: str, task_id: str, source_key: str, authorization_id: str | None = None) -> int:
+        """Atomically reserve one image side effect and consume a single-use retry receipt."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT attempts, active, consumed_authorizations FROM image_attempt_budget WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?", (conversation_or_thread_id, task_id, source_key)).fetchone()
+            attempts, active, consumed = (row if row else (0, 0, "[]"))
+            ids = json.loads(consumed)
+            if active or attempts >= 2 or (authorization_id is not None and authorization_id in ids):
+                raise RuntimeStateError("IMAGE_ATTEMPT_QUOTA_BLOCKED")
+            if attempts >= 1 and authorization_id is None:
+                raise RuntimeStateError("IMAGE_RETRY_AUTHORIZATION_REQUIRED")
+            if authorization_id is not None: ids.append(authorization_id)
+            attempts += 1
+            connection.execute("INSERT INTO image_attempt_budget VALUES (?,?,?,?,?,?) ON CONFLICT(conversation_or_thread_id,task_id,source_key) DO UPDATE SET attempts=excluded.attempts, active=1, consumed_authorizations=excluded.consumed_authorizations", (conversation_or_thread_id, task_id, source_key, attempts, 1, json.dumps(ids)))
+            return attempts
+
+    def release_image_attempt(self, conversation_or_thread_id: str, task_id: str, source_key: str) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE image_attempt_budget SET active=0, attempts=attempts-1 WHERE conversation_or_thread_id=? AND task_id=? AND source_key=? AND active=1", (conversation_or_thread_id, task_id, source_key))
+
+    def complete_image_attempt(self, conversation_or_thread_id: str, task_id: str, source_key: str) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE image_attempt_budget SET active=0 WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?", (conversation_or_thread_id, task_id, source_key))

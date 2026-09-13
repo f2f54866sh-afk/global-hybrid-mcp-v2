@@ -360,6 +360,7 @@ class TaskRequest(BaseModel):
     context: list[ContextItem] = Field(default_factory=list)
     retry_context: RetryContext | None = None
     risk_class: RiskClass | None = None
+    image_task: dict[str, Any] | None = None
     target_system: str | None = None
     action_class: str | None = None
     current_identity_projection: CurrentIdentityProjection | None = None
