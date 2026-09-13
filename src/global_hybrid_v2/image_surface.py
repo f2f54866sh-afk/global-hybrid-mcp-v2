@@ -211,9 +211,7 @@ class ImageSurfaceController:
             "reference_count": sum(len(value) for value in spec.reference_set.model_dump().values()),
         }
         matching_evidence = [
-            item
-            for item in spec.capability_evidence
-            if self._same_evidence_scope(item, expected_evidence)
+            item for item in spec.capability_evidence if self._same_evidence_scope(item, expected_evidence)
         ]
         if not matching_evidence:
             return self._blocked(spec, fingerprint, constraints, "CAPABILITY_EVIDENCE_MISMATCH")

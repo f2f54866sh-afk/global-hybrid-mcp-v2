@@ -8,7 +8,6 @@ from global_hybrid_v2.contracts import (
     AuthoritySnapshot,
     DomainResult,
     EffectType,
-    EffectType,
     LibraryAccessKind,
     LibraryAccessRequest,
     OutputClassification,
@@ -239,23 +238,27 @@ class Dispatcher:
                     status="RUNTIME_STATE_CLOSED",
                     evidence={"transition": transition.kind},
                 )
-            if runtime_state is not None and transition is not None and (
-                transition.kind == "SUPPORT"
-                and runtime_state.action_status == "COMPLETED"
-                and runtime_state.action_result_status is not None
-                and runtime_state.logical_action_identity == transition.reason
-                and runtime_state.current_progress == runtime_state.action_result_status
-                and runtime_state.active_subtask_id is None
-                and runtime_state.current_phase != "PARENT_CONTINUATION"
-                or (
+            if (
+                runtime_state is not None
+                and transition is not None
+                and (
                     transition.kind == "SUPPORT"
                     and runtime_state.action_status == "COMPLETED"
                     and runtime_state.action_result_status is not None
-                    and runtime_state.logical_action_identity is not None
+                    and runtime_state.logical_action_identity == transition.reason
                     and runtime_state.current_progress == runtime_state.action_result_status
-                    and runtime_state.next_action_candidate is None
                     and runtime_state.active_subtask_id is None
-                    and runtime_state.current_phase == "COMPLETED"
+                    and runtime_state.current_phase != "PARENT_CONTINUATION"
+                    or (
+                        transition.kind == "SUPPORT"
+                        and runtime_state.action_status == "COMPLETED"
+                        and runtime_state.action_result_status is not None
+                        and runtime_state.logical_action_identity is not None
+                        and runtime_state.current_progress == runtime_state.action_result_status
+                        and runtime_state.next_action_candidate is None
+                        and runtime_state.active_subtask_id is None
+                        and runtime_state.current_phase == "COMPLETED"
+                    )
                 )
             ):
                 return DomainResult(
@@ -356,10 +359,7 @@ class Dispatcher:
                     },
                 )
         if request.engineering_checkpoint is not None:
-            current_authority = {
-                owner.value: entry.revision
-                for owner, entry in snapshot.entries.items()
-            }
+            current_authority = {owner.value: entry.revision for owner, entry in snapshot.entries.items()}
             resume = self.resume_gate.admit(
                 request.engineering_checkpoint,
                 current_authority=current_authority,
@@ -570,7 +570,8 @@ class Dispatcher:
                     responsibility_owner=owner.value,
                     effect_class=request.effects[0],
                 )
-                if runtime_state is not None and request.effects else None
+                if runtime_state is not None and request.effects
+                else None
             ),
             proposed_owner=owner.value,
         )
@@ -627,8 +628,20 @@ class Dispatcher:
             if owner is not Owner.EXECUTION or EffectType.IMAGE_GENERATE not in request.effects:
                 raise RuntimeError("image task requires EXECUTION owner and IMAGE_GENERATE effect")
             receipt = self.image_controller.execute(ImageTaskSpec.model_validate(request.image_task))
-            self.trace.emit(task_id=contract.task_id, stage="image_surface_dispatch", decision=receipt.state.value, owner=owner, span_owner="EXECUTION", metadata=receipt.model_dump(mode="json"))
-            return DomainResult(owner=owner, status=receipt.state.value, output=receipt.model_dump(mode="json"), evidence={"image_execution_receipt": receipt.model_dump(mode="json")})
+            self.trace.emit(
+                task_id=contract.task_id,
+                stage="image_surface_dispatch",
+                decision=receipt.state.value,
+                owner=owner,
+                span_owner="EXECUTION",
+                metadata=receipt.model_dump(mode="json"),
+            )
+            return DomainResult(
+                owner=owner,
+                status=receipt.state.value,
+                output=receipt.model_dump(mode="json"),
+                evidence={"image_execution_receipt": receipt.model_dump(mode="json")},
+            )
 
         if sales_media_task:
             try:
@@ -1152,8 +1165,7 @@ class Dispatcher:
                     "identity_currentness_token": contract.identity_currentness_token,
                 }
                 if not all(
-                    isinstance(item, dict)
-                    and all(item.get(key) == value for key, value in expected.items())
+                    isinstance(item, dict) and all(item.get(key) == value for key, value in expected.items())
                     for item in host_terminal
                 ):
                     return DomainResult(

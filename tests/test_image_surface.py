@@ -179,9 +179,7 @@ def test_stale_or_wrong_scope_capability_evidence_fails_closed():
         protected_state_class="body|headlamp|wheels",
         current=False,
     )
-    receipt = ImageSurfaceController(RecordingImagePort()).execute(
-        _spec(capability_evidence=[stale])
-    )
+    receipt = ImageSurfaceController(RecordingImagePort()).execute(_spec(capability_evidence=[stale]))
     assert receipt.state is ImageExecutionState.BLOCKED
     assert receipt.blocker == "STALE_CAPABILITY_EVIDENCE"
 

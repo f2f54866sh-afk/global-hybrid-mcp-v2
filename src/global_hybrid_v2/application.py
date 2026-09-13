@@ -12,8 +12,8 @@ from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.effects import EffectGate
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
-from global_hybrid_v2.image_surface import ImageExecutionPort, ImageSurfaceController
 from global_hybrid_v2.governance.host_projection import HostCurrentStateVerifier, HostProjectionGate
+from global_hybrid_v2.image_surface import ImageExecutionPort, ImageSurfaceController
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.research import (
     ResearchExecutor,
@@ -49,11 +49,7 @@ def create_application(
     host_current_state_verifier: HostCurrentStateVerifier | None = None,
     runtime_state_store: RuntimeStateStore | None = None,
 ) -> Application:
-    root = (
-        Path(repo_root).resolve()
-        if repo_root is not None
-        else Path(__file__).resolve().parents[2]
-    )
+    root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[2]
     runtime_settings = settings or Settings()
     effective_runtime_state_store = runtime_state_store
     if effective_runtime_state_store is None and runtime_settings.runtime_state_path:
@@ -75,10 +71,7 @@ def create_application(
     runtime_trace.attach_witness(ReadOnlyWitness())
     research_port = research if research is not None else configured_research_port(runtime_settings)
     research_executor = ResearchExecutor(research_port)
-    domains: dict[Owner, DomainPort] = {
-        owner: NotConfiguredDomain(owner)
-        for owner in Owner
-    }
+    domains: dict[Owner, DomainPort] = {owner: NotConfiguredDomain(owner) for owner in Owner}
     domains[Owner.LIBRARY_FACT] = LibraryProjectionDomain()
     domains[Owner.SALES_HUMAN] = SalesMediaDomain()
     composition_fitness = SystemFitnessFunctions.evaluate_composition(
@@ -87,9 +80,7 @@ def create_application(
     )
     if not composition_fitness.passed:
         blockers = ", ".join(
-            check.blocker or check.name
-            for check in composition_fitness.checks
-            if not check.passed
+            check.blocker or check.name for check in composition_fitness.checks if not check.passed
         )
         raise RuntimeError(f"runtime composition fitness failed: {blockers}")
     dispatcher = Dispatcher(
