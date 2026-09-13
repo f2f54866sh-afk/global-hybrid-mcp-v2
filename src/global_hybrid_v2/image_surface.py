@@ -35,6 +35,120 @@ class ImageExecutionState(StrEnum):
     CAPABILITY_BOUNDARY = "CAPABILITY_BOUNDARY"
 
 
+class ImageLocalityMode(StrEnum):
+    SOFT_MODEL_GUIDED = "SOFT_MODEL_GUIDED"
+    AUTHORIZED_ENVELOPE = "AUTHORIZED_ENVELOPE"
+
+
+class LocalityEvidenceState(StrEnum):
+    VERIFIED = "VERIFIED"
+    UNPROVEN = "UNPROVEN"
+
+
+class SpatialClipState(StrEnum):
+    INSIDE_EXPECTED_BOUNDS = "INSIDE_EXPECTED_BOUNDS"
+    CLIPPED = "CLIPPED"
+    OUT_OF_BOUNDS = "OUT_OF_BOUNDS"
+
+
+class ImageRetryAuthorization(StrEnum):
+    FIRST_PASS_ONLY = "FIRST_PASS_ONLY"
+    EXPLICIT_USER_EXTENSION = "EXPLICIT_USER_EXTENSION"
+
+
+class ImageSideEffectBudget(BaseModel):
+    """Per-source image-call budget supplied by the existing runtime task state.
+
+    This object is not a second state store. It is a typed permit consumed at the
+    image execution edge. Attempt 1 is the only default permit. Any later attempt
+    must be backed by a current explicit-user authorization receipt.
+    """
+
+    source_asset_id: str = Field(min_length=1)
+    attempt_number: int = Field(default=1, ge=1)
+    authorized_attempt_limit: int = Field(default=1, ge=1)
+    authorization: ImageRetryAuthorization = ImageRetryAuthorization.FIRST_PASS_ONLY
+    explicit_user_authorization_receipt: str | None = None
+    prior_attempt_terminal: bool = True
+    unattempted_batch_sources_remaining: int = Field(default=0, ge=0)
+    explicit_source_scope_override: bool = False
+
+    @model_validator(mode="after")
+    def authorization_is_consistent(self) -> ImageSideEffectBudget:
+        if self.authorized_attempt_limit > 1:
+            if self.authorization is not ImageRetryAuthorization.EXPLICIT_USER_EXTENSION:
+                raise ValueError("retry budget extension requires explicit user authorization")
+            if not (self.explicit_user_authorization_receipt or "").strip():
+                raise ValueError("retry budget extension requires an authorization receipt")
+        elif self.authorization is ImageRetryAuthorization.EXPLICIT_USER_EXTENSION:
+            raise ValueError("explicit retry authorization must extend the attempt limit")
+        return self
+
+
+class NormalizedPoint(BaseModel):
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+
+
+def _validate_polygon(points: list[NormalizedPoint], *, label: str) -> None:
+    tuples = [(point.x, point.y) for point in points]
+    area2 = 0.0
+    for index, current in enumerate(tuples):
+        following = tuples[(index + 1) % len(tuples)]
+        area2 += current[0] * following[1] - following[0] * current[1]
+    if abs(area2) <= 1e-9:
+        raise ValueError(f"{label} polygon must have non-zero area")
+    if len(set(tuples)) != len(tuples):
+        raise ValueError(f"{label} polygon points must be unique")
+
+
+class SpatialBindingReceipt(BaseModel):
+    """Current REAL_CAR spatial-frame binding projected into the image runtime."""
+
+    target_role: str = Field(min_length=1)
+    geometry_source: str = Field(min_length=1)
+    source_frame_id: str = Field(min_length=1)
+    source_polygon: list[NormalizedPoint] = Field(min_length=3)
+    geometry_confidence: float = Field(ge=0.0, le=1.0)
+    geometry_confidence_sufficient: bool
+    transform_chain_digest: str = Field(min_length=1)
+    projected_polygon: list[NormalizedPoint] = Field(min_length=3)
+    current_artifact_frame_id: str = Field(min_length=1)
+    clip_state: SpatialClipState
+    binding_valid: bool
+    locator_receipt_id: str = Field(min_length=1)
+    locator_evidence_state: LocalityEvidenceState
+
+    @model_validator(mode="after")
+    def polygons_are_valid(self) -> SpatialBindingReceipt:
+        _validate_polygon(self.source_polygon, label="source binding")
+        _validate_polygon(self.projected_polygon, label="projected binding")
+        return self
+
+
+class AuthorizedEditEnvelope(BaseModel):
+    """Exact source-bound write authority for a bounded local image edit.
+
+    The write polygon includes only the target plus explicitly authorized
+    feather/contact-shadow margin. It is derived from a verified spatial binding;
+    the generator is never allowed to infer or expand its own write scope.
+    """
+
+    source_asset_id: str = Field(min_length=1)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    region_id: str = Field(min_length=1)
+    mask_asset_id: str = Field(min_length=1)
+    mask_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_semantics: str = Field(min_length=1)
+    spatial_binding: SpatialBindingReceipt
+    write_polygon: list[NormalizedPoint] = Field(min_length=3)
+
+    @model_validator(mode="after")
+    def write_polygon_is_valid(self) -> AuthorizedEditEnvelope:
+        _validate_polygon(self.write_polygon, label="authorized edit envelope")
+        return self
+
+
 class ImageSurfaceFingerprint(BaseModel):
     surface_family: str = Field(min_length=1)
     tool_family: ImageToolFamily
@@ -44,6 +158,7 @@ class ImageSurfaceFingerprint(BaseModel):
     exposed_locality_controls: list[str] = Field(default_factory=list)
     output_visibility_behavior: str = Field(min_length=1)
     source_binding_receipt_available: bool = False
+    authorized_envelope_enforcement_available: bool = False
     observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")
@@ -117,6 +232,9 @@ class ImageTaskSpec(BaseModel):
     output_count: int = Field(default=1, ge=1)
     explicit_multi_output_authorized: bool = False
     negative_evidence: list[ImageCapabilityEvidence] = Field(default_factory=list)
+    locality_mode: ImageLocalityMode = ImageLocalityMode.SOFT_MODEL_GUIDED
+    authorized_edit_envelope: AuthorizedEditEnvelope | None = None
+    side_effect_budget: ImageSideEffectBudget | None = None
 
     @model_validator(mode="after")
     def routes_are_admissible(self) -> ImageTaskSpec:
@@ -128,6 +246,16 @@ class ImageTaskSpec(BaseModel):
             raise ValueError("a route cannot be both allowed and forbidden")
         if self.output_count != 1 and not self.explicit_multi_output_authorized:
             raise ValueError("multiple outputs require explicit current user authorization")
+        if (
+            self.locality_mode is ImageLocalityMode.AUTHORIZED_ENVELOPE
+            and self.authorized_edit_envelope is None
+        ):
+            raise ValueError("authorized locality mode requires an edit envelope")
+        if (
+            self.locality_mode is ImageLocalityMode.SOFT_MODEL_GUIDED
+            and self.authorized_edit_envelope is not None
+        ):
+            raise ValueError("soft locality mode cannot carry an authoritative edit envelope")
         return self
 
 
@@ -140,6 +268,13 @@ class ImageRenderOutcome(BaseModel):
     identity_preserved: bool
     preservation_pass: bool
     net_uplift_pass: bool
+    source_asset_id: str | None = None
+    source_sha256: str | None = None
+    applied_region_id: str | None = None
+    applied_mask_sha256: str | None = None
+    applied_transform_chain_digest: str | None = None
+    applied_current_artifact_frame_id: str | None = None
+    outside_envelope_changed_pixels: int | None = Field(default=None, ge=0)
 
 
 class ImageExecutionReceipt(BaseModel):
@@ -164,6 +299,7 @@ class ImageExecutionPort(Protocol):
         manifest: RenderManifest,
         tool_family: ImageToolFamily,
         node_token: str,
+        locality_envelope: AuthorizedEditEnvelope | None = None,
     ) -> ImageRenderOutcome: ...
 
 
@@ -185,7 +321,9 @@ class UnavailableImageExecutionPort:
         manifest: RenderManifest,
         tool_family: ImageToolFamily,
         node_token: str,
+        locality_envelope: AuthorizedEditEnvelope | None = None,
     ) -> ImageRenderOutcome:
+        del locality_envelope
         raise RuntimeError("CAPABILITY_BOUNDARY: no controlled image execution port")
 
 
@@ -204,14 +342,37 @@ class ImageSurfaceController:
             task_scope=spec.task_scope,
             protected_state_class="|".join(sorted(spec.protected_state)),
         )
+        envelope = spec.authorized_edit_envelope
         constraints = {
             "allowed_route_families": sorted(item.value for item in spec.allowed_route_families),
             "forbidden_route_families": sorted(item.value for item in spec.forbidden_route_families),
             "output_count": spec.output_count,
             "reference_count": sum(len(value) for value in spec.reference_set.model_dump().values()),
+            "locality_mode": spec.locality_mode.value,
+            "authorized_region_id": envelope.region_id if envelope else None,
+            "authorized_source_asset_id": envelope.source_asset_id if envelope else None,
+            "source_frame_id": (
+                envelope.spatial_binding.source_frame_id if envelope else None
+            ),
+            "current_artifact_frame_id": (
+                envelope.spatial_binding.current_artifact_frame_id if envelope else None
+            ),
+            "transform_chain_digest": (
+                envelope.spatial_binding.transform_chain_digest if envelope else None
+            ),
+            "attempt_number": (
+                spec.side_effect_budget.attempt_number if spec.side_effect_budget else 1
+            ),
+            "authorized_attempt_limit": (
+                spec.side_effect_budget.authorized_attempt_limit
+                if spec.side_effect_budget
+                else 1
+            ),
         }
         matching_evidence = [
-            item for item in spec.capability_evidence if self._same_evidence_scope(item, expected_evidence)
+            item
+            for item in spec.capability_evidence
+            if self._same_evidence_scope(item, expected_evidence)
         ]
         if not matching_evidence:
             return self._blocked(spec, fingerprint, constraints, "CAPABILITY_EVIDENCE_MISMATCH")
@@ -229,13 +390,92 @@ class ImageSurfaceController:
         if fingerprint.tool_family is not spec.allowed_tool_family:
             return self._blocked(spec, fingerprint, constraints, "SURFACE_TOOL_FAMILY_MISMATCH")
 
+        budget = spec.side_effect_budget
+        if budget is not None:
+            if envelope is not None and budget.source_asset_id != envelope.source_asset_id:
+                return self._blocked(
+                    spec, fingerprint, constraints, "SIDE_EFFECT_BUDGET_SOURCE_MISMATCH"
+                )
+            if budget.attempt_number > budget.authorized_attempt_limit:
+                return self._blocked(
+                    spec, fingerprint, constraints, "IMAGE_SIDE_EFFECT_BUDGET_EXHAUSTED"
+                )
+            if budget.attempt_number > 1:
+                if budget.authorization is not ImageRetryAuthorization.EXPLICIT_USER_EXTENSION:
+                    return self._blocked(
+                        spec, fingerprint, constraints, "AUTONOMOUS_IMAGE_RETRY_FORBIDDEN"
+                    )
+                if not budget.prior_attempt_terminal:
+                    return self._blocked(
+                        spec, fingerprint, constraints, "PRIOR_IMAGE_ATTEMPT_NOT_TERMINAL"
+                    )
+                if (
+                    budget.unattempted_batch_sources_remaining > 0
+                    and not budget.explicit_source_scope_override
+                ):
+                    return self._blocked(
+                        spec, fingerprint, constraints, "BATCH_COVERAGE_REQUIRED_BEFORE_RETRY"
+                    )
+
+        if spec.locality_mode is ImageLocalityMode.AUTHORIZED_ENVELOPE:
+            assert envelope is not None
+            binding = envelope.spatial_binding
+            if binding.locator_evidence_state is not LocalityEvidenceState.VERIFIED:
+                return self._blocked(
+                    spec, fingerprint, constraints, "LOCALITY_LOCATOR_UNVERIFIED"
+                )
+            if not binding.binding_valid:
+                return self._blocked(
+                    spec, fingerprint, constraints, "SPATIAL_BINDING_INVALID"
+                )
+            if not binding.geometry_confidence_sufficient:
+                return self._blocked(
+                    spec, fingerprint, constraints, "GEOMETRY_CONFIDENCE_INSUFFICIENT"
+                )
+            if binding.clip_state is not SpatialClipState.INSIDE_EXPECTED_BOUNDS:
+                return self._blocked(
+                    spec, fingerprint, constraints, "SPATIAL_BINDING_CLIPPED_OR_OUT_OF_BOUNDS"
+                )
+            if not fingerprint.source_binding_receipt_available:
+                return self._blocked(
+                    spec, fingerprint, constraints, "SOURCE_BINDING_RECEIPT_UNAVAILABLE"
+                )
+            if not fingerprint.authorized_envelope_enforcement_available:
+                return self._blocked(
+                    spec,
+                    fingerprint,
+                    constraints,
+                    "AUTHORIZED_ENVELOPE_ENFORCEMENT_UNAVAILABLE",
+                )
+
         token = str(uuid4())
         try:
-            outcome = self.port.invoke(
-                manifest=spec.render_manifest,
-                tool_family=spec.allowed_tool_family,
-                node_token=token,
-            )
+            if envelope is None:
+                outcome = self.port.invoke(
+                    manifest=spec.render_manifest,
+                    tool_family=spec.allowed_tool_family,
+                    node_token=token,
+                )
+            else:
+                outcome = self.port.invoke(
+                    manifest=spec.render_manifest,
+                    tool_family=spec.allowed_tool_family,
+                    node_token=token,
+                    locality_envelope=envelope,
+                )
+        except TypeError as exc:
+            if envelope is not None:
+                return ImageExecutionReceipt(
+                    state=ImageExecutionState.CAPABILITY_BOUNDARY,
+                    enforcement="ENGINEERING_DISPATCHER_CONTROLLED",
+                    fingerprint=fingerprint,
+                    render_manifest=spec.render_manifest,
+                    admitted_tool_family=spec.allowed_tool_family,
+                    user_constraint_receipt=constraints,
+                    audit={},
+                    blocker=f"LOCALITY_PORT_CONTRACT_MISMATCH: {type(exc).__name__}",
+                )
+            raise
         except RuntimeError as exc:
             return ImageExecutionReceipt(
                 state=ImageExecutionState.CAPABILITY_BOUNDARY,
@@ -251,9 +491,10 @@ class ImageSurfaceController:
             return self._blocked(
                 spec, fingerprint, constraints, "ACTUAL_TOOL_FAMILY_MISMATCH", token, outcome
             )
+
         non_target = outcome.changed_regions - {spec.render_manifest.current_visual_delta}
         protected_changed = outcome.protected_state_changed & spec.protected_state
-        audit = {
+        audit: dict[str, object] = {
             "required_modification_pass": outcome.requested_delta_completed,
             "required_preservation_pass": outcome.preservation_pass and outcome.identity_preserved,
             "non_target_regression_pass": not non_target and not protected_changed,
@@ -261,15 +502,51 @@ class ImageSurfaceController:
             "non_target_changed_regions": sorted(non_target),
             "protected_state_changed": sorted(protected_changed),
         }
-        passed = all(
-            audit[key]
-            for key in (
-                "required_modification_pass",
-                "required_preservation_pass",
-                "non_target_regression_pass",
-                "net_uplift_pass",
+        locality_checks: tuple[str, ...] = ()
+        if envelope is not None:
+            audit.update(
+                {
+                    "locality_source_binding_pass": (
+                        outcome.source_asset_id == envelope.source_asset_id
+                        and outcome.source_sha256 == envelope.source_sha256
+                    ),
+                    "locality_region_binding_pass": (
+                        outcome.applied_region_id == envelope.region_id
+                        and outcome.applied_mask_sha256 == envelope.mask_sha256
+                        and outcome.applied_transform_chain_digest
+                        == envelope.spatial_binding.transform_chain_digest
+                        and outcome.applied_current_artifact_frame_id
+                        == envelope.spatial_binding.current_artifact_frame_id
+                    ),
+                    "outside_envelope_preservation_pass": (
+                        outcome.outside_envelope_changed_pixels == 0
+                    ),
+                    "outside_envelope_changed_pixels": outcome.outside_envelope_changed_pixels,
+                    "locator_receipt_id": envelope.spatial_binding.locator_receipt_id,
+                    "target_semantics": envelope.target_semantics,
+                    "geometry_confidence": envelope.spatial_binding.geometry_confidence,
+                    "source_frame_id": envelope.spatial_binding.source_frame_id,
+                    "current_artifact_frame_id": (
+                        envelope.spatial_binding.current_artifact_frame_id
+                    ),
+                    "transform_chain_digest": envelope.spatial_binding.transform_chain_digest,
+                }
             )
+            locality_checks = (
+                "locality_source_binding_pass",
+                "locality_region_binding_pass",
+                "outside_envelope_preservation_pass",
+            )
+
+        required_checks = (
+            "required_modification_pass",
+            "required_preservation_pass",
+            "non_target_regression_pass",
+            "net_uplift_pass",
+            *locality_checks,
         )
+        passed = all(bool(audit[key]) for key in required_checks)
+        locality_failed = any(not bool(audit[key]) for key in locality_checks)
         return ImageExecutionReceipt(
             state=ImageExecutionState.PASS if passed else ImageExecutionState.FAIL,
             node_token=token,
@@ -280,7 +557,13 @@ class ImageSurfaceController:
             actual_invoked_tool_family=outcome.actual_tool_family,
             user_constraint_receipt=constraints,
             audit=audit,
-            blocker=None if passed else "VISUAL_ACCEPTANCE_FAILED",
+            blocker=(
+                None
+                if passed
+                else "LOCALITY_ENVELOPE_ACCEPTANCE_FAILED"
+                if locality_failed
+                else "VISUAL_ACCEPTANCE_FAILED"
+            ),
         )
 
     @staticmethod

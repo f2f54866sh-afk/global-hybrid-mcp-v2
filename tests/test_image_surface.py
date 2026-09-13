@@ -5,7 +5,15 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from global_hybrid_v2.contracts import AuthoritySnapshot, EffectType, Intent, TaskRequest
+from global_hybrid_v2.contracts import (
+    AuthoritySnapshot,
+    ContextClass,
+    ContextItem,
+    ContextOrigin,
+    EffectType,
+    Intent,
+    TaskRequest,
+)
 from global_hybrid_v2.image_surface import (
     ImageCapabilityEvidence,
     ImageExecutionState,
@@ -201,6 +209,23 @@ def test_image_effect_uses_the_existing_single_dispatcher_path():
             request_text="出圖",
             intent=Intent.EXECUTION,
             effects=[EffectType.IMAGE_GENERATE],
+            target_system="controlled_image_port",
+            action_class="image_generation",
+            context=[
+                ContextItem(
+                    id="current-capability",
+                    origin=ContextOrigin.CURRENT_TOOL_RESULT,
+                    context_class=ContextClass.CURRENT_CAPABILITY_FACT,
+                    purpose="current image capability",
+                    task_scope="same vehicle, replace background",
+                    payload={
+                        "target_system": "controlled_image_port",
+                        "action_class": "image_generation",
+                    },
+                    current_binding=True,
+                    provenance=["current-capability-fixture"],
+                )
+            ],
             image_task=_spec().model_dump(mode="json"),
         )
     )
