@@ -7,6 +7,8 @@ only an injected, engineer-controlled port can receive a dispatch token.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -54,6 +56,124 @@ class SpatialClipState(StrEnum):
 class ImageRetryAuthorization(StrEnum):
     FIRST_PASS_ONLY = "FIRST_PASS_ONLY"
     EXPLICIT_USER_EXTENSION = "EXPLICIT_USER_EXTENSION"
+
+
+class IdentitySourceRole(StrEnum):
+    ORIGINAL_REAL_MASTER = "ORIGINAL_REAL_MASTER"
+    BODY = "BODY"
+    TATTOO = "TATTOO"
+    POSE = "POSE"
+
+
+class IdentityEvidenceState(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    HOLD = "HOLD"
+
+
+class IdentityStage(StrEnum):
+    SOURCE_1X1 = "1X1_NEAR_FRONTAL"
+    MULTI_POSE = "MULTI_POSE_STRESS"
+    FOUR_SCENE = "FOUR_SCENE_STRESS"
+    GRID_16 = "GRID_16"
+
+
+class IdentitySource(BaseModel):
+    asset_id: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    role: IdentitySourceRole
+    generated: bool = False
+
+
+class IdentitySourcePacket(BaseModel):
+    """Task-local source authority; generated outputs can never become masters."""
+
+    task_binding: str = Field(min_length=1)
+    person_binding: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    packet_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    identity_critical: bool = True
+    generative_only: bool = False
+    sources: list[IdentitySource] = Field(min_length=1)
+    excluded_generated_source_ids: set[str] = Field(default_factory=set)
+    request_lineage_required: bool = True
+
+    @model_validator(mode="after")
+    def roles_are_authoritative(self) -> IdentitySourcePacket:
+        ids = [item.asset_id for item in self.sources]
+        masters = [item for item in self.sources if item.role is IdentitySourceRole.ORIGINAL_REAL_MASTER]
+        if len(ids) != len(set(ids)) or len(masters) != 1:
+            raise ValueError("identity-critical packet requires exactly one master")
+        master = masters[0]
+        if master.generated or master.asset_id in self.excluded_generated_source_ids:
+            raise ValueError("generated or excluded source cannot be identity master")
+        if not self.excluded_generated_source_ids.isdisjoint(set(ids) - {master.asset_id}):
+            # Excluded generated references are declared separately and must not become inputs.
+            raise ValueError("excluded generated source cannot occupy a source role")
+        if self.packet_digest != _identity_packet_digest(self):
+            raise ValueError("identity source packet digest mismatch")
+        return self
+
+
+class ControlledRequestInputLineage(BaseModel):
+    task_binding: str = Field(min_length=1)
+    packet_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selected_lane: ImageRouteFamily
+    sent_source_roles: dict[str, IdentitySourceRole] = Field(min_length=1)
+    excluded_generated_source_ids: set[str] = Field(default_factory=set)
+    internal_model_conditioning_proven: bool = False
+
+
+class SourcePersonFidelityOracle(BaseModel):
+    master_asset_id: str = Field(min_length=1)
+    master_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    current_output_id: str = Field(min_length=1)
+    comparator_authority: str = "ORIGINAL_REAL_MASTER_TO_CURRENT_OUTPUT"
+    fidelity: IdentityEvidenceState
+    cross_output_consistency: IdentityEvidenceState | None = None
+    blocker: str | None = None
+
+    @model_validator(mode="after")
+    def original_master_is_required(self) -> SourcePersonFidelityOracle:
+        if self.comparator_authority != "ORIGINAL_REAL_MASTER_TO_CURRENT_OUTPUT":
+            raise ValueError("generated output cannot establish source-person fidelity")
+        return self
+
+
+class IdentityStageWitness(BaseModel):
+    stage: IdentityStage
+    master_asset_id: str = Field(min_length=1)
+    packet_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    decision: IdentityEvidenceState
+
+
+def _identity_packet_digest(packet: IdentitySourcePacket) -> str:
+    """Return the stable task-local digest, excluding its self-referential field."""
+
+    payload = packet.model_dump(mode="json", exclude={"packet_digest"})
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def evaluate_source_person_fidelity(
+    packet: IdentitySourcePacket,
+    oracle: SourcePersonFidelityOracle,
+) -> IdentityEvidenceState:
+    """Accept only a result compared directly with the packet's real master."""
+
+    master = next(
+        item for item in packet.sources if item.role is IdentitySourceRole.ORIGINAL_REAL_MASTER
+    )
+    if oracle.master_asset_id != master.asset_id or oracle.master_sha256 != master.sha256:
+        return IdentityEvidenceState.FAIL
+    if oracle.fidelity is not IdentityEvidenceState.PASS:
+        return oracle.fidelity
+    if oracle.cross_output_consistency is IdentityEvidenceState.FAIL:
+        return IdentityEvidenceState.FAIL
+    if oracle.cross_output_consistency is IdentityEvidenceState.HOLD:
+        return IdentityEvidenceState.HOLD
+    return IdentityEvidenceState.PASS
 
 
 class ImageSideEffectBudget(BaseModel):
@@ -236,6 +356,11 @@ class ImageTaskSpec(BaseModel):
     locality_mode: ImageLocalityMode = ImageLocalityMode.SOFT_MODEL_GUIDED
     authorized_edit_envelope: AuthorizedEditEnvelope | None = None
     side_effect_budget: ImageSideEffectBudget | None = None
+    identity_source_packet: IdentitySourcePacket | None = None
+    controlled_request_input_lineage: ControlledRequestInputLineage | None = None
+    identity_stage: IdentityStage | None = None
+    lower_stage_witnesses: list[IdentityStageWitness] = Field(default_factory=list)
+    host_internal_conditioning_required: bool = False
 
     @model_validator(mode="after")
     def routes_are_admissible(self) -> ImageTaskSpec:
@@ -257,7 +382,64 @@ class ImageTaskSpec(BaseModel):
             and self.authorized_edit_envelope is not None
         ):
             raise ValueError("soft locality mode cannot carry an authoritative edit envelope")
+        self._validate_identity_source_contract()
         return self
+
+    def _validate_identity_source_contract(self) -> None:
+        packet = self.identity_source_packet
+        lineage = self.controlled_request_input_lineage
+        identity_fields_present = any(
+            (
+                lineage is not None,
+                self.identity_stage is not None,
+                bool(self.lower_stage_witnesses),
+                self.host_internal_conditioning_required,
+            )
+        )
+        if packet is None:
+            if identity_fields_present:
+                raise ValueError("identity controls require a task-local source packet")
+            return
+        if packet.task_binding != self.task_scope:
+            raise ValueError("identity source packet task binding mismatch")
+        source_roles = {source.asset_id: source.role for source in packet.sources}
+        if len(self.reference_set.identity_reference) > 1 and not set(
+            self.reference_set.identity_reference
+        ).issubset(source_roles):
+            raise ValueError("identity-critical multi-reference requires typed source roles")
+        if packet.request_lineage_required and lineage is None:
+            raise ValueError("identity source packet requires controlled input lineage")
+        if lineage is not None:
+            if lineage.task_binding != self.task_scope or lineage.packet_digest != packet.packet_digest:
+                raise ValueError("controlled input lineage does not bind this task packet")
+            if lineage.sent_source_roles != source_roles:
+                raise ValueError("controlled input lineage source roles do not match packet")
+            if lineage.excluded_generated_source_ids != packet.excluded_generated_source_ids:
+                raise ValueError("controlled input lineage exclusion set does not match packet")
+            if set(lineage.sent_source_roles) & lineage.excluded_generated_source_ids:
+                raise ValueError("generated exclusion cannot be sent to the controlled port")
+        if packet.generative_only and self.selected_lane is not ImageRouteFamily.GENERATIVE:
+            raise ValueError("generative-only identity packet forbids deterministic source routes")
+        if self.identity_stage is not None:
+            prerequisite = {
+                IdentityStage.SOURCE_1X1: None,
+                IdentityStage.MULTI_POSE: IdentityStage.SOURCE_1X1,
+                IdentityStage.FOUR_SCENE: IdentityStage.MULTI_POSE,
+                IdentityStage.GRID_16: IdentityStage.FOUR_SCENE,
+            }[self.identity_stage]
+            if prerequisite is not None and not any(
+                witness.stage is prerequisite
+                and witness.master_asset_id
+                == next(
+                    source.asset_id
+                    for source in packet.sources
+                    if source.role is IdentitySourceRole.ORIGINAL_REAL_MASTER
+                )
+                and witness.packet_digest == packet.packet_digest
+                and witness.decision is IdentityEvidenceState.PASS
+                for witness in self.lower_stage_witnesses
+            ):
+                raise ValueError("identity stage requires a PASS witness from its prior stage")
 
 
 class ImageRenderOutcome(BaseModel):
@@ -387,7 +569,22 @@ class ImageSurfaceController:
                 if spec.side_effect_budget
                 else 1
             ),
+            "identity_packet_digest": (
+                spec.identity_source_packet.packet_digest if spec.identity_source_packet else None
+            ),
+            "identity_stage": spec.identity_stage.value if spec.identity_stage else None,
         }
+        if spec.host_internal_conditioning_required:
+            return ImageExecutionReceipt(
+                state=ImageExecutionState.CAPABILITY_BOUNDARY,
+                enforcement="ENGINEERING_DISPATCHER_CONTROLLED",
+                fingerprint=fingerprint,
+                render_manifest=spec.render_manifest,
+                admitted_tool_family=spec.allowed_tool_family,
+                user_constraint_receipt=constraints,
+                audit={},
+                blocker="INTERNAL_MODEL_CONDITIONING_UNPROVEN",
+            )
         matching_evidence = [
             item
             for item in spec.capability_evidence
