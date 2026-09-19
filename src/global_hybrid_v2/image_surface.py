@@ -69,6 +69,7 @@ class ImageSideEffectBudget(BaseModel):
     authorized_attempt_limit: int = Field(default=1, ge=1)
     authorization: ImageRetryAuthorization = ImageRetryAuthorization.FIRST_PASS_ONLY
     explicit_user_authorization_receipt: str | None = None
+    prior_terminal_result_id: str | None = None
     prior_attempt_terminal: bool = True
     unattempted_batch_sources_remaining: int = Field(default=0, ge=0)
     explicit_source_scope_override: bool = False
@@ -308,7 +309,7 @@ class ImageInvocationGuard(Protocol):
 
     def reserve(self, spec: ImageTaskSpec) -> bool: ...
 
-    def complete(self) -> None: ...
+    def complete(self, *, terminal_result_id: str, terminal_status: str) -> None: ...
 
 
 @dataclass
@@ -486,7 +487,7 @@ class ImageSurfaceController:
                 )
         except TypeError as exc:
             if envelope is not None:
-                return ImageExecutionReceipt(
+                receipt = ImageExecutionReceipt(
                     state=ImageExecutionState.CAPABILITY_BOUNDARY,
                     enforcement="ENGINEERING_DISPATCHER_CONTROLLED",
                     fingerprint=fingerprint,
@@ -496,9 +497,14 @@ class ImageSurfaceController:
                     audit={},
                     blocker=f"LOCALITY_PORT_CONTRACT_MISMATCH: {type(exc).__name__}",
                 )
+                if guard is not None:
+                    guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
+                return receipt
+            if guard is not None:
+                guard.complete(terminal_result_id=token, terminal_status="ERROR")
             raise
         except RuntimeError as exc:
-            return ImageExecutionReceipt(
+            receipt = ImageExecutionReceipt(
                 state=ImageExecutionState.CAPABILITY_BOUNDARY,
                 enforcement="SOFT_AT_CHATGPT_HOST_BOUNDARY",
                 fingerprint=fingerprint,
@@ -508,13 +514,16 @@ class ImageSurfaceController:
                 audit={},
                 blocker=str(exc),
             )
-        finally:
             if guard is not None:
-                guard.complete()
+                guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
+            return receipt
         if outcome.actual_tool_family is not spec.allowed_tool_family:
-            return self._blocked(
+            receipt = self._blocked(
                 spec, fingerprint, constraints, "ACTUAL_TOOL_FAMILY_MISMATCH", token, outcome
             )
+            if guard is not None:
+                guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
+            return receipt
 
         non_target = outcome.changed_regions - {spec.render_manifest.current_visual_delta}
         protected_changed = outcome.protected_state_changed & spec.protected_state
@@ -571,7 +580,7 @@ class ImageSurfaceController:
         )
         passed = all(bool(audit[key]) for key in required_checks)
         locality_failed = any(not bool(audit[key]) for key in locality_checks)
-        return ImageExecutionReceipt(
+        receipt = ImageExecutionReceipt(
             state=ImageExecutionState.PASS if passed else ImageExecutionState.FAIL,
             node_token=token,
             enforcement="ENGINEERING_DISPATCHER_CONTROLLED",
@@ -589,6 +598,9 @@ class ImageSurfaceController:
                 else "VISUAL_ACCEPTANCE_FAILED"
             ),
         )
+        if guard is not None:
+            guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
+        return receipt
 
     @staticmethod
     def _tool_for_lane(lane: ImageRouteFamily) -> ImageToolFamily:

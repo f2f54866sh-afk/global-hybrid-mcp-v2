@@ -322,27 +322,52 @@ class SQLiteRuntimeStateStore:
         conversation_or_thread_id: str,
         task_id: str,
         source_key: str,
+        attempt_id: str,
+        expected_attempt_number: int,
         authorization_id: str | None = None,
+        prior_terminal_result_id: str | None = None,
     ) -> int:
         """Atomically reserve one image side effect and consume a single-use retry receipt."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT attempts, active, consumed_authorizations FROM image_attempt_budget WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?",  # noqa: E501
+                "SELECT attempts, active, active_attempt_id, consumed_authorizations, last_terminal_result_id, last_terminal_status FROM image_attempt_budget WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?",  # noqa: E501
                 (conversation_or_thread_id, task_id, source_key),
             ).fetchone()
-            attempts, active, consumed = row if row else (0, 0, "[]")
+            attempts, active, active_attempt_id, consumed, last_result, last_status = (
+                row if row else (0, 0, None, "[]", None, None)
+            )
             ids = json.loads(consumed)
             if active or (authorization_id is not None and authorization_id in ids):
                 raise RuntimeStateError("IMAGE_ATTEMPT_QUOTA_BLOCKED")
+            if expected_attempt_number != attempts + 1:
+                raise RuntimeStateError("IMAGE_ATTEMPT_NUMBER_MISMATCH")
             if attempts >= 1 and authorization_id is None:
                 raise RuntimeStateError("IMAGE_RETRY_AUTHORIZATION_REQUIRED")
+            if attempts >= 1 and (
+                last_status is None or prior_terminal_result_id != last_result
+            ):
+                raise RuntimeStateError("IMAGE_PRIOR_TERMINAL_RESULT_MISMATCH")
             if authorization_id is not None:
                 ids.append(authorization_id)
             attempts += 1
             connection.execute(
-                "INSERT INTO image_attempt_budget VALUES (?,?,?,?,?,?) ON CONFLICT(conversation_or_thread_id,task_id,source_key) DO UPDATE SET attempts=excluded.attempts, active=1, consumed_authorizations=excluded.consumed_authorizations",  # noqa: E501
-                (conversation_or_thread_id, task_id, source_key, attempts, 1, json.dumps(ids)),
+                """
+                INSERT INTO image_attempt_budget (
+                    conversation_or_thread_id, task_id, source_key, attempts, active,
+                    consumed_authorizations, active_attempt_id,
+                    last_terminal_result_id, last_terminal_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_or_thread_id, task_id, source_key) DO UPDATE SET
+                    attempts=excluded.attempts,
+                    active=1,
+                    consumed_authorizations=excluded.consumed_authorizations,
+                    active_attempt_id=excluded.active_attempt_id
+                """,
+                (
+                    conversation_or_thread_id, task_id, source_key, attempts, 1,
+                    json.dumps(ids), attempt_id, last_result, last_status,
+                ),
             )
             return attempts
 
@@ -374,9 +399,29 @@ class SQLiteRuntimeStateStore:
             last_terminal_status=row[5],
         )
 
-    def complete_image_attempt(self, conversation_or_thread_id: str, task_id: str, source_key: str) -> None:
+    def complete_image_attempt(
+        self,
+        conversation_or_thread_id: str,
+        task_id: str,
+        source_key: str,
+        *,
+        attempt_id: str,
+        terminal_result_id: str,
+        terminal_status: str,
+    ) -> None:
         with self._connect() as connection:
-            connection.execute(
-                "UPDATE image_attempt_budget SET active=0 WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?",  # noqa: E501
-                (conversation_or_thread_id, task_id, source_key),
+            cursor = connection.execute(
+                """
+                UPDATE image_attempt_budget
+                SET active=0, active_attempt_id=NULL,
+                    last_terminal_result_id=?, last_terminal_status=?
+                WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?
+                    AND active=1 AND active_attempt_id=?
+                """,
+                (
+                    terminal_result_id, terminal_status,
+                    conversation_or_thread_id, task_id, source_key, attempt_id,
+                ),
             )
+            if cursor.rowcount != 1:
+                raise RuntimeStateError("IMAGE_ATTEMPT_COMPLETION_BINDING_MISMATCH")

@@ -44,7 +44,11 @@ from global_hybrid_v2.governance.repeat_action import (
 from global_hybrid_v2.governance.resume import ResumeGate
 from global_hybrid_v2.governance.risk import TaskRiskClassifier
 from global_hybrid_v2.governance.router import OwnerRouter
-from global_hybrid_v2.image_surface import ImageSurfaceController, ImageTaskSpec
+from global_hybrid_v2.image_surface import (
+    ImageInvocationGuard,
+    ImageSurfaceController,
+    ImageTaskSpec,
+)
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
 from global_hybrid_v2.runtime.state import (
     CURRENT_RUNTIME_STATE_VERSION,
@@ -91,6 +95,94 @@ class _SalesConsumptionBlock(RuntimeError):
         super().__init__(str(cause))
         self.stage = stage
         self.blocker_type = type(cause).__name__
+
+
+class _RuntimeImageInvocationGuard(ImageInvocationGuard):
+    """Binds one protected image invocation to the already-selected runtime task."""
+
+    def __init__(
+        self,
+        *,
+        store: Any,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+        authorization_id: str | None,
+        prior_terminal_result_id: str | None,
+        trace: TraceBus,
+        trace_task_id: str,
+    ):
+        self._store = store
+        self._conversation_or_thread_id = conversation_or_thread_id
+        self._runtime_task_id = runtime_task_id
+        self._authorization_id = authorization_id
+        self._prior_terminal_result_id = prior_terminal_result_id
+        self._trace = trace
+        self._trace_task_id = trace_task_id
+        self._attempt_id: str | None = None
+        self._source_key: str | None = None
+
+    def reserve(self, spec: ImageTaskSpec) -> bool:
+        budget = spec.side_effect_budget
+        if budget is None:
+            return True
+        self._attempt_id = str(uuid4())
+        self._source_key = budget.source_asset_id
+        try:
+            attempt = self._store.reserve_image_attempt(
+                self._conversation_or_thread_id,
+                self._runtime_task_id,
+                self._source_key,
+                self._attempt_id,
+                budget.attempt_number,
+                authorization_id=self._authorization_id,
+                prior_terminal_result_id=self._prior_terminal_result_id,
+            )
+        except RuntimeStateError as exc:
+            self._trace.emit(
+                task_id=self._trace_task_id,
+                stage="image_attempt_reservation",
+                decision="BLOCK",
+                span_owner="EXECUTION",
+                metadata={"blocker": str(exc), "source_key": self._source_key},
+            )
+            return False
+        self._trace.emit(
+            task_id=self._trace_task_id,
+            stage="image_attempt_reservation",
+            decision="PASS",
+            span_owner="EXECUTION",
+            metadata={
+                "source_key": self._source_key,
+                "attempt_number": attempt,
+                "attempt_id": self._attempt_id,
+                "authorization_consumed": self._authorization_id,
+            },
+        )
+        return True
+
+    def complete(self, *, terminal_result_id: str, terminal_status: str) -> None:
+        if self._attempt_id is None or self._source_key is None:
+            raise RuntimeStateError("IMAGE_ATTEMPT_COMPLETION_BINDING_MISMATCH")
+        self._store.complete_image_attempt(
+            self._conversation_or_thread_id,
+            self._runtime_task_id,
+            self._source_key,
+            attempt_id=self._attempt_id,
+            terminal_result_id=terminal_result_id,
+            terminal_status=terminal_status,
+        )
+        self._trace.emit(
+            task_id=self._trace_task_id,
+            stage="image_attempt_completion",
+            decision="PASS",
+            span_owner="EXECUTION",
+            metadata={
+                "source_key": self._source_key,
+                "attempt_id": self._attempt_id,
+                "terminal_result_id": terminal_result_id,
+                "terminal_status": terminal_status,
+            },
+        )
 
 
 class Dispatcher:
@@ -557,6 +649,53 @@ class Dispatcher:
             },
         )
 
+        # Protected image permits are a durable execution boundary, so reject a
+        # missing binding before any later admission path can reach the port.
+        if request.image_task is not None:
+            protected_image = ImageTaskSpec.model_validate(request.image_task).side_effect_budget
+            if protected_image is not None:
+                if (
+                    runtime_state is None
+                    or self.runtime_state_store is None
+                    or not request.conversation_or_thread_id
+                    or not request.runtime_task_id
+                    or not all(
+                        hasattr(self.runtime_state_store, name)
+                        for name in (
+                            "reserve_image_attempt",
+                            "complete_image_attempt",
+                            "read_image_attempt_state",
+                        )
+                    )
+                ):
+                    return DomainResult(
+                        owner=owner,
+                        status="IMAGE_RUNTIME_STATE_BINDING_REQUIRED",
+                        evidence={"image_dispatch": "BLOCK", "blocker": "runtime-state-binding"},
+                    )
+                if protected_image.attempt_number > 1:
+                    candidate_id = protected_image.explicit_user_authorization_receipt
+                    receipt_by_context_id = {
+                        item.context_id: item for item in context_admission.receipts
+                    }
+                    source_by_context_id = {item.id: item for item in request.context}
+                    admission = receipt_by_context_id.get(candidate_id or "")
+                    source = source_by_context_id.get(candidate_id or "")
+                    if not (
+                        admission is not None
+                        and source is not None
+                        and source.origin.value == "current_user"
+                        and source.content_role.value == "EXECUTABLE_INSTRUCTION"
+                        and source.task_scope == request.request_text
+                        and admission.decision.value == "EXECUTABLE"
+                        and admission.authority_effect.value == "EXPLICIT_USER_AUTHORIZATION"
+                    ):
+                        return DomainResult(
+                            owner=owner,
+                            status="IMAGE_RETRY_AUTHORIZATION_BLOCKED",
+                            evidence={"image_dispatch": "BLOCK", "blocker": "firewall-authorization"},
+                        )
+
         pre_action = self.pre_action_gate.admit(
             target_system=request.target_system,
             action_class=request.action_class,
@@ -627,7 +766,78 @@ class Dispatcher:
         if request.image_task is not None:
             if owner is not Owner.EXECUTION or EffectType.IMAGE_GENERATE not in request.effects:
                 raise RuntimeError("image task requires EXECUTION owner and IMAGE_GENERATE effect")
-            receipt = self.image_controller.execute(ImageTaskSpec.model_validate(request.image_task))
+            image_spec = ImageTaskSpec.model_validate(request.image_task)
+            image_guard = None
+            if image_spec.side_effect_budget is not None:
+                budget = image_spec.side_effect_budget
+                if (
+                    runtime_state is None
+                    or self.runtime_state_store is None
+                    or not request.conversation_or_thread_id
+                    or not request.runtime_task_id
+                    or not all(
+                        hasattr(self.runtime_state_store, name)
+                        for name in (
+                            "reserve_image_attempt",
+                            "complete_image_attempt",
+                            "read_image_attempt_state",
+                        )
+                    )
+                ):
+                    return DomainResult(
+                        owner=owner,
+                        status="IMAGE_RUNTIME_STATE_BINDING_REQUIRED",
+                        evidence={"image_dispatch": "BLOCK", "blocker": "runtime-state-binding"},
+                    )
+                authorization_id = None
+                if budget.attempt_number > 1:
+                    candidate_id = budget.explicit_user_authorization_receipt
+                    receipt_by_context_id = {
+                        item.context_id: item for item in context_admission.receipts
+                    }
+                    source_by_context_id = {item.id: item for item in request.context}
+                    admission = receipt_by_context_id.get(candidate_id or "")
+                    source = source_by_context_id.get(candidate_id or "")
+                    if not (
+                        admission is not None
+                        and source is not None
+                        and source.origin.value == "current_user"
+                        and source.content_role.value == "EXECUTABLE_INSTRUCTION"
+                        and source.task_scope == request.request_text
+                        and admission.decision.value == "EXECUTABLE"
+                        and admission.authority_effect.value == "EXPLICIT_USER_AUTHORIZATION"
+                    ):
+                        return DomainResult(
+                            owner=owner,
+                            status="IMAGE_RETRY_AUTHORIZATION_BLOCKED",
+                            evidence={"image_dispatch": "BLOCK", "blocker": "firewall-authorization"},
+                        )
+                    authorization_id = candidate_id
+                    previous = self.runtime_state_store.read_image_attempt_state(
+                        request.conversation_or_thread_id,
+                        request.runtime_task_id,
+                        budget.source_asset_id,
+                    )
+                    if (
+                        previous.active
+                        or previous.last_terminal_status is None
+                        or budget.prior_terminal_result_id != previous.last_terminal_result_id
+                    ):
+                        return DomainResult(
+                            owner=owner,
+                            status="IMAGE_PRIOR_TERMINAL_BINDING_BLOCKED",
+                            evidence={"image_dispatch": "BLOCK", "blocker": "prior-terminal-binding"},
+                        )
+                image_guard = _RuntimeImageInvocationGuard(
+                    store=self.runtime_state_store,
+                    conversation_or_thread_id=request.conversation_or_thread_id,
+                    runtime_task_id=request.runtime_task_id,
+                    authorization_id=authorization_id,
+                    prior_terminal_result_id=budget.prior_terminal_result_id,
+                    trace=self.trace,
+                    trace_task_id=contract.task_id,
+                )
+            receipt = self.image_controller.execute(image_spec, invocation_guard=image_guard)
             self.trace.emit(
                 task_id=contract.task_id,
                 stage="image_surface_dispatch",
