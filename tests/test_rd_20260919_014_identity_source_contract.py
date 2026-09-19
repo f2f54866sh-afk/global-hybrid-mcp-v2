@@ -79,11 +79,15 @@ def _packet(*, generated_only: bool = False) -> IdentitySourcePacket:
     return IdentitySourcePacket(**data)
 
 
-def _lineage(packet: IdentitySourcePacket) -> ControlledRequestInputLineage:
+def _lineage(
+    packet: IdentitySourcePacket,
+    *,
+    selected_lane: ImageRouteFamily = ImageRouteFamily.GENERATIVE,
+) -> ControlledRequestInputLineage:
     return ControlledRequestInputLineage(
         task_binding="portrait-task",
         packet_digest=packet.packet_digest,
-        selected_lane=ImageRouteFamily.GENERATIVE,
+        selected_lane=selected_lane,
         sent_source_roles={source.asset_id: source.role for source in packet.sources},
         excluded_generated_source_ids=packet.excluded_generated_source_ids,
     )
@@ -132,6 +136,31 @@ def test_rd014_rejects_stale_packet_roleless_multireference_and_missing_lineage(
         _spec(reference_set=ReferenceSet(identity_reference=["master-real", "untyped"]))
     with pytest.raises(ValidationError, match="packet digest mismatch"):
         IdentitySourcePacket(**{**packet.model_dump(), "packet_digest": "c" * 64})
+    lineage_data = _lineage(packet).model_dump()
+    lineage_data["internal_model_conditioning_proven"] = True
+    with pytest.raises(ValidationError, match="cannot prove internal model conditioning"):
+        ControlledRequestInputLineage(**lineage_data)
+
+
+def test_rd014_rejects_request_lineage_lane_mismatch():
+    packet = _packet()
+    with pytest.raises(ValidationError, match="lineage lane does not match"):
+        _spec(
+            identity_source_packet=packet,
+            controlled_request_input_lineage=_lineage(packet),
+            selected_lane=ImageRouteFamily.DETERMINISTIC,
+            allowed_route_families={ImageRouteFamily.DETERMINISTIC},
+            allowed_tool_family=ImageToolFamily.DETERMINISTIC,
+            capability_evidence=[
+                ImageCapabilityEvidence(
+                    route_family=ImageRouteFamily.DETERMINISTIC,
+                    model_revision_or_unexposed="UNEXPOSED",
+                    control_surface="IDENTITY_CONTRACT_TEST_PORT",
+                    task_scope="portrait-task",
+                    protected_state_class="face|identity",
+                )
+            ],
+        )
 
 
 def test_rd014_generative_only_and_stage_progression_fail_closed():
@@ -139,7 +168,9 @@ def test_rd014_generative_only_and_stage_progression_fail_closed():
     with pytest.raises(ValidationError, match="forbids deterministic"):
         _spec(
             identity_source_packet=packet,
-            controlled_request_input_lineage=_lineage(packet),
+            controlled_request_input_lineage=_lineage(
+                packet, selected_lane=ImageRouteFamily.DETERMINISTIC
+            ),
             selected_lane=ImageRouteFamily.DETERMINISTIC,
             allowed_route_families={ImageRouteFamily.DETERMINISTIC},
             allowed_tool_family=ImageToolFamily.DETERMINISTIC,
@@ -183,8 +214,22 @@ def test_rd014_fidelity_requires_original_master_and_unproven_conditioning_holds
         fidelity=IdentityEvidenceState.PASS,
     )
     assert evaluate_source_person_fidelity(packet, passed) is IdentityEvidenceState.PASS
+    assert evaluate_source_person_fidelity(
+        packet,
+        passed.model_copy(update={"cross_output_consistency": IdentityEvidenceState.FAIL}),
+    ) is IdentityEvidenceState.PASS
+    assert evaluate_source_person_fidelity(
+        packet,
+        passed.model_copy(update={"cross_output_consistency": IdentityEvidenceState.HOLD}),
+    ) is IdentityEvidenceState.PASS
     wrong_master = passed.model_copy(update={"master_asset_id": "generated-output"})
     assert evaluate_source_person_fidelity(packet, wrong_master) is IdentityEvidenceState.FAIL
+    assert evaluate_source_person_fidelity(
+        packet, passed.model_copy(update={"fidelity": IdentityEvidenceState.FAIL})
+    ) is IdentityEvidenceState.FAIL
+    assert evaluate_source_person_fidelity(
+        packet, passed.model_copy(update={"fidelity": IdentityEvidenceState.HOLD})
+    ) is IdentityEvidenceState.HOLD
     port = RecordingPort()
     receipt = ImageSurfaceController(port).execute(_spec(host_internal_conditioning_required=True))
     assert receipt.state is ImageExecutionState.CAPABILITY_BOUNDARY

@@ -123,6 +123,12 @@ class ControlledRequestInputLineage(BaseModel):
     excluded_generated_source_ids: set[str] = Field(default_factory=set)
     internal_model_conditioning_proven: bool = False
 
+    @model_validator(mode="after")
+    def internal_conditioning_cannot_be_self_asserted(self) -> ControlledRequestInputLineage:
+        if self.internal_model_conditioning_proven:
+            raise ValueError("request input lineage cannot prove internal model conditioning")
+        return self
+
 
 class SourcePersonFidelityOracle(BaseModel):
     master_asset_id: str = Field(min_length=1)
@@ -167,13 +173,7 @@ def evaluate_source_person_fidelity(
     )
     if oracle.master_asset_id != master.asset_id or oracle.master_sha256 != master.sha256:
         return IdentityEvidenceState.FAIL
-    if oracle.fidelity is not IdentityEvidenceState.PASS:
-        return oracle.fidelity
-    if oracle.cross_output_consistency is IdentityEvidenceState.FAIL:
-        return IdentityEvidenceState.FAIL
-    if oracle.cross_output_consistency is IdentityEvidenceState.HOLD:
-        return IdentityEvidenceState.HOLD
-    return IdentityEvidenceState.PASS
+    return oracle.fidelity
 
 
 class ImageSideEffectBudget(BaseModel):
@@ -412,6 +412,8 @@ class ImageTaskSpec(BaseModel):
         if lineage is not None:
             if lineage.task_binding != self.task_scope or lineage.packet_digest != packet.packet_digest:
                 raise ValueError("controlled input lineage does not bind this task packet")
+            if lineage.selected_lane is not self.selected_lane:
+                raise ValueError("controlled input lineage lane does not match selected lane")
             if lineage.sent_source_roles != source_roles:
                 raise ValueError("controlled input lineage source roles do not match packet")
             if lineage.excluded_generated_source_ids != packet.excluded_generated_source_ids:
