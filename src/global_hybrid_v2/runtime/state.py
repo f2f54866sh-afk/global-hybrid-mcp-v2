@@ -23,6 +23,32 @@ class ImageAttemptState(BaseModel):
     last_terminal_status: str | None = None
 
 
+class AuthenticatedPrincipal(BaseModel):
+    """Server-injected identity; Stage 1 callers cannot construct trusted ingress."""
+
+    subject: str = Field(min_length=1)
+    authentication_source: str = Field(min_length=1)
+
+
+class IdentityAuthoritySelection(BaseModel):
+    record_id: str = Field(min_length=1)
+    principal_subject: str = Field(min_length=1)
+    conversation_or_thread_id: str = Field(min_length=1)
+    runtime_task_id: str = Field(min_length=1)
+    master_asset_id: str = Field(min_length=1)
+    master_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    secondary_roles: dict[str, str] = Field(default_factory=dict)
+    excluded_generated_source_ids: set[str] = Field(default_factory=set)
+    generative_only: bool = False
+    revision: int = Field(ge=1)
+    issued_at: datetime
+    expires_at: datetime
+    current: bool = True
+    revoked: bool = False
+    server_nonce: str = Field(min_length=1)
+    server_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class RuntimeTaskFrame(BaseModel):
     task_id: str = Field(min_length=1)
     primary_user_outcome: str = Field(min_length=1)
@@ -129,6 +155,11 @@ class SQLiteRuntimeStateStore:
                 )
                 """
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS identity_authority_selection (
+                record_id TEXT PRIMARY KEY, conversation_or_thread_id TEXT NOT NULL,
+                task_id TEXT NOT NULL, payload TEXT NOT NULL)"""
+            )
             connection.execute("""CREATE TABLE IF NOT EXISTS image_attempt_budget (
                 conversation_or_thread_id TEXT NOT NULL, task_id TEXT NOT NULL,
                 source_key TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
@@ -141,6 +172,30 @@ class SQLiteRuntimeStateStore:
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
+
+    def create_identity_authority_selection(
+        self, selection: IdentityAuthoritySelection
+    ) -> IdentityAuthoritySelection:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO identity_authority_selection VALUES (?, ?, ?, ?)",
+                (
+                    selection.record_id,
+                    selection.conversation_or_thread_id,
+                    selection.runtime_task_id,
+                    json.dumps(selection.model_dump(mode="json")),
+                ),
+            )
+        return selection
+
+    def load_identity_authority_selection(self, record_id: str) -> IdentityAuthoritySelection:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM identity_authority_selection WHERE record_id = ?", (record_id,)
+            ).fetchone()
+        if row is None:
+            raise RuntimeStateNotFound(f"identity authority selection not found: {record_id}")
+        return IdentityAuthoritySelection.model_validate_json(row[0])
 
     @staticmethod
     def _validate(state: RuntimeTaskState) -> RuntimeTaskState:
