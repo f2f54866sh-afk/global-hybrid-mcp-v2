@@ -361,6 +361,7 @@ class ImageTaskSpec(BaseModel):
     identity_stage: IdentityStage | None = None
     lower_stage_witnesses: list[IdentityStageWitness] = Field(default_factory=list)
     host_internal_conditioning_required: bool = False
+    identity_trusted_ingress_required: bool = False
 
     @model_validator(mode="after")
     def routes_are_admissible(self) -> ImageTaskSpec:

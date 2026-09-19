@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -62,6 +63,10 @@ from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.runtime.transition import TransitionController
 
 MAX_RESEARCH_ATTEMPTS = 2
+@dataclass(frozen=True)
+class TrustedDispatchContext:
+    principal_subject: str
+    authentication_source: str
 PRE_RESEARCH_EGRESS_SUPPRESSION = "PRE_RESEARCH_EGRESS_SUPPRESSION"
 RESEARCH_PROVIDER_UNAVAILABLE = "RESEARCH_PROVIDER_UNAVAILABLE"
 RESEARCH_PROVIDER_EXECUTION_FAILED = "RESEARCH_PROVIDER_EXECUTION_FAILED"
@@ -233,13 +238,22 @@ class Dispatcher:
             research_available=(self.research_executor.availability is ResearchProviderAvailability.CALLABLE)
         )
 
-    def dispatch(self, request: TaskRequest, *, require_host_projection: bool = False):
+    def dispatch(
+        self, request: TaskRequest, *, trusted_context: TrustedDispatchContext | None = None,
+        require_host_projection: bool = False,
+    ):
         try:
-            return self._dispatch(request, require_host_projection=require_host_projection)
+            return self._dispatch(
+                request, require_host_projection=require_host_projection,
+                trusted_context=trusted_context,
+            )
         finally:
             self.trace.unbind_runtime()
 
-    def _dispatch(self, request: TaskRequest, *, require_host_projection: bool = False):
+    def _dispatch(
+        self, request: TaskRequest, *, require_host_projection: bool = False,
+        trusted_context: TrustedDispatchContext | None = None,
+    ):
         task_id = str(uuid4())
         task_trace_id = self.trace.start_task(task_id)
         contract_id = str(uuid4())
@@ -767,6 +781,12 @@ class Dispatcher:
             if owner is not Owner.EXECUTION or EffectType.IMAGE_GENERATE not in request.effects:
                 raise RuntimeError("image task requires EXECUTION owner and IMAGE_GENERATE effect")
             image_spec = ImageTaskSpec.model_validate(request.image_task)
+            if image_spec.identity_trusted_ingress_required and trusted_context is None:
+                return DomainResult(
+                    owner=owner,
+                    status="IDENTITY_TRUSTED_CONTEXT_REQUIRED",
+                    evidence={"image_dispatch": "BLOCK", "blocker": "trusted-context"},
+                )
             image_guard = None
             if image_spec.side_effect_budget is not None:
                 budget = image_spec.side_effect_budget
