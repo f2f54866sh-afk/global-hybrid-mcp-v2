@@ -21,6 +21,7 @@ from global_hybrid_v2.research import (
 )
 from global_hybrid_v2.runtime.deployment import RuntimeIdentity, read_runtime_identity
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
+from global_hybrid_v2.runtime.public_copy import PublicCopyChecks
 from global_hybrid_v2.runtime.state import RuntimeStateStore, SQLiteRuntimeStateStore
 from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.settings import Settings
@@ -48,6 +49,7 @@ def create_application(
     image_port: ImageExecutionPort | None = None,
     host_current_state_verifier: HostCurrentStateVerifier | None = None,
     runtime_state_store: RuntimeStateStore | None = None,
+    public_copy_checks: PublicCopyChecks | None = None,
 ) -> Application:
     root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[2]
     runtime_settings = settings or Settings()
@@ -94,6 +96,7 @@ def create_application(
         host_projection_gate=HostProjectionGate(verifier=host_current_state_verifier),
         effect_gate=EffectGate(live_execution=runtime_settings.live_execution),
         runtime_state_store=effective_runtime_state_store,
+        public_copy_checks=public_copy_checks,
     )
     return Application(
         repo_root=root,

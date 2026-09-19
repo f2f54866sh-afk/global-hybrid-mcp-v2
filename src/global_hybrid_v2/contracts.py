@@ -354,6 +354,8 @@ class ResumeRehydrationReceipt(BaseModel):
 
 
 class TaskRequest(BaseModel):
+    public_commercial_copy: bool = False
+    public_copy_requirement_ids: list[str] = Field(default_factory=list)
     request_text: str = Field(min_length=1)
     intent: Intent
     effects: list[EffectType] = Field(default_factory=lambda: [EffectType.READ_ONLY])
@@ -481,6 +483,8 @@ class LibraryAccessRequest(BaseModel):
 
 
 class TaskContract(BaseModel):
+    public_commercial_copy: bool = False
+    public_copy_requirement_ids: list[str] = Field(default_factory=list)
     task_id: str = Field(default_factory=lambda: str(uuid4()))
     task_trace_id: str = Field(default_factory=lambda: str(uuid4()))
     contract_id: str = Field(default_factory=lambda: str(uuid4()))

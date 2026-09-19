@@ -45,7 +45,9 @@ from global_hybrid_v2.governance.resume import ResumeGate
 from global_hybrid_v2.governance.risk import TaskRiskClassifier
 from global_hybrid_v2.governance.router import OwnerRouter
 from global_hybrid_v2.image_surface import ImageSurfaceController, ImageTaskSpec
+from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
+from global_hybrid_v2.runtime.public_copy import PublicCopyChecks, execute_checks
 from global_hybrid_v2.runtime.state import (
     CURRENT_RUNTIME_STATE_VERSION,
     RuntimeStateAlreadyExists,
@@ -117,10 +119,12 @@ class Dispatcher:
         runtime_branch: str | None = None,
         runtime_state_store: RuntimeStateStore | None = None,
         transition_controller: TransitionController | None = None,
+        public_copy_checks: PublicCopyChecks | None = None,
     ):
         self.authority = authority
         self.domains = domains
         self.trace = trace
+        self.public_copy_checks = public_copy_checks
         self.firewall = firewall or TaskFirewall()
         self.router = router or OwnerRouter()
         self.effect_gate = effect_gate or EffectGate()
@@ -217,6 +221,13 @@ class Dispatcher:
                     or runtime_state.action_result_status.startswith("NO_SERIALIZE")
                 )
             ):
+                if (request.public_commercial_copy
+                        or runtime_state.action_result_evidence.get("public_commercial_copy") is True):
+                    return DomainResult(
+                        owner=Owner.GLOBAL, status=UNKNOWN_WITH_EXACT_BLOCKER,
+                        evidence={"blocker_code": "PUBLIC_COPY_REPLAY_REQUIRES_NEW_DISPATCH",
+                                  "public_copy_execution_lineage": "FAIL"},
+                    )
                 return DomainResult(
                     owner=Owner.GLOBAL,
                     status=runtime_state.action_result_status,
@@ -435,6 +446,8 @@ class Dispatcher:
                 f"runtime:{runtime_state.conversation_or_thread_id}:{action_id}"
             )
         contract = TaskContract(
+            public_commercial_copy=request.public_commercial_copy,
+            public_copy_requirement_ids=request.public_copy_requirement_ids,
             task_id=task_id,
             task_trace_id=task_trace_id,
             contract_id=contract_id,
@@ -886,11 +899,15 @@ class Dispatcher:
         if blocking:
             result = result.model_copy(
                 update={
+                    **({"output": None, "final_response_object": None}
+                       if contract.public_commercial_copy else {}),
                     "status": "NO_SERIALIZE / UNKNOWN_WITH_EXACT_BLOCKER",
                     "evidence": {
                         **result.evidence,
                         "witness_finding_codes": [item.code for item in blocking],
                         "witness_task_id": contract.task_id,
+                        **({"public_copy_execution_lineage": "FAIL"}
+                           if contract.public_commercial_copy else {}),
                     },
                 }
             )
@@ -1126,6 +1143,9 @@ class Dispatcher:
         return result
 
     def _validate_egress(self, contract: TaskContract, result: DomainResult) -> DomainResult:
+        if contract.public_commercial_copy:
+            self.trace.attach_witness(ReadOnlyWitness())
+            self.trace.require_public_copy(contract.task_id)
         terminal = (
             result.turn_contract,
             result.research_evidence_packet,
@@ -1201,6 +1221,19 @@ class Dispatcher:
             }
         )
         validated = self.egress.validate(result)
+        copy_metadata = {}
+        if contract.public_commercial_copy:
+            try:
+                copy_metadata = execute_checks(
+                    self.trace, contract,
+                    {"output": validated.output, "final_response_object": validated.final_response_object},
+                    self.public_copy_checks,
+                )
+            except (TypeError, ValueError):
+                return DomainResult(
+                    owner=contract.owner, status=UNKNOWN_WITH_EXACT_BLOCKER,
+                    output=None, evidence={"blocker_code": "PUBLIC_COPY_CANDIDATE_NOT_SERIALIZABLE"},
+                )
         self.trace.emit(
             task_id=contract.task_id,
             stage="response_egress",
@@ -1209,6 +1242,7 @@ class Dispatcher:
             ),
             owner=contract.owner,
             metadata={
+                **copy_metadata,
                 "classifications": sorted(item.value for item in validated.output_classifications),
                 "status": validated.status,
                 "evidence_admission_check": validated.evidence.get("evidence_admission_check"),
@@ -1224,6 +1258,18 @@ class Dispatcher:
                 "host_binding_consumption": validated.evidence.get("host_binding_consumption"),
             },
         )
+        if contract.public_commercial_copy:
+            blocked = any(item.code == "PUBLIC_COPY_EXECUTION_LINEAGE_FAIL"
+                          for item in self.trace.findings_for_task(contract.task_id))
+            if blocked:
+                return DomainResult(
+                    owner=contract.owner, status=UNKNOWN_WITH_EXACT_BLOCKER, output=None,
+                    evidence={"blocker_code": "PUBLIC_COPY_EXECUTION_LINEAGE_FAIL",
+                              "public_copy_execution_lineage": "FAIL"},
+                )
+            validated = validated.model_copy(update={"evidence": {
+                **validated.evidence, "public_copy_execution_lineage": "PASS", **copy_metadata,
+            }})
         return validated
 
     def _run_research_loop(

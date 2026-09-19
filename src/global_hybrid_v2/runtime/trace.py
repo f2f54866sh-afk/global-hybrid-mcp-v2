@@ -6,7 +6,7 @@ from copy import deepcopy
 from typing import Any
 from uuid import uuid4
 
-from global_hybrid_v2.contracts import Owner, TraceEvent
+from global_hybrid_v2.contracts import Owner, TraceEvent, WitnessFinding
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.runtime.state import SQLiteRuntimeStateStore
 
@@ -25,6 +25,7 @@ class TraceBus:
         self._runtime_binding: tuple[str, str] | None = None
         self._action_id: str | None = None
         self._checkpoint_id: str | None = None
+        self._public_copy_tasks: set[str] = set()
 
     def bind_runtime(
         self, journal: SQLiteRuntimeStateStore, conversation_or_thread_id: str, runtime_task_id: str
@@ -45,6 +46,9 @@ class TraceBus:
     def attach_witness(self, witness: ReadOnlyWitness) -> None:
         if self.witness is None:
             self.witness = witness
+
+    def require_public_copy(self, task_id: str) -> None:
+        self._public_copy_tasks.add(task_id)
 
     def start_task(self, task_id: str) -> str:
         trace_id = str(uuid4())
@@ -89,6 +93,8 @@ class TraceBus:
         span_owner: str | None = None,
         metadata: dict | None = None,
     ) -> TraceEvent:
+        if stage == "public_copy_candidate":
+            self._public_copy_tasks.add(task_id)
         task_trace_id = self._task_trace_ids.get(task_id)
         if task_trace_id is None:
             task_trace_id = self.start_task(task_id)
@@ -128,6 +134,27 @@ class TraceBus:
         self._print(event)
         if self.witness:
             finding = self.witness.observe(event.model_copy(deep=True))
+            if task_id in self._public_copy_tasks and stage in {"response_egress", "closure"}:
+                checks = {}
+                if self._journal and self._runtime_binding and event.event_id:
+                    checks = self.witness.assess_public_copy(
+                        self._journal, conversation_id=self._runtime_binding[0],
+                        runtime_task_id=self._runtime_binding[1], dispatch_task_id=task_id,
+                        trace_id=task_trace_id, terminal_event_id=event.event_id,
+                    )
+                    self._journal.append_event({
+                        "conversation_or_thread_id": self._runtime_binding[0],
+                        "runtime_task_id": self._runtime_binding[1],
+                        "dispatch_task_id": task_id, "trace_id": task_trace_id,
+                        "stage": "public_copy_execution_lineage", "event_type": "WITNESS_ASSESSMENT",
+                        "payload": {"checks": checks, "decision": "PASS" if all(checks.values()) else "FAIL",
+                                    "input_refs": [event.event_id]},
+                    })
+                if not checks or not all(checks.values()):
+                    finding = WitnessFinding(
+                        task_id=task_id, severity="error", code="PUBLIC_COPY_EXECUTION_LINEAGE_FAIL",
+                        message="Required durable Copy execution lineage is absent or inconsistent.",
+                    )
             if finding:
                 finding = finding.model_copy(
                     update={

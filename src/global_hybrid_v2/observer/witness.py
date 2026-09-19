@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from global_hybrid_v2.runtime.public_copy import STAGES, digest
+
+if TYPE_CHECKING:
+    from global_hybrid_v2.runtime.state import SQLiteRuntimeStateStore
+
 from global_hybrid_v2.contracts import Owner, TraceEvent, WitnessFinding
 from global_hybrid_v2.governance.blind_spot import (
     BlindSpotScanReceipt,
@@ -32,6 +39,80 @@ class ReadOnlyWitness:
 
     def consumption_assessment_for_task(self, task_id: str) -> dict[str, bool]:
         return dict(self._consumption_assessments.get(task_id, {}))
+
+    def assess_public_copy(
+        self, store: SQLiteRuntimeStateStore, *, conversation_id: str, runtime_task_id: str,
+        dispatch_task_id: str, trace_id: str, terminal_event_id: str,
+    ) -> dict[str, bool]:
+        """Recompute from durable events, bounded at the terminal event (no post-hoc proof)."""
+        checks = dict.fromkeys((
+            "PUBLIC_COPY_ACCEPTANCE_WITNESS", "HARD_REQUIREMENT_COVERAGE",
+            "NON_BINDING_LITERAL_LEAK_CHECK", "SUPPORTING_PROOF_SERIALIZATION",
+            "SHARED_WITNESS_DIGEST", "EXACT_CANDIDATE_DIGEST",
+            "DISPOSITION_INVARIANCE", "COPY_EGRESS_AUDIT",
+        ), False)
+        rows = store.journal(conversation_id, runtime_task_id)
+        terminal_index = next((i for i, row in enumerate(rows)
+                               if row["event_id"] == terminal_event_id), None)
+        if terminal_index is None:
+            return checks
+        terminal_row = rows[terminal_index]
+        if (terminal_row["stage"] not in {"response_egress", "closure"}
+                or terminal_row["payload"].get("task_id") != dispatch_task_id
+                or terminal_row["payload"].get("trace_id") != trace_id):
+            return checks
+        events = [row for row in rows[:terminal_index + 1] if row["event_type"] == "TRACE"
+                  and row["payload"].get("task_id") == dispatch_task_id]
+        stages = ("public_copy_candidate", *STAGES, "response_egress")
+        selected = []
+        for stage in stages:
+            matching = [row for row in events if row["stage"] == stage]
+            if len(matching) != 1:
+                return checks
+            selected.append(matching[0])
+        if [events.index(row) for row in selected] != sorted(events.index(row) for row in selected):
+            return checks
+        for row in selected:
+            payload = row["payload"]
+            if (payload.get("trace_id") != trace_id
+                    or payload.get("runtime_task_id") != runtime_task_id
+                    or payload.get("conversation_or_thread_id") != conversation_id
+                    or payload.get("decision") != "PASS"):
+                return checks
+        metadata = [row["payload"]["metadata"] for row in selected]
+        for index in range(1, len(selected)):
+            if metadata[index].get("input_refs") != [row["event_id"] for row in selected[:index]]:
+                return checks
+        candidate, acceptance, production, detached, invariance, audit, terminal = metadata
+        exact = digest(candidate.get("candidate"))
+        details = acceptance.get("details", {})
+        witness = digest({"exact_candidate_digest": acceptance.get("exact_candidate_digest"),
+                          "details": details})
+        checks["EXACT_CANDIDATE_DIGEST"] = all(
+            item.get("exact_candidate_digest") == exact for item in metadata
+        )
+        checks["SHARED_WITNESS_DIGEST"] = all(
+            item.get("witness_digest") == witness for item in metadata[1:]
+        )
+        requirements = candidate.get("requirement_ids", [])
+        coverage = details.get("hard_requirement_coverage", {})
+        checks["HARD_REQUIREMENT_COVERAGE"] = (
+            bool(requirements) and len(requirements) == len(set(requirements))
+            and isinstance(coverage, dict) and set(coverage) == set(requirements)
+            and all(isinstance(item, dict) and item.get("decision") == "PASS"
+                    and item.get("exact_candidate_digest") == exact for item in coverage.values())
+        )
+        checks["NON_BINDING_LITERAL_LEAK_CHECK"] = details.get("non_binding_literal_leak_check") == "PASS"
+        checks["SUPPORTING_PROOF_SERIALIZATION"] = (
+            details.get("supporting_proof_serialization") == "PASS"
+            and isinstance(details.get("supporting_proof"), dict) and bool(details["supporting_proof"])
+        )
+        checks["PUBLIC_COPY_ACCEPTANCE_WITNESS"] = details.get("public_copy_acceptance_witness") == "PASS"
+        checks["DISPOSITION_INVARIANCE"] = (
+            invariance.get("details", {}).get("disposition_invariance") == "PASS"
+        )
+        checks["COPY_EGRESS_AUDIT"] = audit.get("details", {}).get("copy_egress_audit") == "PASS"
+        return checks
 
     def assess_validation(
         self,
