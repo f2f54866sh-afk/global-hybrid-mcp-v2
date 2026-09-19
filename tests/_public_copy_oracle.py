@@ -35,6 +35,8 @@ def oracle_packet(
     valid_until: datetime | None = None,
 ) -> PublicCopyOracleInput:
     now = datetime.now(UTC)
+    expiry = valid_until or now + timedelta(minutes=5)
+    issued_at = min(now - timedelta(seconds=1), expiry - timedelta(seconds=1))
     source_ref = "authority:sales"
     candidate = {"output": "synthetic candidate A", "final_response_object": None}
     return PublicCopyOracleInput(
@@ -82,6 +84,6 @@ def oracle_packet(
         producer_version="synthetic-v1",
         currentness_token="synthetic-current-token",
         provenance=("synthetic:host-producer",),
-        issued_at=now - timedelta(seconds=1),
-        valid_until=valid_until or now + timedelta(minutes=5),
+        issued_at=issued_at,
+        valid_until=expiry,
     )
