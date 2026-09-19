@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Owner(StrEnum):
@@ -255,6 +255,113 @@ class DialogueBindingState(BaseModel):
         return self
 
 
+class PublicCopyLiteralAuthority(StrEnum):
+    CURRENT_USER_INPUT = "CURRENT_USER_INPUT"
+    NON_BINDING_CALIBRATION = "NON_BINDING_CALIBRATION"
+
+
+class PublicCopyQualificationDisposition(StrEnum):
+    PASS = "PASS"
+    HOLD = "HOLD"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class PublicCopySourceKind(StrEnum):
+    CURRENT_CONTEXT = "CURRENT_CONTEXT"
+    CURRENT_AUTHORITY = "CURRENT_AUTHORITY"
+
+
+class PublicCopyTerminalCandidate(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    canonical_json: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class PublicCopyHardRequirement(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    requirement_id: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+
+
+class PublicCopySourceRef(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    ref_id: str = Field(min_length=1)
+    kind: PublicCopySourceKind
+    context_id: str | None = Field(default=None, min_length=1)
+    authority_owner: Owner | None = None
+
+
+class PublicCopyLiteralRecord(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    record_id: str = Field(min_length=1)
+    literal: str = Field(min_length=1)
+    authority_classification: PublicCopyLiteralAuthority
+    source_refs: tuple[str, ...] = Field(min_length=1)
+
+
+class PublicCopyPrimaryReason(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    reason_ref: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    source_refs: tuple[str, ...] = Field(min_length=1)
+
+
+class PublicCopySupportingProof(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    proof_id: str = Field(min_length=1)
+    claim: str = Field(min_length=1)
+    proof_payload: str = Field(min_length=1)
+    evidence_refs: tuple[str, ...] = Field(min_length=1)
+
+
+class PublicCopyQualification(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    disposition: PublicCopyQualificationDisposition
+    qualification_ref: str = Field(min_length=1)
+    evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
+
+
+class PublicCopyAuthorityRevision(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    owner: Owner
+    revision: str = Field(min_length=1)
+
+
+class PublicCopyOracleInput(BaseModel):
+    """Immutable, Host-produced input for one exact public-Copy task/frame."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    packet_id: str = Field(min_length=1)
+    schema_version: int = Field(ge=1)
+    task_scope: str = Field(min_length=1)
+    generation_id: str = Field(min_length=1)
+    frame_id: str = Field(min_length=1)
+    terminal_candidate: PublicCopyTerminalCandidate
+    hard_requirements: tuple[PublicCopyHardRequirement, ...] = Field(min_length=1)
+    literal_records: tuple[PublicCopyLiteralRecord, ...] = Field(default_factory=tuple)
+    primary_reason: PublicCopyPrimaryReason
+    supporting_proofs: tuple[PublicCopySupportingProof, ...] = Field(min_length=1)
+    qualification: PublicCopyQualification | None = None
+    authority_revisions: tuple[PublicCopyAuthorityRevision, ...] = Field(min_length=1)
+    source_refs: tuple[PublicCopySourceRef, ...] = Field(min_length=1)
+    producer_id: str = Field(min_length=1)
+    producer_version: str = Field(min_length=1)
+    currentness_token: str = Field(min_length=1)
+    provenance: tuple[str, ...] = Field(min_length=1)
+    issued_at: datetime
+    valid_until: datetime
+
+    @model_validator(mode="after")
+    def validate_currentness_envelope(self) -> PublicCopyOracleInput:
+        if self.issued_at.tzinfo is None or self.valid_until.tzinfo is None:
+            raise ValueError("public Copy oracle timestamps must be timezone-aware")
+        if self.valid_until < self.issued_at:
+            raise ValueError("public Copy oracle validity precedes issuance")
+        if any(not item.strip() for item in self.provenance):
+            raise ValueError("public Copy oracle provenance must be non-blank")
+        return self
+
+
 class RetrievalState(StrEnum):
     FOUND = "FOUND"
     NOT_RETRIEVED = "NOT_RETRIEVED"
@@ -356,6 +463,9 @@ class ResumeRehydrationReceipt(BaseModel):
 class TaskRequest(BaseModel):
     public_commercial_copy: bool = False
     public_copy_requirement_ids: list[str] = Field(default_factory=list)
+    public_copy_generation_id: str | None = Field(default=None, min_length=1)
+    public_copy_frame_id: str | None = Field(default=None, min_length=1)
+    public_copy_oracle_input: PublicCopyOracleInput | None = None
     request_text: str = Field(min_length=1)
     intent: Intent
     effects: list[EffectType] = Field(default_factory=lambda: [EffectType.READ_ONLY])
@@ -485,6 +595,11 @@ class LibraryAccessRequest(BaseModel):
 class TaskContract(BaseModel):
     public_commercial_copy: bool = False
     public_copy_requirement_ids: list[str] = Field(default_factory=list)
+    public_copy_generation_id: str | None = None
+    public_copy_frame_id: str | None = None
+    public_copy_oracle_input: PublicCopyOracleInput | None = None
+    public_copy_oracle_input_digest: str | None = None
+    public_copy_oracle_admission_event_id: str | None = None
     task_id: str = Field(default_factory=lambda: str(uuid4()))
     task_trace_id: str = Field(default_factory=lambda: str(uuid4()))
     contract_id: str = Field(default_factory=lambda: str(uuid4()))

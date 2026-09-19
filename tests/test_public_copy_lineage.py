@@ -3,12 +3,15 @@ import json
 from dataclasses import replace
 
 import pytest
+from pydantic import ValidationError
 
 from global_hybrid_v2.contracts import DomainResult, EffectType, Intent, Owner, TaskContract, TaskRequest
+from global_hybrid_v2.governance.public_copy_oracle import PublicCopyOracleGate
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.runtime.public_copy import STAGES, CopyCheckResult, digest
 from global_hybrid_v2.runtime.state import SQLiteRuntimeStateStore
 from global_hybrid_v2.runtime.trace import TraceBus
+from tests._public_copy_oracle import TestPublicCopyOracleVerifier, oracle_packet
 from tests.test_runtime_state_stage2 import _state
 from tests.test_sales_consumption_e2e import _application
 
@@ -18,8 +21,13 @@ class RecordingChecks:
         self.calls = []
         self.corrupt = corrupt
 
-    def evaluate(self, *, stage, candidate_json, witness_json, requirement_ids):
-        self.calls.append((stage, candidate_json, witness_json))
+    def evaluate(
+        self, *, stage, candidate_json, witness_json, requirement_ids,
+        oracle_input_json, oracle_input_digest,
+    ):
+        self.calls.append(
+            (stage, candidate_json, witness_json, oracle_input_json, oracle_input_digest)
+        )
         exact = digest(json.loads(candidate_json))
         details = {}
         if stage == STAGES[0]:
@@ -55,15 +63,22 @@ def setup(tmp_path, *, port=None, trace=None):
     store.create(_state())
     dispatcher.runtime_state_store = store
     dispatcher.public_copy_checks = port
+    dispatcher.public_copy_oracle_gate = PublicCopyOracleGate(
+        verifier=TestPublicCopyOracleVerifier()
+    )
     if trace:
         dispatcher.trace = trace
     return dispatcher, store
 
 
-def contract(public=True):
+def contract(public=True, *, packet=None, packet_digest=None, admission_event_id=None):
     return TaskContract(task_id="dispatch-a", request_text="synthetic copy", intent=Intent.SALES_HUMAN,
                         owner=Owner.SALES_HUMAN, effects=[EffectType.READ_ONLY], authority_snapshot_id="fake",
-                        context=[], public_commercial_copy=public, public_copy_requirement_ids=["REQ-1"])
+                        context=[], public_commercial_copy=public, public_copy_requirement_ids=["REQ-1"],
+                        public_copy_generation_id="generation-1", public_copy_frame_id="frame-1",
+                        public_copy_oracle_input=packet,
+                        public_copy_oracle_input_digest=packet_digest,
+                        public_copy_oracle_admission_event_id=admission_event_id)
 
 
 def readback(store, dispatch_id=None, terminal_id=None):
@@ -79,9 +94,18 @@ def readback(store, dispatch_id=None, terminal_id=None):
 def egress(tmp_path, port, trace=None, public=True):
     dispatcher, store = setup(tmp_path, port=port, trace=trace)
     dispatcher.trace.bind_runtime(store, "thread-a", "runtime-task-a")
+    packet = oracle_packet(revision="synthetic-revision")
+    packet_digest = digest(packet.model_dump(mode="json"))
+    oracle_event = dispatcher.trace.emit(
+        task_id="dispatch-a", stage="public_copy_oracle_input_admission", decision="PASS",
+        metadata={"oracle_input_digest": packet_digest, "generation_id": packet.generation_id,
+                  "frame_id": packet.frame_id, "input_refs": ["contract-a"]},
+    )
     result = dispatcher._validate_egress(
-        contract(public), DomainResult(owner=Owner.SALES_HUMAN, status="DONE", output="synthetic candidate A",
-                                      evidence={"PUBLIC_COPY_ACCEPTANCE_WITNESS": "PASS"}),
+        contract(public, packet=packet, packet_digest=packet_digest,
+                 admission_event_id=oracle_event.event_id),
+        DomainResult(owner=Owner.SALES_HUMAN, status="DONE", output="synthetic candidate A",
+                     evidence={"PUBLIC_COPY_ACCEPTANCE_WITNESS": "PASS"}),
     )
     return result, store
 
@@ -91,9 +115,13 @@ def test_full_positive_dispatch_reopen(tmp_path):
     dispatcher, store = setup(tmp_path, port=port)
     sales = RecordingSales()
     dispatcher.domains[Owner.SALES_HUMAN] = sales
+    revision = dispatcher.authority.resolve().entries[Owner.SALES_HUMAN].revision
+    packet = oracle_packet(revision=revision)
     result = dispatcher.dispatch(TaskRequest(
         request_text="synthetic copy", intent=Intent.SALES_HUMAN,
         public_commercial_copy=True, public_copy_requirement_ids=["REQ-1"],
+        public_copy_generation_id="generation-1", public_copy_frame_id="frame-1",
+        public_copy_oracle_input=packet,
         runtime_state_required=True, conversation_or_thread_id="thread-a", runtime_task_id="runtime-task-a",
     ))
     assert result.status == "DONE"
@@ -101,6 +129,11 @@ def test_full_positive_dispatch_reopen(tmp_path):
     assert result.evidence["public_copy_execution_lineage"] == "PASS"
     assert [call[0] for call in port.calls] == list(STAGES)
     assert port.calls[1][2] == port.calls[2][2]
+    assert all(call[3] == port.calls[0][3] for call in port.calls)
+    assert all(call[4] == digest(packet.model_dump(mode="json")) for call in port.calls)
+    assert sales.contracts[0].public_copy_oracle_input == packet
+    with pytest.raises(ValidationError):
+        sales.contracts[0].public_copy_oracle_input.packet_id = "mutated"
     reopened = SQLiteRuntimeStateStore(tmp_path / "copy.db")
     checks = readback(reopened)
     assert len(checks) == 8 and all(checks.values())
@@ -109,6 +142,10 @@ def test_full_positive_dispatch_reopen(tmp_path):
     assert state.action_result_evidence["public_copy_execution_lineage"] == "PASS"
     assert any(row["event_type"] == "CHECKPOINT_COMMITTED"
                for row in store.journal("thread-a", "runtime-task-a"))
+    oracle_rows = [row for row in reopened.journal("thread-a", "runtime-task-a")
+                   if row["stage"] == "public_copy_oracle_input_admission"]
+    assert len(oracle_rows) == 1
+    assert oracle_rows[0]["payload"]["metadata"]["oracle_input_digest"] == port.calls[0][4]
 
 
 class MissingWitnessTrace(TraceBus):
@@ -166,7 +203,16 @@ def test_post_hoc_events_cannot_repair_earlier_egress(tmp_path):
     dispatcher.trace.bind_runtime(store, "thread-a", "runtime-task-a")
     early = dispatcher.trace.emit(task_id="dispatch-a", stage="response_egress", decision="PASS",
                                   metadata={"PUBLIC_COPY_ACCEPTANCE_WITNESS": "PASS"})
-    dispatcher._validate_egress(contract(), RecordingSales().run(contract()))
+    packet = oracle_packet(revision="synthetic-revision")
+    packet_digest = digest(packet.model_dump(mode="json"))
+    oracle_event = dispatcher.trace.emit(
+        task_id="dispatch-a", stage="public_copy_oracle_input_admission", decision="PASS",
+        metadata={"oracle_input_digest": packet_digest, "generation_id": packet.generation_id,
+                  "frame_id": packet.frame_id, "input_refs": ["contract-a"]},
+    )
+    bound = contract(packet=packet, packet_digest=packet_digest,
+                     admission_event_id=oracle_event.event_id)
+    dispatcher._validate_egress(bound, RecordingSales().run(bound))
     assert not all(readback(store, terminal_id=early.event_id).values())
 
 
@@ -179,7 +225,11 @@ def test_ordinary_task_does_not_invoke_checks(tmp_path):
 
 def test_no_durable_binding_fails(tmp_path):
     dispatcher, _ = setup(tmp_path, port=RecordingChecks())
-    result = dispatcher._validate_egress(contract(), RecordingSales().run(contract()))
+    packet = oracle_packet(revision="synthetic-revision")
+    packet_digest = digest(packet.model_dump(mode="json"))
+    bound = contract(packet=packet, packet_digest=packet_digest,
+                     admission_event_id="not-durable")
+    result = dispatcher._validate_egress(bound, RecordingSales().run(bound))
     assert result.output is None
     assert result.evidence["public_copy_execution_lineage"] == "FAIL"
 

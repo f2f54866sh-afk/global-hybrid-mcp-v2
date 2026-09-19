@@ -37,6 +37,7 @@ from global_hybrid_v2.governance.fitness import SystemFitnessFunctions
 from global_hybrid_v2.governance.host_projection import HostProjectionGate
 from global_hybrid_v2.governance.library_boundary import LibraryReadWriteBoundary
 from global_hybrid_v2.governance.pre_action import CurrentPreActionBinding, PreActionConstraintGate
+from global_hybrid_v2.governance.public_copy_oracle import PublicCopyOracleGate
 from global_hybrid_v2.governance.repeat_action import (
     REPEAT_BLOCKED_NO_NEW_EVIDENCE,
     RepeatActionGate,
@@ -120,11 +121,13 @@ class Dispatcher:
         runtime_state_store: RuntimeStateStore | None = None,
         transition_controller: TransitionController | None = None,
         public_copy_checks: PublicCopyChecks | None = None,
+        public_copy_oracle_gate: PublicCopyOracleGate | None = None,
     ):
         self.authority = authority
         self.domains = domains
         self.trace = trace
         self.public_copy_checks = public_copy_checks
+        self.public_copy_oracle_gate = public_copy_oracle_gate or PublicCopyOracleGate()
         self.firewall = firewall or TaskFirewall()
         self.router = router or OwnerRouter()
         self.effect_gate = effect_gate or EffectGate()
@@ -434,6 +437,36 @@ class Dispatcher:
             task_id,
             context_admission.quarantined_external,
         )
+        oracle_admission = self.public_copy_oracle_gate.admit(
+            request,
+            authority=snapshot,
+            admitted_context=safe_context,
+        )
+        if not oracle_admission.allowed:
+            self.trace.emit(
+                task_id=task_id,
+                stage="public_copy_oracle_input_admission",
+                decision="BLOCK",
+                owner=owner,
+                span_owner="GLOBAL",
+                metadata={
+                    "blocker": oracle_admission.blocker,
+                    "packet_id": (
+                        request.public_copy_oracle_input.packet_id
+                        if request.public_copy_oracle_input else None
+                    ),
+                    "input_refs": [],
+                },
+            )
+            return DomainResult(
+                owner=owner,
+                status=oracle_admission.blocker or "PUBLIC_COPY_ORACLE_INPUT_BLOCKED",
+                output=None,
+                evidence={
+                    "public_copy_oracle_input_admission": "BLOCK",
+                    "blocker": oracle_admission.blocker,
+                },
+            )
 
         action_id = idempotency_key = None
         if runtime_state is not None and transition is not None:
@@ -448,6 +481,10 @@ class Dispatcher:
         contract = TaskContract(
             public_commercial_copy=request.public_commercial_copy,
             public_copy_requirement_ids=request.public_copy_requirement_ids,
+            public_copy_generation_id=request.public_copy_generation_id,
+            public_copy_frame_id=request.public_copy_frame_id,
+            public_copy_oracle_input=oracle_admission.packet,
+            public_copy_oracle_input_digest=oracle_admission.oracle_input_digest,
             task_id=task_id,
             task_trace_id=task_trace_id,
             contract_id=contract_id,
@@ -761,6 +798,39 @@ class Dispatcher:
             self.trace.bind_runtime_context(
                 action_id=action_id,
                 checkpoint_id=runtime_state.runtime_checkpoint_id,
+            )
+
+        if contract.public_commercial_copy:
+            packet = contract.public_copy_oracle_input
+            oracle_event = self.trace.emit(
+                task_id=contract.task_id,
+                stage="public_copy_oracle_input_admission",
+                decision="PASS",
+                owner=owner,
+                span_owner="GLOBAL",
+                metadata={
+                    "oracle_input_digest": contract.public_copy_oracle_input_digest,
+                    "packet_id": packet.packet_id if packet else None,
+                    "schema_version": packet.schema_version if packet else None,
+                    "generation_id": packet.generation_id if packet else None,
+                    "frame_id": packet.frame_id if packet else None,
+                    "expected_candidate_digest": (
+                        packet.terminal_candidate.sha256 if packet else None
+                    ),
+                    "hard_requirement_ids": contract.public_copy_requirement_ids,
+                    "admitted_source_refs": list(oracle_admission.admitted_source_refs),
+                    "producer_id": packet.producer_id if packet else None,
+                    "producer_version": packet.producer_version if packet else None,
+                    "currentness_token": packet.currentness_token if packet else None,
+                    "provenance": list(packet.provenance) if packet else [],
+                    "input_refs": [
+                        contract.contract_id,
+                        *(list(oracle_admission.admitted_source_refs)),
+                    ],
+                },
+            )
+            contract = contract.model_copy(
+                update={"public_copy_oracle_admission_event_id": oracle_event.event_id}
             )
 
         try:
@@ -1229,10 +1299,13 @@ class Dispatcher:
                     {"output": validated.output, "final_response_object": validated.final_response_object},
                     self.public_copy_checks,
                 )
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as exc:
+                blocker = str(exc)
+                if not blocker.startswith("PUBLIC_COPY_"):
+                    blocker = "PUBLIC_COPY_CANDIDATE_NOT_SERIALIZABLE"
                 return DomainResult(
                     owner=contract.owner, status=UNKNOWN_WITH_EXACT_BLOCKER,
-                    output=None, evidence={"blocker_code": "PUBLIC_COPY_CANDIDATE_NOT_SERIALIZABLE"},
+                    output=None, evidence={"blocker_code": blocker},
                 )
         self.trace.emit(
             task_id=contract.task_id,

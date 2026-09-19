@@ -63,7 +63,10 @@ class ReadOnlyWitness:
             return checks
         events = [row for row in rows[:terminal_index + 1] if row["event_type"] == "TRACE"
                   and row["payload"].get("task_id") == dispatch_task_id]
-        stages = ("public_copy_candidate", *STAGES, "response_egress")
+        stages = (
+            "public_copy_oracle_input_admission", "public_copy_candidate",
+            *STAGES, "response_egress",
+        )
         selected = []
         for stage in stages:
             matching = [row for row in events if row["stage"] == stage]
@@ -83,16 +86,25 @@ class ReadOnlyWitness:
         for index in range(1, len(selected)):
             if metadata[index].get("input_refs") != [row["event_id"] for row in selected[:index]]:
                 return checks
-        candidate, acceptance, production, detached, invariance, audit, terminal = metadata
+        oracle, candidate, acceptance, production, detached, invariance, audit, terminal = metadata
+        oracle_digest = oracle.get("oracle_input_digest")
+        if (
+            not isinstance(oracle_digest, str)
+            or not oracle_digest
+            or any(item.get("oracle_input_digest") != oracle_digest for item in metadata[1:])
+            or any(item.get("generation_id") != oracle.get("generation_id") for item in metadata[1:])
+            or any(item.get("frame_id") != oracle.get("frame_id") for item in metadata[1:])
+        ):
+            return checks
         exact = digest(candidate.get("candidate"))
         details = acceptance.get("details", {})
         witness = digest({"exact_candidate_digest": acceptance.get("exact_candidate_digest"),
                           "details": details})
         checks["EXACT_CANDIDATE_DIGEST"] = all(
-            item.get("exact_candidate_digest") == exact for item in metadata
+            item.get("exact_candidate_digest") == exact for item in metadata[1:]
         )
         checks["SHARED_WITNESS_DIGEST"] = all(
-            item.get("witness_digest") == witness for item in metadata[1:]
+            item.get("witness_digest") == witness for item in metadata[2:]
         )
         requirements = candidate.get("requirement_ids", [])
         coverage = details.get("hard_requirement_coverage", {})

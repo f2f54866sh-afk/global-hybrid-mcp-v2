@@ -43,23 +43,45 @@ class CopyCheckResult:
 class PublicCopyChecks(Protocol):
     def evaluate(
         self, *, stage: str, candidate_json: str, witness_json: str | None,
-        requirement_ids: tuple[str, ...],
+        requirement_ids: tuple[str, ...], oracle_input_json: str,
+        oracle_input_digest: str,
     ) -> CopyCheckResult: ...
 
 
 def execute_checks(
     trace: TraceBus, contract: TaskContract, candidate: Any, port: PublicCopyChecks | None,
 ) -> dict[str, Any]:
+    if (
+        contract.public_copy_oracle_input is None
+        or contract.public_copy_oracle_input_digest is None
+        or contract.public_copy_oracle_admission_event_id is None
+    ):
+        raise ValueError("PUBLIC_COPY_ORACLE_INPUT_NOT_ADMITTED")
     candidate_json = serialize(candidate)
     candidate_digest = digest(candidate)
-    base = {"public_commercial_copy": True, "exact_candidate_digest": candidate_digest}
+    expected = contract.public_copy_oracle_input.terminal_candidate
+    if candidate_json != expected.canonical_json or candidate_digest != expected.sha256:
+        raise ValueError("PUBLIC_COPY_TERMINAL_CANDIDATE_MISMATCH")
+    oracle_input_json = serialize(contract.public_copy_oracle_input.model_dump(mode="json"))
+    if digest(json.loads(oracle_input_json)) != contract.public_copy_oracle_input_digest:
+        raise ValueError("PUBLIC_COPY_ORACLE_INPUT_DIGEST_MISMATCH")
+    base = {
+        "public_commercial_copy": True,
+        "exact_candidate_digest": candidate_digest,
+        "oracle_input_digest": contract.public_copy_oracle_input_digest,
+        "generation_id": contract.public_copy_oracle_input.generation_id,
+        "frame_id": contract.public_copy_oracle_input.frame_id,
+    }
     candidate_event = trace.emit(
         task_id=contract.task_id, stage="public_copy_candidate", decision="PASS",
         owner=contract.owner,
-        metadata={**base, "candidate": candidate, "requirement_ids": contract.public_copy_requirement_ids,
-                  "input_refs": [contract.contract_id]},
+        metadata={
+            **base, "candidate": candidate,
+            "requirement_ids": contract.public_copy_requirement_ids,
+            "input_refs": [contract.public_copy_oracle_admission_event_id],
+        },
     )
-    refs = [candidate_event.event_id]
+    refs = [contract.public_copy_oracle_admission_event_id, candidate_event.event_id]
     witness_json = None
     witness_digest = None
     for stage in STAGES:
@@ -69,6 +91,8 @@ def execute_checks(
             receipt = port.evaluate(
                 stage=stage, candidate_json=candidate_json, witness_json=witness_json,
                 requirement_ids=tuple(contract.public_copy_requirement_ids),
+                oracle_input_json=oracle_input_json,
+                oracle_input_digest=contract.public_copy_oracle_input_digest,
             )
             if not isinstance(receipt, CopyCheckResult) or not isinstance(receipt.details, dict):
                 raise TypeError("PUBLIC_COPY_CHECK_RECEIPT_INVALID")

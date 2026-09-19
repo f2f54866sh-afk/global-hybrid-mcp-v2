@@ -13,6 +13,10 @@ from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.effects import EffectGate
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
 from global_hybrid_v2.governance.host_projection import HostCurrentStateVerifier, HostProjectionGate
+from global_hybrid_v2.governance.public_copy_oracle import (
+    PublicCopyOracleGate,
+    PublicCopyOracleVerifier,
+)
 from global_hybrid_v2.image_surface import ImageExecutionPort, ImageSurfaceController
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.research import (
@@ -50,6 +54,7 @@ def create_application(
     host_current_state_verifier: HostCurrentStateVerifier | None = None,
     runtime_state_store: RuntimeStateStore | None = None,
     public_copy_checks: PublicCopyChecks | None = None,
+    public_copy_oracle_verifier: PublicCopyOracleVerifier | None = None,
 ) -> Application:
     root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[2]
     runtime_settings = settings or Settings()
@@ -97,6 +102,7 @@ def create_application(
         effect_gate=EffectGate(live_execution=runtime_settings.live_execution),
         runtime_state_store=effective_runtime_state_store,
         public_copy_checks=public_copy_checks,
+        public_copy_oracle_gate=PublicCopyOracleGate(verifier=public_copy_oracle_verifier),
     )
     return Application(
         repo_root=root,
