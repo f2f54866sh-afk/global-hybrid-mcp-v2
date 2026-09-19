@@ -23,7 +23,7 @@ class RecordingChecks:
 
     def evaluate(
         self, *, stage, candidate_json, witness_json, requirement_ids,
-        oracle_input_json, oracle_input_digest,
+        oracle_input_json, oracle_input_digest, prior_stage_results_json,
     ):
         self.calls.append(
             (stage, candidate_json, witness_json, oracle_input_json, oracle_input_digest)

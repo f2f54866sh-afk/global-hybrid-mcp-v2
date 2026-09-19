@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from global_hybrid_v2.adapters.openai_public_copy import configured_public_copy_checks
 from global_hybrid_v2.adapters.openai_research import configured_research_port
 from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
@@ -77,6 +78,11 @@ def create_application(
     runtime_trace = trace or TraceBus()
     runtime_trace.attach_witness(ReadOnlyWitness())
     research_port = research if research is not None else configured_research_port(runtime_settings)
+    effective_public_copy_checks = (
+        public_copy_checks
+        if public_copy_checks is not None
+        else configured_public_copy_checks(runtime_settings)
+    )
     research_executor = ResearchExecutor(research_port)
     domains: dict[Owner, DomainPort] = {owner: NotConfiguredDomain(owner) for owner in Owner}
     domains[Owner.LIBRARY_FACT] = LibraryProjectionDomain()
@@ -101,7 +107,7 @@ def create_application(
         host_projection_gate=HostProjectionGate(verifier=host_current_state_verifier),
         effect_gate=EffectGate(live_execution=runtime_settings.live_execution),
         runtime_state_store=effective_runtime_state_store,
-        public_copy_checks=public_copy_checks,
+        public_copy_checks=effective_public_copy_checks,
         public_copy_oracle_gate=PublicCopyOracleGate(verifier=public_copy_oracle_verifier),
     )
     return Application(

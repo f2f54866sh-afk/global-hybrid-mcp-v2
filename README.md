@@ -97,6 +97,14 @@ Production image 的正式 runtime dependency 包含 `openai>=2.25,<3`。Provide
 API key 使用 secret settings 讀取，不會進入 trace、research receipt 或 provider error detail；
 repository 與 `render.yaml` 都不保存 key value。
 
+Public Copy semantic evaluation uses the same Responses-client dependency but a
+separate, fail-closed configuration path. It requires
+`GLOBAL_PUBLIC_COPY_EVALUATOR_PROVIDER=openai`,
+`GLOBAL_PUBLIC_COPY_EVALUATOR_MODEL`, and `OPENAI_API_KEY`; an optional
+`GLOBAL_PUBLIC_COPY_DETACHED_EVALUATOR_MODEL` selects the separately invoked
+Detached evaluator. The provider is disabled by default and no real Host producer
+or Sales + Visual Project binding is configured by this repository.
+
 ## 本機
 
 ```bash

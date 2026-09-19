@@ -44,7 +44,7 @@ class PublicCopyChecks(Protocol):
     def evaluate(
         self, *, stage: str, candidate_json: str, witness_json: str | None,
         requirement_ids: tuple[str, ...], oracle_input_json: str,
-        oracle_input_digest: str,
+        oracle_input_digest: str, prior_stage_results_json: str,
     ) -> CopyCheckResult: ...
 
 
@@ -84,6 +84,7 @@ def execute_checks(
     refs = [contract.public_copy_oracle_admission_event_id, candidate_event.event_id]
     witness_json = None
     witness_digest = None
+    prior_stage_results: list[dict[str, Any]] = []
     for stage in STAGES:
         try:
             if port is None:
@@ -93,6 +94,7 @@ def execute_checks(
                 requirement_ids=tuple(contract.public_copy_requirement_ids),
                 oracle_input_json=oracle_input_json,
                 oracle_input_digest=contract.public_copy_oracle_input_digest,
+                prior_stage_results_json=serialize(prior_stage_results),
             )
             if not isinstance(receipt, CopyCheckResult) or not isinstance(receipt.details, dict):
                 raise TypeError("PUBLIC_COPY_CHECK_RECEIPT_INVALID")
@@ -117,5 +119,12 @@ def execute_checks(
                         else "PUBLIC_COPY_CHECK_EXECUTION_FAILED"}
         event = trace.emit(task_id=contract.task_id, stage=stage, decision=decision,
                            owner=contract.owner, metadata=metadata)
+        prior_stage_results.append({
+            "stage": stage,
+            "decision": decision,
+            "exact_candidate_digest": metadata.get("exact_candidate_digest"),
+            "witness_digest": metadata.get("witness_digest"),
+            "details": metadata.get("details", {}),
+        })
         refs.append(event.event_id)
     return {**base, "witness_digest": witness_digest, "input_refs": refs}

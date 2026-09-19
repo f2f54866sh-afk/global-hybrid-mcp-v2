@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     authority_trusted_public_key: str | None = None
     research_provider: str = "disabled"
     research_model: str | None = None
+    public_copy_evaluator_provider: str = "disabled"
+    public_copy_evaluator_model: str | None = None
+    public_copy_detached_evaluator_model: str | None = None
     openai_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("OPENAI_API_KEY", "GLOBAL_OPENAI_API_KEY"),

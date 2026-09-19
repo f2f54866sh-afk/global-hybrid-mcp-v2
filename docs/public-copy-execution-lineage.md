@@ -96,3 +96,31 @@ recording checks, without real Sales/product/image or publishing side effects.
 This qualifies traced-runtime implementation only. It does **not** prove that a
 ChatGPT Sales + Visual Project is connected to this runtime, or that a production
 product oracle adapter is configured or semantically qualified.
+
+## Semantic evaluator adapter
+
+`ProductionPublicCopyChecks` consumes only the admitted canonical oracle packet,
+the exact candidate, the acceptance witness and typed prior-stage receipts. Its
+`OpenAIPublicCopyEvaluator` uses a separate Responses API invocation for each of the
+five stages. Detached Product evaluation is a separate call and may use a separately
+configured model. The adapter does not parse prompt text, inspect arbitrary context
+payloads, or accept `DomainResult` evidence as an evaluator receipt.
+
+Responses are constrained to a strict JSON schema and parsed into an immutable
+`PublicCopyEvaluatorReceipt`. The runtime verifies stage, candidate/oracle/witness
+digests, requirement coverage, proof consumption, Product/Detached disposition
+agreement and final audit fields. It records the actual configured model, response
+model/version and response run ID in each durable stage. Refusal, incomplete output,
+invalid JSON/schema, provider exception, binding drift or semantic incompleteness
+returns FAIL through the existing lineage gate.
+
+Production configuration is fail closed unless all required values are available:
+
+- `GLOBAL_PUBLIC_COPY_EVALUATOR_PROVIDER=openai`
+- `GLOBAL_PUBLIC_COPY_EVALUATOR_MODEL=<configured model>`
+- `GLOBAL_PUBLIC_COPY_DETACHED_EVALUATOR_MODEL=<optional isolated model>`
+- `OPENAI_API_KEY=<secret>`
+
+The provider remains disabled by default. This repository does not connect a real
+Host oracle-input producer or the ChatGPT Sales + Visual Project, and this change
+does not deploy or enable the adapter on Render.
