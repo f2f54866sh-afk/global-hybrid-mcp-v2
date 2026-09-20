@@ -82,6 +82,19 @@ SALES_LIBRARY_PROJECTION_FIELDS = {
     "evidence_items",
     "uncertainties",
 }
+VEHICLE_CONFIGURATION_LIBRARY_PROJECTION_FIELDS = {
+    "library_request_id",
+    "projection",
+    "contract_version",
+    "source_scope",
+    "evidence_role",
+    "lookup_state",
+    "query",
+    "configurations",
+    "uncertainties",
+    "provider_id",
+    "provider_version",
+}
 RESUME_MUTATION_EFFECTS = {
     EffectType.EXTERNAL_WRITE,
     EffectType.FILE_WRITE,
@@ -429,6 +442,26 @@ class Dispatcher:
             )
             transition = self.transition_controller.decide(runtime_state, request)
         sales_media_task = owner is Owner.SALES_HUMAN and SalesMediaDomain.supports(request.request_text)
+        sales_vehicle_configuration_task = (
+            owner is Owner.SALES_HUMAN
+            and request.vehicle_configuration_query is not None
+        )
+        if sales_media_task and sales_vehicle_configuration_task:
+            return DomainResult(
+                owner=Owner.SALES_HUMAN,
+                status="SALES_MULTI_PROJECTION_NOT_CONFIGURED",
+                output={
+                    "state": "SALES_MULTI_PROJECTION_NOT_CONFIGURED",
+                    "requested_projections": [
+                        "sales_media_evidence",
+                        "vehicle_configuration_reference",
+                    ],
+                },
+                evidence={
+                    "media_projection_requested": True,
+                    "vehicle_configuration_projection_requested": True,
+                },
+            )
         authority_entry = snapshot.entries.get(owner)
         risk_class = self.risk_classifier.classify(request)
         context_admission = self.firewall.evaluate(request.context, snapshot)
@@ -485,6 +518,7 @@ class Dispatcher:
             public_copy_frame_id=request.public_copy_frame_id,
             public_copy_oracle_input=oracle_admission.packet,
             public_copy_oracle_input_digest=oracle_admission.oracle_input_digest,
+            vehicle_configuration_query=request.vehicle_configuration_query,
             task_id=task_id,
             task_trace_id=task_trace_id,
             contract_id=contract_id,
@@ -703,6 +737,26 @@ class Dispatcher:
                     root_status=SNAPSHOT_COMPILATION_FAIL,
                     failed_stage=exc.stage,
                     blocker_type=exc.blocker_type,
+                )
+
+        if sales_vehicle_configuration_task:
+            try:
+                contract = self._compile_vehicle_configuration_snapshot(contract, snapshot)
+            except _SalesConsumptionBlock as exc:
+                return self._sales_upstream_block(
+                    contract=contract,
+                    authority_revision=(authority_entry.revision if authority_entry else None),
+                    root_status=SNAPSHOT_COMPILATION_FAIL,
+                    failed_stage=exc.stage,
+                    blocker_type=exc.blocker_type,
+                )
+            except Exception as exc:
+                return self._sales_upstream_block(
+                    contract=contract,
+                    authority_revision=(authority_entry.revision if authority_entry else None),
+                    root_status=SNAPSHOT_COMPILATION_FAIL,
+                    failed_stage="snapshot_compiled",
+                    blocker_type=type(exc).__name__,
                 )
             except Exception as exc:
                 return self._sales_upstream_block(
@@ -1116,6 +1170,118 @@ class Dispatcher:
                 "failure_class": None,
                 "library_request_id": request.request_id,
                 "library_packet_id": packet.contract_id,
+                "actual_consumer_context_ids": [item.id for item in compiled.context],
+            },
+        )
+        return compiled
+
+    def _compile_vehicle_configuration_snapshot(
+        self,
+        contract: TaskContract,
+        snapshot: AuthoritySnapshot,
+    ) -> TaskContract:
+        library_domain = self.domains.get(Owner.LIBRARY_FACT)
+        if not isinstance(library_domain, LibraryProjectionPort):
+            raise _SalesConsumptionBlock(
+                "library_request",
+                RuntimeError("Library projection adapter is not configured"),
+            )
+        request = LibraryAccessRequest(
+            actor_owner=Owner.SALES_HUMAN,
+            access_kind=LibraryAccessKind.READ_PROJECTION,
+            task_scope=contract.request_text,
+            projection="vehicle_configuration_reference",
+            required_fields=VEHICLE_CONFIGURATION_LIBRARY_PROJECTION_FIELDS,
+        )
+        self.trace.emit(
+            task_id=contract.task_id,
+            stage="library_request",
+            decision="PASS",
+            owner=Owner.LIBRARY_FACT,
+            span_owner=Owner.SALES_HUMAN.value,
+            metadata={
+                "state": "LIBRARY_REQUEST_CREATED",
+                "input_ref": contract.contract_id,
+                "output_ref": request.request_id,
+                "result": "PASS",
+                "failure_class": None,
+                "consumer": Owner.SALES_HUMAN.value,
+                "projection": request.projection,
+                "contract_version": request.contract_version,
+                "required_fields": sorted(request.required_fields),
+            },
+        )
+        try:
+            boundary = self.library_boundary.authorize(request)
+            if not boundary.allowed or boundary.mutation_allowed:
+                raise RuntimeError("Library read projection boundary denied")
+        except Exception as exc:
+            raise _SalesConsumptionBlock("library_boundary", exc) from exc
+        self.trace.emit(
+            task_id=contract.task_id,
+            stage="library_boundary",
+            decision="PASS",
+            owner=Owner.LIBRARY_FACT,
+            span_owner=Owner.SALES_HUMAN.value,
+            metadata={
+                "state": "LIBRARY_READ_PROJECTION_AUTHORIZED",
+                "input_ref": request.request_id,
+                "output_ref": boundary.reason,
+                "result": "PASS",
+                "failure_class": None,
+                "access_kind": boundary.access_kind.value,
+                "mutation_allowed": boundary.mutation_allowed,
+                "projection": request.projection,
+            },
+        )
+        try:
+            packet = library_domain.project(request, task=contract, authority=snapshot)
+            self.domain_contract_gate.admit(
+                packet,
+                consumer=Owner.SALES_HUMAN,
+                authority=snapshot,
+            )
+        except Exception as exc:
+            raise _SalesConsumptionBlock("library_packet", exc) from exc
+        self.trace.emit(
+            task_id=contract.task_id,
+            stage="library_packet",
+            decision="PASS",
+            owner=Owner.LIBRARY_FACT,
+            metadata={
+                "state": "LIBRARY_PACKET_ADMITTED",
+                "input_ref": request.request_id,
+                "output_ref": packet.contract_id,
+                "result": "PASS",
+                "failure_class": None,
+                "consumer": packet.consumer_owner.value,
+                "projection": packet.payload["projection"],
+                "contract_version": packet.schema_version,
+                "provenance": packet.provenance,
+                "currentness": packet.currentness.value,
+                "uncertainties": packet.payload["uncertainties"],
+                "used_fields": sorted(packet.used_fields),
+            },
+        )
+        try:
+            compiled = contract.model_copy(update={"domain_contracts": [packet]})
+        except Exception as exc:
+            raise _SalesConsumptionBlock("snapshot_compiled", exc) from exc
+        self.trace.emit(
+            task_id=contract.task_id,
+            stage="snapshot_compiled",
+            decision="PASS",
+            owner=Owner.SALES_HUMAN,
+            span_owner="GLOBAL",
+            metadata={
+                "state": "SNAPSHOT_COMPILED",
+                "input_ref": packet.contract_id,
+                "output_ref": compiled.contract_id,
+                "result": "PASS",
+                "failure_class": None,
+                "library_request_id": request.request_id,
+                "library_packet_id": packet.contract_id,
+                "projection": request.projection,
                 "actual_consumer_context_ids": [item.id for item in compiled.context],
             },
         )
