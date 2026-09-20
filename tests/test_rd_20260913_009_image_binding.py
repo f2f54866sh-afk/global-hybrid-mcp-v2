@@ -38,12 +38,20 @@ def _reserve(store, *, attempt_id=None, number=1, authorization_id=None, prior=N
     )
 
 
+def _mark_in_flight(store, attempt_id):
+    store.mark_image_attempt_in_flight(
+        "thread-a", "task-a", "source-a",
+        attempt_id=attempt_id, started_at=datetime.now(UTC),
+    )
+
+
 def test_explicit_insert_and_terminal_lifecycle_are_durable(tmp_path):
     store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
     attempt_id = "attempt-1"
     assert _reserve(store, attempt_id=attempt_id) == 1
     active = store.read_image_attempt_state("thread-a", "task-a", "source-a")
     assert active.active and active.active_attempt_id == attempt_id
+    _mark_in_flight(store, attempt_id)
     store.complete_image_attempt(
         "thread-a", "task-a", "source-a", attempt_id=attempt_id,
         terminal_result_id="result-1", terminal_status="PASS",
@@ -59,6 +67,7 @@ def test_explicit_insert_and_terminal_lifecycle_are_durable(tmp_path):
 def test_retry_requires_exact_sequential_terminal_binding_and_single_use_authorization(tmp_path):
     store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
     _reserve(store, attempt_id="attempt-1")
+    _mark_in_flight(store, "attempt-1")
     store.complete_image_attempt(
         "thread-a", "task-a", "source-a", attempt_id="attempt-1",
         terminal_result_id="result-1", terminal_status="FAIL",
@@ -87,6 +96,7 @@ def test_retry_state_rejects_wrong_number_missing_authorization_and_wrong_result
 ):
     store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
     _reserve(store, attempt_id="attempt-1")
+    _mark_in_flight(store, "attempt-1")
     store.complete_image_attempt(
         "thread-a", "task-a", "source-a", attempt_id="attempt-1",
         terminal_result_id="result-1", terminal_status="FAIL",
@@ -174,6 +184,7 @@ def test_retry_requires_firewall_admitted_current_user_instruction_before_port_c
     store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
     store.create(_state(thread="thread-a", task="task-a"))
     _reserve(store, attempt_id="first")
+    _mark_in_flight(store, "first")
     store.complete_image_attempt(
         "thread-a", "task-a", "source-a", attempt_id="first",
         terminal_result_id="first-result", terminal_status="FAIL",
@@ -199,6 +210,7 @@ def test_dispatcher_consumes_fresh_authorization_for_exact_terminal_retry(tmp_pa
     store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
     store.create(_state(thread="thread-a", task="task-a"))
     _reserve(store, attempt_id="first")
+    _mark_in_flight(store, "first")
     store.complete_image_attempt(
         "thread-a", "task-a", "source-a", attempt_id="first",
         terminal_result_id="first-result", terminal_status="FAIL",
@@ -319,6 +331,20 @@ def test_interrupted_effect_reopens_unknown_and_blocks_fresh_retry(tmp_path):
     assert retry_port.calls == 0
 
 
+def test_reserved_attempt_cannot_complete_or_refund_quota(tmp_path):
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    _reserve(store, attempt_id="attempt-reserved")
+    with pytest.raises(RuntimeStateError, match="IMAGE_ATTEMPT_COMPLETION_LIFECYCLE_MISMATCH"):
+        store.complete_image_attempt(
+            "thread-a", "task-a", "source-a", attempt_id="attempt-reserved",
+            terminal_result_id="result-forbidden", terminal_status="PASS",
+        )
+    state = store.read_image_attempt_state("thread-a", "task-a", "source-a")
+    assert state.effect_lifecycle == "RESERVED"
+    assert state.active is True
+    assert state.attempts == 1
+
+
 def test_release_cannot_refund_and_late_reconciliation_terminalizes_unknown(tmp_path):
     path = tmp_path / "runtime.db"
     store = SQLiteRuntimeStateStore(path)
@@ -370,6 +396,27 @@ class _IdentityPort(_RecordingPort):
         )
 
 
+class _ProviderIdentityPort(_RecordingPort):
+    def invoke(self, **_kwargs):
+        self.calls += 1
+        return ImageRenderOutcome(
+            provider_operation_id="call-only",
+            actual_tool_family=ImageToolFamily.IMAGE_GENERATION,
+            requested_delta_completed=True,
+            identity_preserved=True,
+            preservation_pass=True,
+            net_uplift_pass=True,
+        )
+
+
+def test_receipt_terminal_identity_falls_back_to_provider_then_node_token():
+    spec = _image_spec(None)
+    provider_receipt = ImageSurfaceController(_ProviderIdentityPort()).execute(spec)
+    assert provider_receipt.terminal_result_id == "call-only"
+    node_receipt = ImageSurfaceController(_RecordingPort()).execute(spec)
+    assert node_receipt.terminal_result_id == node_receipt.node_token
+
+
 def test_success_preserves_provider_and_artifact_identity(tmp_path):
     store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
     store.create(_state(thread="thread-a", task="task-a"))
@@ -383,6 +430,7 @@ def test_success_preserves_provider_and_artifact_identity(tmp_path):
     assert result.status == "PASS"
     assert result.output["provider_operation_id"] == "call-77"
     assert result.output["artifact_id"] == "artifact-77"
+    assert result.output["terminal_result_id"] == "artifact-77"
     durable = store.read_image_attempt_state("thread-a", "task-a", "source-a")
     assert durable.last_terminal_result_id == "artifact-77"
     assert durable.provider_operation_id == "call-77"

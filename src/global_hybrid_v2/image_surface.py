@@ -292,6 +292,7 @@ class ImageExecutionReceipt(BaseModel):
     blocker: str | None = None
     provider_operation_id: str | None = None
     artifact_id: str | None = None
+    terminal_result_id: str | None = None
 
 
 class ImageExecutionPort(Protocol):
@@ -510,6 +511,7 @@ class ImageSurfaceController:
                     user_constraint_receipt=constraints,
                     audit={},
                     blocker=f"LOCALITY_PORT_CONTRACT_MISMATCH: {type(exc).__name__}",
+                    terminal_result_id=token,
                 )
                 if guard is not None:
                     guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
@@ -527,6 +529,7 @@ class ImageSurfaceController:
                 user_constraint_receipt=constraints,
                 audit={},
                 blocker=str(exc),
+                terminal_result_id=token,
             )
             if guard is not None:
                 guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
@@ -620,6 +623,7 @@ class ImageSurfaceController:
             ),
             provider_operation_id=outcome.provider_operation_id,
             artifact_id=outcome.artifact_id,
+            terminal_result_id=(outcome.artifact_id or outcome.provider_operation_id or token),
         )
         if guard is not None:
             guard.complete(
@@ -669,4 +673,11 @@ class ImageSurfaceController:
             user_constraint_receipt=constraints,
             audit={},
             blocker=blocker,
+            provider_operation_id=(outcome.provider_operation_id if outcome else None),
+            artifact_id=(outcome.artifact_id if outcome else None),
+            terminal_result_id=(
+                outcome.artifact_id or outcome.provider_operation_id or node_token
+                if outcome is not None
+                else node_token
+            ),
         )

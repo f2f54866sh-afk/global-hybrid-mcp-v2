@@ -479,7 +479,10 @@ class SQLiteRuntimeStateStore:
             ).fetchone()
             if row is None:
                 raise RuntimeStateError("IMAGE_ATTEMPT_COMPLETION_BINDING_MISMATCH")
-            if row[0] == "INTERRUPTED_UNKNOWN":
+            lifecycle = row[0]
+            if lifecycle not in {"IN_FLIGHT", "INTERRUPTED_UNKNOWN"}:
+                raise RuntimeStateError("IMAGE_ATTEMPT_COMPLETION_LIFECYCLE_MISMATCH")
+            if lifecycle == "INTERRUPTED_UNKNOWN":
                 evidence_result_id = artifact_id or provider_operation_id
                 if evidence_result_id is None or terminal_result_id != evidence_result_id:
                     raise RuntimeStateError("IMAGE_LATE_RECONCILIATION_EVIDENCE_REQUIRED")
@@ -492,7 +495,7 @@ class SQLiteRuntimeStateStore:
                     last_attempt_id=?
                 WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?
                     AND active_attempt_id=?
-                    AND effect_lifecycle IN ('RESERVED', 'IN_FLIGHT', 'INTERRUPTED_UNKNOWN')
+                    AND effect_lifecycle IN ('IN_FLIGHT', 'INTERRUPTED_UNKNOWN')
                 """,
                 (
                     terminal_result_id, terminal_status, provider_operation_id, artifact_id,
