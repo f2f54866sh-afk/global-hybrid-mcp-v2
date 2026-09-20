@@ -474,6 +474,8 @@ class VehicleConfigurationQuery(BaseModel):
 
     @model_validator(mode="after")
     def no_blank_optional_identifiers(self) -> "VehicleConfigurationQuery":
+        if any(not value.strip() for value in (self.market, self.make, self.model)):
+            raise ValueError("market, make, and model cannot be blank")
         for value in (self.generation, self.trim, self.vehicle_instance_id):
             if value is not None and not value.strip():
                 raise ValueError("optional vehicle identifier cannot be blank")
@@ -486,6 +488,7 @@ class TaskRequest(BaseModel):
     public_copy_generation_id: str | None = Field(default=None, min_length=1)
     public_copy_frame_id: str | None = Field(default=None, min_length=1)
     public_copy_oracle_input: PublicCopyOracleInput | None = None
+    vehicle_configuration_query: VehicleConfigurationQuery | None = None
     request_text: str = Field(min_length=1)
     intent: Intent
     effects: list[EffectType] = Field(default_factory=lambda: [EffectType.READ_ONLY])
@@ -609,7 +612,6 @@ class LibraryAccessRequest(BaseModel):
     access_kind: LibraryAccessKind
     task_scope: str = Field(min_length=1)
     projection: str | None = None
-    vehicle_configuration_query: VehicleConfigurationQuery | None = None
     required_fields: set[str] = Field(default_factory=set)
 
 
