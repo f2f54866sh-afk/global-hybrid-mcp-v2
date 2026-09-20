@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     )
     live_execution: bool = False
     port: int = 8000
+    runtime_state_path: str | None = None
     vehicle_configuration_snapshot_path: str | None = None
 
     model_config = SettingsConfigDict(

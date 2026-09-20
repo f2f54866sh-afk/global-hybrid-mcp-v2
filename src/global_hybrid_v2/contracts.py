@@ -377,6 +377,7 @@ class VehicleConfigurationQuery(BaseModel):
 
 class TaskRequest(BaseModel):
     vehicle_configuration_query: VehicleConfigurationQuery | None = None
+    image_task: dict[str, Any] | None = None
     request_text: str = Field(min_length=1)
     intent: Intent
     effects: list[EffectType] = Field(default_factory=lambda: [EffectType.READ_ONLY])
@@ -395,6 +396,7 @@ class TaskRequest(BaseModel):
     replay_effect_id: str | None = None
     replay_authorized: bool = False
     runtime_state_required: bool = False
+    runtime_state_initialize: bool = False
     conversation_or_thread_id: str | None = Field(default=None, min_length=1)
     runtime_task_id: str | None = Field(default=None, min_length=1)
 
