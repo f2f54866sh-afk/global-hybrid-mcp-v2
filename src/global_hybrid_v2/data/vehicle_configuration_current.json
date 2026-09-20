@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "vehicle-config-v1-4f4a27ddd89e09b6",
+  "source_revision": "libfile_6af09104d854819180eb56566dfa7f02:v1",
+  "generated_at": "2026-09-20T09:50:19Z",
+  "configurations": [
+    {
+      "configuration_id": "TW-BMW-F30LCI-318I-2017M08-BASE",
+      "market": "TW", "model_year": 2017, "make": "BMW", "model": "318i",
+      "generation": "F30 LCI", "trim": "318i",
+      "powertrain": {"engine": "TwinPower Turbo 汽油直列3汽缸", "displacement_cc": 1499, "power_hp": 136, "torque_nm": 220, "transmission": "Steptronic 八速手自排"},
+      "equipment": [
+        {"equipment_key": "BMW318I-BASE-001", "label": "雙前座電動座椅含駕駛座記憶功能", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2017M08-BASE"], "primary_source_pointer": "BMW-TW-BPS-2017M08-318I", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-BASE-002", "label": "Comfort Access 免鑰匙系統", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2017M08-BASE"], "primary_source_pointer": "BMW-TW-BPS-2017M08-318I", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-BASE-003", "label": "BMW 衛星導航系統", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2017M08-BASE"], "primary_source_pointer": "BMW-TW-BPS-2017M08-318I", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-BASE-004", "label": "LED 頭燈／LED 日間行車燈", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2017M08-BASE"], "primary_source_pointer": "BMW-TW-BPS-2017M08-318I", "last_verified": "2026-09-19"}
+      ],
+      "primary_source_pointers": ["BMW-TW-BPS-2017M08-318I"],
+      "last_verified": "2026-09-19", "conflict_state": "NO_CONFLICT", "query_key": "TW:2017:BMW:318i"
+    },
+    {
+      "configuration_id": "TW-BMW-F30LCI-318I-2017M08-BASE",
+      "market": "TW", "model_year": 2018, "make": "BMW", "model": "318i",
+      "generation": "F30 LCI", "trim": "318i",
+      "powertrain": {"engine": "TwinPower Turbo 汽油直列3汽缸", "displacement_cc": 1499, "power_hp": 136, "torque_nm": 220, "transmission": "Steptronic 八速手自排"},
+      "equipment": [
+        {"equipment_key": "BMW318I-BASE-001", "label": "雙前座電動座椅含駕駛座記憶功能", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2017M08-BASE"], "primary_source_pointer": "BMW-TW-BPS-2017M08-318I", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-BASE-002", "label": "Comfort Access 免鑰匙系統", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2017M08-BASE"], "primary_source_pointer": "BMW-TW-BPS-2017M08-318I", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-BASE-003", "label": "BMW 衛星導航系統", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2017M08-BASE"], "primary_source_pointer": "BMW-TW-BPS-2017M08-318I", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-BASE-004", "label": "LED 頭燈／LED 日間行車燈", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2017M08-BASE"], "primary_source_pointer": "BMW-TW-BPS-2017M08-318I", "last_verified": "2026-09-19"}
+      ],
+      "primary_source_pointers": ["BMW-TW-BPS-2017M08-318I"],
+      "last_verified": "2026-09-19", "conflict_state": "NO_CONFLICT", "query_key": "TW:2018:BMW:318i"
+    },
+    {
+      "configuration_id": "TW-BMW-F30LCI-318I-2018M07-LUXWHITE",
+      "market": "TW", "model_year": 2018, "make": "BMW", "model": "318i",
+      "generation": "F30 LCI", "trim": "豪華白金版",
+      "powertrain": {"engine": "TwinPower Turbo 汽油直列3汽缸", "displacement_cc": 1499, "power_hp": 136, "torque_nm": 220, "transmission": "Steptronic 八速手自排"},
+      "equipment": [
+        {"equipment_key": "BMW318I-LUX-001", "label": "雙前座跑車座椅", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-002", "label": "BMW Individual 多功能真皮跑車方向盤", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-003", "label": "harman/kardon 高音喇叭組", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-004", "label": "10.25 吋多重行車模式儀錶板", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-005", "label": "Comfort Access 免鑰匙系統", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-006", "label": "iDrive 手寫觸控旋鈕", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-007", "label": "BMW 智能衛星導航系統", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-008", "label": "雙前座電動座椅含駕駛座記憶功能", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-009", "label": "Sensatec 皮質內裝", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-010", "label": "豪華型雙區恆溫空調", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"},
+        {"equipment_key": "BMW318I-LUX-011", "label": "LED 頭燈／LED 日間行車燈", "classification": "STANDARD", "trim_ids": ["TW-BMW-F30LCI-318I-2018M07-LUXWHITE"], "primary_source_pointer": "BMW-TW-BPS-2018M07-LUXWHITE", "last_verified": "2026-09-19"}
+      ],
+      "primary_source_pointers": ["BMW-TW-BPS-2018M07-LUXWHITE"],
+      "last_verified": "2026-09-19", "conflict_state": "NO_CONFLICT", "query_key": "TW:2018:BMW:318i"
+    }
+  ]
+}
