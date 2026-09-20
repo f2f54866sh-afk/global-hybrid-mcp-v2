@@ -51,7 +51,9 @@ def test_typed_vehicle_request_compiles_library_packet_without_media_consumption
     events = _events(capsys)
     stages = [event["stage"] for event in events]
 
-    assert result.status == "BLOCKED_NOT_CONFIGURED"
+    assert result.status == "SALES_VEHICLE_CONFIGURATION_GAP"
+    assert result.output["state"] == "GAP"
+    assert result.output["lookup_state"] == "PROVIDER_UNAVAILABLE"
     assert not any(
         finding.code == "RUNTIME_CONSUMPTION_PROOF_INCOMPLETE"
         for finding in application.trace.findings
