@@ -760,6 +760,7 @@ class Dispatcher:
                     root_status=SNAPSHOT_COMPILATION_FAIL,
                     failed_stage=exc.stage,
                     blocker_type=exc.blocker_type,
+                    include_sales_stages=False,
                 )
             except Exception as exc:
                 return self._sales_upstream_block(
@@ -768,6 +769,7 @@ class Dispatcher:
                     root_status=SNAPSHOT_COMPILATION_FAIL,
                     failed_stage="snapshot_compiled",
                     blocker_type=type(exc).__name__,
+                    include_sales_stages=False,
                 )
 
         domain = self.domains.get(owner)
@@ -1298,17 +1300,23 @@ class Dispatcher:
         root_status: str,
         failed_stage: str,
         blocker_type: str,
+        include_sales_stages: bool = True,
     ) -> DomainResult:
         ordered = [
             "library_request",
             "library_boundary",
             "library_packet",
             "snapshot_compiled",
-            "sales_adapter_bound",
-            "sales_context_delivered",
-            "sales_result",
-            "fitness",
         ]
+        if include_sales_stages:
+            ordered.extend(
+                [
+                    "sales_adapter_bound",
+                    "sales_context_delivered",
+                    "sales_result",
+                    "fitness",
+                ]
+            )
         failed_index = ordered.index(failed_stage)
         failure_owner = (
             Owner.LIBRARY_FACT
