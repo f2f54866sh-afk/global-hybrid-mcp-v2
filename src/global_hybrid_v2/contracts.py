@@ -460,6 +460,26 @@ class ResumeRehydrationReceipt(BaseModel):
     reason: str
 
 
+class VehicleConfigurationQuery(BaseModel):
+    market: str = Field(min_length=1)
+    model_year: int = Field(ge=1886, le=3000)
+    make: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    generation: str | None = None
+    trim: str | None = None
+    vehicle_instance_id: str | None = None
+    include_trim_matrix: bool = True
+    observed_equipment_keys: list[str] = Field(default_factory=list)
+    hard_evidence_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def no_blank_optional_identifiers(self) -> "VehicleConfigurationQuery":
+        for value in (self.generation, self.trim, self.vehicle_instance_id):
+            if value is not None and not value.strip():
+                raise ValueError("optional vehicle identifier cannot be blank")
+        return self
+
+
 class TaskRequest(BaseModel):
     public_commercial_copy: bool = False
     public_copy_requirement_ids: list[str] = Field(default_factory=list)
@@ -589,6 +609,7 @@ class LibraryAccessRequest(BaseModel):
     access_kind: LibraryAccessKind
     task_scope: str = Field(min_length=1)
     projection: str | None = None
+    vehicle_configuration_query: VehicleConfigurationQuery | None = None
     required_fields: set[str] = Field(default_factory=set)
 
 
@@ -600,6 +621,7 @@ class TaskContract(BaseModel):
     public_copy_oracle_input: PublicCopyOracleInput | None = None
     public_copy_oracle_input_digest: str | None = None
     public_copy_oracle_admission_event_id: str | None = None
+    vehicle_configuration_query: VehicleConfigurationQuery | None = None
     task_id: str = Field(default_factory=lambda: str(uuid4()))
     task_trace_id: str = Field(default_factory=lambda: str(uuid4()))
     contract_id: str = Field(default_factory=lambda: str(uuid4()))
