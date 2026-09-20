@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -229,3 +230,161 @@ def test_dispatcher_consumes_fresh_authorization_for_exact_terminal_retry(tmp_pa
     assert durable.attempts == 2 and not durable.active
     assert durable.last_terminal_status == "PASS"
     assert durable.consumed_authorization_ids == ["fresh-auth"]
+
+
+def _capability():
+    return ContextItem(
+        id="capability",
+        origin=ContextOrigin.CURRENT_TOOL_RESULT,
+        context_class=ContextClass.CURRENT_CAPABILITY_FACT,
+        purpose="capability",
+        task_scope="make image",
+        payload={"target_system": "image", "action_class": "generate"},
+        current_binding=True,
+        provenance=["current-port"],
+    )
+
+
+def test_reserved_and_in_flight_lifecycle_persist_started_at(tmp_path):
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    _reserve(store, attempt_id="attempt-1")
+    reserved = store.read_image_attempt_state("thread-a", "task-a", "source-a")
+    assert reserved.effect_lifecycle == "RESERVED"
+    assert reserved.started_at is None
+    started_at = datetime.now(UTC)
+    store.mark_image_attempt_in_flight(
+        "thread-a", "task-a", "source-a", attempt_id="attempt-1", started_at=started_at
+    )
+    in_flight = store.read_image_attempt_state("thread-a", "task-a", "source-a")
+    assert in_flight.effect_lifecycle == "IN_FLIGHT"
+    assert in_flight.started_at == started_at
+
+
+class _InterruptingPort(_RecordingPort):
+    def __init__(self, store):
+        super().__init__()
+        self.store = store
+        self.observed_lifecycle = None
+
+    def invoke(self, **_kwargs):
+        self.calls += 1
+        state = self.store.read_image_attempt_state("thread-a", "task-a", "source-a")
+        self.observed_lifecycle = state.effect_lifecycle
+        raise KeyboardInterrupt("simulated process interruption after external effect")
+
+
+def test_interrupted_effect_reopens_unknown_and_blocks_fresh_retry(tmp_path):
+    path = tmp_path / "runtime.db"
+    store = SQLiteRuntimeStateStore(path)
+    store.create(_state(thread="thread-a", task="task-a"))
+    port = _InterruptingPort(store)
+    with pytest.raises(KeyboardInterrupt):
+        _dispatcher(port, store).dispatch(
+            _request(
+                _image_spec(ImageSideEffectBudget(source_asset_id="source-a")),
+                context=[_capability()],
+                bound=True,
+            )
+        )
+    assert port.calls == 1
+    assert port.observed_lifecycle == "IN_FLIGHT"
+
+    reopened = SQLiteRuntimeStateStore(path)
+    unknown = reopened.read_image_attempt_state("thread-a", "task-a", "source-a")
+    assert unknown.effect_lifecycle == "INTERRUPTED_UNKNOWN"
+    assert unknown.attempts == 1
+    retry_port = _RecordingPort()
+    authorization = ContextItem(
+        id="fresh-auth",
+        origin=ContextOrigin.CURRENT_USER,
+        context_class=ContextClass.STABLE_USER_PREFERENCE,
+        purpose="retry authorization",
+        task_scope="make image",
+        payload="retry this exact source",
+        content_role=ContextContentRole.EXECUTABLE_INSTRUCTION,
+        provenance=["current-user"],
+    )
+    budget = ImageSideEffectBudget(
+        source_asset_id="source-a",
+        attempt_number=2,
+        authorized_attempt_limit=2,
+        authorization="EXPLICIT_USER_EXTENSION",
+        explicit_user_authorization_receipt="fresh-auth",
+        prior_terminal_result_id="unknown",
+    )
+    result = _dispatcher(retry_port, reopened).dispatch(
+        _request(_image_spec(budget), context=[_capability(), authorization], bound=True)
+    )
+    assert result.status == "IMAGE_PRIOR_OUTCOME_UNKNOWN"
+    assert retry_port.calls == 0
+
+
+def test_release_cannot_refund_and_late_reconciliation_terminalizes_unknown(tmp_path):
+    path = tmp_path / "runtime.db"
+    store = SQLiteRuntimeStateStore(path)
+    _reserve(store, attempt_id="attempt-1")
+    store.mark_image_attempt_in_flight(
+        "thread-a", "task-a", "source-a", attempt_id="attempt-1", started_at=datetime.now(UTC)
+    )
+    with pytest.raises(RuntimeStateError, match="IMAGE_ATTEMPT_RELEASE_FORBIDDEN"):
+        store.release_image_attempt("thread-a", "task-a", "source-a")
+    assert store.read_image_attempt_state("thread-a", "task-a", "source-a").attempts == 1
+    reopened = SQLiteRuntimeStateStore(path)
+    with pytest.raises(RuntimeStateError, match="IMAGE_LATE_RECONCILIATION_EVIDENCE_REQUIRED"):
+        reopened.complete_image_attempt(
+            "thread-a",
+            "task-a",
+            "source-a",
+            attempt_id="attempt-1",
+            terminal_result_id="caller-asserted-absent",
+            terminal_status="FAIL",
+        )
+    reopened.complete_image_attempt(
+        "thread-a",
+        "task-a",
+        "source-a",
+        attempt_id="attempt-1",
+        terminal_result_id="artifact-late",
+        terminal_status="PASS",
+        provider_operation_id="call-late",
+        artifact_id="artifact-late",
+    )
+    terminal = reopened.read_image_attempt_state("thread-a", "task-a", "source-a")
+    assert terminal.effect_lifecycle == "TERMINAL"
+    assert terminal.last_attempt_id == "attempt-1"
+    assert terminal.provider_operation_id == "call-late"
+    assert terminal.artifact_id == "artifact-late"
+
+
+class _IdentityPort(_RecordingPort):
+    def invoke(self, **_kwargs):
+        self.calls += 1
+        return ImageRenderOutcome(
+            artifact_id="artifact-77",
+            provider_operation_id="call-77",
+            actual_tool_family=ImageToolFamily.IMAGE_GENERATION,
+            requested_delta_completed=True,
+            identity_preserved=True,
+            preservation_pass=True,
+            net_uplift_pass=True,
+        )
+
+
+def test_success_preserves_provider_and_artifact_identity(tmp_path):
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    store.create(_state(thread="thread-a", task="task-a"))
+    result = _dispatcher(_IdentityPort(), store).dispatch(
+        _request(
+            _image_spec(ImageSideEffectBudget(source_asset_id="source-a")),
+            context=[_capability()],
+            bound=True,
+        )
+    )
+    assert result.status == "PASS"
+    assert result.output["provider_operation_id"] == "call-77"
+    assert result.output["artifact_id"] == "artifact-77"
+    durable = store.read_image_attempt_state("thread-a", "task-a", "source-a")
+    assert durable.last_terminal_result_id == "artifact-77"
+    assert durable.provider_operation_id == "call-77"
+    assert durable.artifact_id == "artifact-77"
+    assert durable.effect_lifecycle == "TERMINAL"

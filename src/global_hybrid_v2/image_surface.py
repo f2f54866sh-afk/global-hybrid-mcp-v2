@@ -262,6 +262,7 @@ class ImageTaskSpec(BaseModel):
 
 class ImageRenderOutcome(BaseModel):
     artifact_id: str | None = None
+    provider_operation_id: str | None = None
     actual_tool_family: ImageToolFamily
     requested_delta_completed: bool
     changed_regions: set[str] = Field(default_factory=set)
@@ -289,6 +290,8 @@ class ImageExecutionReceipt(BaseModel):
     user_constraint_receipt: dict[str, object]
     audit: dict[str, object]
     blocker: str | None = None
+    provider_operation_id: str | None = None
+    artifact_id: str | None = None
 
 
 class ImageExecutionPort(Protocol):
@@ -309,7 +312,16 @@ class ImageInvocationGuard(Protocol):
 
     def reserve(self, spec: ImageTaskSpec) -> bool: ...
 
-    def complete(self, *, terminal_result_id: str, terminal_status: str) -> None: ...
+    def mark_in_flight(self) -> bool: ...
+
+    def complete(
+        self,
+        *,
+        terminal_result_id: str,
+        terminal_status: str,
+        provider_operation_id: str | None = None,
+        artifact_id: str | None = None,
+    ) -> None: ...
 
 
 @dataclass
@@ -471,6 +483,8 @@ class ImageSurfaceController:
         guard = invocation_guard or self.invocation_guard
         if guard is not None and not guard.reserve(spec):
             return self._blocked(spec, fingerprint, constraints, "IMAGE_ATTEMPT_RESERVATION_BLOCKED")
+        if guard is not None and not guard.mark_in_flight():
+            return self._blocked(spec, fingerprint, constraints, "IMAGE_ATTEMPT_IN_FLIGHT_BLOCKED")
         try:
             if envelope is None:
                 outcome = self.port.invoke(
@@ -522,7 +536,14 @@ class ImageSurfaceController:
                 spec, fingerprint, constraints, "ACTUAL_TOOL_FAMILY_MISMATCH", token, outcome
             )
             if guard is not None:
-                guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
+                guard.complete(
+                    terminal_result_id=(
+                        outcome.artifact_id or outcome.provider_operation_id or token
+                    ),
+                    terminal_status=receipt.state.value,
+                    provider_operation_id=outcome.provider_operation_id,
+                    artifact_id=outcome.artifact_id,
+                )
             return receipt
 
         non_target = outcome.changed_regions - {spec.render_manifest.current_visual_delta}
@@ -597,9 +618,16 @@ class ImageSurfaceController:
                 if locality_failed
                 else "VISUAL_ACCEPTANCE_FAILED"
             ),
+            provider_operation_id=outcome.provider_operation_id,
+            artifact_id=outcome.artifact_id,
         )
         if guard is not None:
-            guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
+            guard.complete(
+                terminal_result_id=(outcome.artifact_id or outcome.provider_operation_id or token),
+                terminal_status=receipt.state.value,
+                provider_operation_id=outcome.provider_operation_id,
+                artifact_id=outcome.artifact_id,
+            )
         return receipt
 
     @staticmethod

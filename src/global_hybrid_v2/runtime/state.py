@@ -18,9 +18,14 @@ class ImageAttemptState(BaseModel):
     attempts: int = Field(default=0, ge=0)
     active: bool = False
     active_attempt_id: str | None = None
+    last_attempt_id: str | None = None
     consumed_authorization_ids: list[str] = Field(default_factory=list)
     last_terminal_result_id: str | None = None
     last_terminal_status: str | None = None
+    effect_lifecycle: str | None = None
+    started_at: datetime | None = None
+    provider_operation_id: str | None = None
+    artifact_id: str | None = None
 
 
 class RuntimeTaskFrame(BaseModel):
@@ -135,9 +140,25 @@ class SQLiteRuntimeStateStore:
                 active INTEGER NOT NULL DEFAULT 0, consumed_authorizations TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (conversation_or_thread_id, task_id, source_key))""")
             columns = {row[1] for row in connection.execute("PRAGMA table_info(image_attempt_budget)")}
-            for name in ("active_attempt_id", "last_terminal_result_id", "last_terminal_status"):
+            for name in (
+                "active_attempt_id",
+                "last_terminal_result_id",
+                "last_terminal_status",
+                "effect_lifecycle",
+                "started_at",
+                "provider_operation_id",
+                "artifact_id",
+                "last_attempt_id",
+            ):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE image_attempt_budget ADD COLUMN {name} TEXT NULL")
+            connection.execute(
+                """
+                UPDATE image_attempt_budget
+                SET active=0, effect_lifecycle='INTERRUPTED_UNKNOWN'
+                WHERE active=1 AND (effect_lifecycle IS NULL OR effect_lifecycle IN ('RESERVED', 'IN_FLIGHT'))
+                """
+            )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
@@ -331,13 +352,15 @@ class SQLiteRuntimeStateStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT attempts, active, active_attempt_id, consumed_authorizations, last_terminal_result_id, last_terminal_status FROM image_attempt_budget WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?",  # noqa: E501
+                "SELECT attempts, active, active_attempt_id, consumed_authorizations, last_terminal_result_id, last_terminal_status, effect_lifecycle FROM image_attempt_budget WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?",  # noqa: E501
                 (conversation_or_thread_id, task_id, source_key),
             ).fetchone()
-            attempts, active, active_attempt_id, consumed, last_result, last_status = (
-                row if row else (0, 0, None, "[]", None, None)
+            attempts, active, active_attempt_id, consumed, last_result, last_status, lifecycle = (
+                row if row else (0, 0, None, "[]", None, None, None)
             )
             ids = json.loads(consumed)
+            if lifecycle == "INTERRUPTED_UNKNOWN":
+                raise RuntimeStateError("IMAGE_PRIOR_OUTCOME_UNKNOWN")
             if active or (authorization_id is not None and authorization_id in ids):
                 raise RuntimeStateError("IMAGE_ATTEMPT_QUOTA_BLOCKED")
             if expected_attempt_number != attempts + 1:
@@ -356,27 +379,55 @@ class SQLiteRuntimeStateStore:
                 INSERT INTO image_attempt_budget (
                     conversation_or_thread_id, task_id, source_key, attempts, active,
                     consumed_authorizations, active_attempt_id,
-                    last_terminal_result_id, last_terminal_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_terminal_result_id, last_terminal_status, effect_lifecycle,
+                    started_at, provider_operation_id, artifact_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(conversation_or_thread_id, task_id, source_key) DO UPDATE SET
                     attempts=excluded.attempts,
                     active=1,
                     consumed_authorizations=excluded.consumed_authorizations,
-                    active_attempt_id=excluded.active_attempt_id
+                    active_attempt_id=excluded.active_attempt_id,
+                    effect_lifecycle='RESERVED', started_at=NULL,
+                    provider_operation_id=NULL, artifact_id=NULL
                 """,
                 (
                     conversation_or_thread_id, task_id, source_key, attempts, 1,
                     json.dumps(ids), attempt_id, last_result, last_status,
+                    "RESERVED", None, None, None,
                 ),
             )
             return attempts
 
-    def release_image_attempt(self, conversation_or_thread_id: str, task_id: str, source_key: str) -> None:
+    def mark_image_attempt_in_flight(
+        self,
+        conversation_or_thread_id: str,
+        task_id: str,
+        source_key: str,
+        *,
+        attempt_id: str,
+        started_at: datetime,
+    ) -> None:
+        if started_at.tzinfo is None:
+            raise RuntimeStateError("IMAGE_ATTEMPT_STARTED_AT_NOT_TIMEZONE_AWARE")
         with self._connect() as connection:
-            connection.execute(
-                "UPDATE image_attempt_budget SET active=0, attempts=attempts-1 WHERE conversation_or_thread_id=? AND task_id=? AND source_key=? AND active=1",  # noqa: E501
-                (conversation_or_thread_id, task_id, source_key),
+            cursor = connection.execute(
+                """
+                UPDATE image_attempt_budget
+                SET effect_lifecycle='IN_FLIGHT', started_at=?
+                WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?
+                    AND active=1 AND active_attempt_id=? AND effect_lifecycle='RESERVED'
+                """,
+                (
+                    started_at.isoformat(), conversation_or_thread_id, task_id,
+                    source_key, attempt_id,
+                ),
             )
+            if cursor.rowcount != 1:
+                raise RuntimeStateError("IMAGE_ATTEMPT_IN_FLIGHT_BINDING_MISMATCH")
+
+    def release_image_attempt(self, conversation_or_thread_id: str, task_id: str, source_key: str) -> None:
+        del conversation_or_thread_id, task_id, source_key
+        raise RuntimeStateError("IMAGE_ATTEMPT_RELEASE_FORBIDDEN")
 
     def read_image_attempt_state(
         self, conversation_or_thread_id: str, task_id: str, source_key: str
@@ -384,7 +435,8 @@ class SQLiteRuntimeStateStore:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT attempts, active, active_attempt_id, consumed_authorizations, "
-                "last_terminal_result_id, last_terminal_status FROM image_attempt_budget "
+                "last_terminal_result_id, last_terminal_status, effect_lifecycle, started_at, "
+                "provider_operation_id, artifact_id, last_attempt_id FROM image_attempt_budget "
                 "WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?",
                 (conversation_or_thread_id, task_id, source_key),
             ).fetchone()
@@ -397,6 +449,11 @@ class SQLiteRuntimeStateStore:
             consumed_authorization_ids=json.loads(row[3]),
             last_terminal_result_id=row[4],
             last_terminal_status=row[5],
+            effect_lifecycle=row[6],
+            started_at=datetime.fromisoformat(row[7]) if row[7] else None,
+            provider_operation_id=row[8],
+            artifact_id=row[9],
+            last_attempt_id=row[10],
         )
 
     def complete_image_attempt(
@@ -408,18 +465,38 @@ class SQLiteRuntimeStateStore:
         attempt_id: str,
         terminal_result_id: str,
         terminal_status: str,
+        provider_operation_id: str | None = None,
+        artifact_id: str | None = None,
     ) -> None:
         with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT effect_lifecycle FROM image_attempt_budget
+                WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?
+                    AND active_attempt_id=?
+                """,
+                (conversation_or_thread_id, task_id, source_key, attempt_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeStateError("IMAGE_ATTEMPT_COMPLETION_BINDING_MISMATCH")
+            if row[0] == "INTERRUPTED_UNKNOWN":
+                evidence_result_id = artifact_id or provider_operation_id
+                if evidence_result_id is None or terminal_result_id != evidence_result_id:
+                    raise RuntimeStateError("IMAGE_LATE_RECONCILIATION_EVIDENCE_REQUIRED")
             cursor = connection.execute(
                 """
                 UPDATE image_attempt_budget
                 SET active=0, active_attempt_id=NULL,
-                    last_terminal_result_id=?, last_terminal_status=?
+                    last_terminal_result_id=?, last_terminal_status=?,
+                    effect_lifecycle='TERMINAL', provider_operation_id=?, artifact_id=?,
+                    last_attempt_id=?
                 WHERE conversation_or_thread_id=? AND task_id=? AND source_key=?
-                    AND active=1 AND active_attempt_id=?
+                    AND active_attempt_id=?
+                    AND effect_lifecycle IN ('RESERVED', 'IN_FLIGHT', 'INTERRUPTED_UNKNOWN')
                 """,
                 (
-                    terminal_result_id, terminal_status,
+                    terminal_result_id, terminal_status, provider_operation_id, artifact_id,
+                    attempt_id,
                     conversation_or_thread_id, task_id, source_key, attempt_id,
                 ),
             )

@@ -160,7 +160,43 @@ class _RuntimeImageInvocationGuard(ImageInvocationGuard):
         )
         return True
 
-    def complete(self, *, terminal_result_id: str, terminal_status: str) -> None:
+    def mark_in_flight(self) -> bool:
+        if self._attempt_id is None or self._source_key is None:
+            return False
+        try:
+            self._store.mark_image_attempt_in_flight(
+                self._conversation_or_thread_id,
+                self._runtime_task_id,
+                self._source_key,
+                attempt_id=self._attempt_id,
+                started_at=datetime.now(UTC),
+            )
+        except RuntimeStateError as exc:
+            self._trace.emit(
+                task_id=self._trace_task_id,
+                stage="image_attempt_in_flight",
+                decision="BLOCK",
+                span_owner="EXECUTION",
+                metadata={"blocker": str(exc), "source_key": self._source_key},
+            )
+            return False
+        self._trace.emit(
+            task_id=self._trace_task_id,
+            stage="image_attempt_in_flight",
+            decision="PASS",
+            span_owner="EXECUTION",
+            metadata={"source_key": self._source_key, "attempt_id": self._attempt_id},
+        )
+        return True
+
+    def complete(
+        self,
+        *,
+        terminal_result_id: str,
+        terminal_status: str,
+        provider_operation_id: str | None = None,
+        artifact_id: str | None = None,
+    ) -> None:
         if self._attempt_id is None or self._source_key is None:
             raise RuntimeStateError("IMAGE_ATTEMPT_COMPLETION_BINDING_MISMATCH")
         self._store.complete_image_attempt(
@@ -170,6 +206,8 @@ class _RuntimeImageInvocationGuard(ImageInvocationGuard):
             attempt_id=self._attempt_id,
             terminal_result_id=terminal_result_id,
             terminal_status=terminal_status,
+            provider_operation_id=provider_operation_id,
+            artifact_id=artifact_id,
         )
         self._trace.emit(
             task_id=self._trace_task_id,
@@ -181,6 +219,8 @@ class _RuntimeImageInvocationGuard(ImageInvocationGuard):
                 "attempt_id": self._attempt_id,
                 "terminal_result_id": terminal_result_id,
                 "terminal_status": terminal_status,
+                "provider_operation_id": provider_operation_id,
+                "artifact_id": artifact_id,
             },
         )
 
@@ -663,6 +703,7 @@ class Dispatcher:
                         hasattr(self.runtime_state_store, name)
                         for name in (
                             "reserve_image_attempt",
+                            "mark_image_attempt_in_flight",
                             "complete_image_attempt",
                             "read_image_attempt_state",
                         )
@@ -779,6 +820,7 @@ class Dispatcher:
                         hasattr(self.runtime_state_store, name)
                         for name in (
                             "reserve_image_attempt",
+                            "mark_image_attempt_in_flight",
                             "complete_image_attempt",
                             "read_image_attempt_state",
                         )
@@ -818,6 +860,15 @@ class Dispatcher:
                         request.runtime_task_id,
                         budget.source_asset_id,
                     )
+                    if previous.effect_lifecycle == "INTERRUPTED_UNKNOWN":
+                        return DomainResult(
+                            owner=owner,
+                            status="IMAGE_PRIOR_OUTCOME_UNKNOWN",
+                            evidence={
+                                "image_dispatch": "BLOCK",
+                                "blocker": "IMAGE_PRIOR_OUTCOME_UNKNOWN",
+                            },
+                        )
                     if (
                         previous.active
                         or previous.last_terminal_status is None
