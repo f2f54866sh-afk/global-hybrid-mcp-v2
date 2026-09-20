@@ -41,6 +41,15 @@ class SalesVehicleConfigurationDomain:
             raise ValueError("vehicle configuration Library packet must pass admission")
         if packet.payload.get("evidence_role") != "LIBRARY_REFERENCE_NOT_INSTANCE_PROOF":
             raise ValueError("vehicle configuration packet evidence role is invalid")
+        if packet.task_trace_id != contract.task_trace_id:
+            raise ValueError(
+                "vehicle configuration Library packet task binding mismatch"
+            )
+        expected_query = contract.vehicle_configuration_query.model_dump(mode="json")
+        if packet.payload.get("query") != expected_query:
+            raise ValueError(
+                "vehicle configuration Library packet query binding mismatch"
+            )
 
         lookup_state = packet.payload["lookup_state"]
         if lookup_state not in self.lookup_states:
