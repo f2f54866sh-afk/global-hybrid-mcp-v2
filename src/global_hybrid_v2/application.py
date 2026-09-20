@@ -8,8 +8,9 @@ from global_hybrid_v2.adapters.openai_research import configured_research_port
 from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.domains.library_projection import LibraryProjectionDomain
-from global_hybrid_v2.domains.sales_media import SalesMediaDomain
+from global_hybrid_v2.domains.sales_human import SalesHumanDomain
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
+from global_hybrid_v2.domains.vehicle_configuration import VehicleConfigurationProvider
 from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.effects import EffectGate
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
@@ -56,6 +57,7 @@ def create_application(
     runtime_state_store: RuntimeStateStore | None = None,
     public_copy_checks: PublicCopyChecks | None = None,
     public_copy_oracle_verifier: PublicCopyOracleVerifier | None = None,
+    vehicle_configuration_provider: VehicleConfigurationProvider | None = None,
 ) -> Application:
     root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[2]
     runtime_settings = settings or Settings()
@@ -85,8 +87,10 @@ def create_application(
     )
     research_executor = ResearchExecutor(research_port)
     domains: dict[Owner, DomainPort] = {owner: NotConfiguredDomain(owner) for owner in Owner}
-    domains[Owner.LIBRARY_FACT] = LibraryProjectionDomain()
-    domains[Owner.SALES_HUMAN] = SalesMediaDomain()
+    domains[Owner.LIBRARY_FACT] = LibraryProjectionDomain(
+        vehicle_configuration_provider=vehicle_configuration_provider
+    )
+    domains[Owner.SALES_HUMAN] = SalesHumanDomain()
     composition_fitness = SystemFitnessFunctions.evaluate_composition(
         domains=domains,
         trace=runtime_trace,
