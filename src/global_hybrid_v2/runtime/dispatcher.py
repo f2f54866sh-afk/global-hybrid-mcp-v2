@@ -738,18 +738,6 @@ class Dispatcher:
                     failed_stage=exc.stage,
                     blocker_type=exc.blocker_type,
                 )
-
-        if sales_vehicle_configuration_task:
-            try:
-                contract = self._compile_vehicle_configuration_snapshot(contract, snapshot)
-            except _SalesConsumptionBlock as exc:
-                return self._sales_upstream_block(
-                    contract=contract,
-                    authority_revision=(authority_entry.revision if authority_entry else None),
-                    root_status=SNAPSHOT_COMPILATION_FAIL,
-                    failed_stage=exc.stage,
-                    blocker_type=exc.blocker_type,
-                )
             except Exception as exc:
                 return self._sales_upstream_block(
                     contract=contract,
@@ -757,6 +745,21 @@ class Dispatcher:
                     root_status=SNAPSHOT_COMPILATION_FAIL,
                     failed_stage="snapshot_compiled",
                     blocker_type=type(exc).__name__,
+                )
+
+        if sales_vehicle_configuration_task:
+            try:
+                contract = self._compile_vehicle_configuration_snapshot(
+                    contract,
+                    snapshot,
+                )
+            except _SalesConsumptionBlock as exc:
+                return self._sales_upstream_block(
+                    contract=contract,
+                    authority_revision=(authority_entry.revision if authority_entry else None),
+                    root_status=SNAPSHOT_COMPILATION_FAIL,
+                    failed_stage=exc.stage,
+                    blocker_type=exc.blocker_type,
                 )
             except Exception as exc:
                 return self._sales_upstream_block(
