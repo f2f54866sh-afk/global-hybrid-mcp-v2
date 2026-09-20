@@ -206,12 +206,10 @@ class ReadOnlyWitness:
         return any(
             stage in observed
             for stage in {
-                "library_request",
-                "library_boundary",
-                "library_packet",
                 "sales_adapter_bound",
                 "sales_context_delivered",
                 "sales_result",
+                "fitness",
             }
         )
 
