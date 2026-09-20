@@ -14,6 +14,7 @@ from global_hybrid_v2.adapters.mcp_server import create_mcp_server
 from global_hybrid_v2.application import create_application
 from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.library_projection import LibraryProjectionDomain
+from global_hybrid_v2.domains.sales_human import SalesHumanDomain
 from global_hybrid_v2.domains.sales_media import SalesMediaDomain
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.runtime.deployment import read_runtime_identity
@@ -170,7 +171,9 @@ def test_sales_and_library_consumption_are_configured_without_new_owners(tmp_pat
     application = create_application(repo_root=repo_root, settings=_test_settings())
 
     assert set(application.dispatcher.domains) == set(Owner)
-    assert isinstance(application.dispatcher.domains[Owner.SALES_HUMAN], SalesMediaDomain)
+    sales = application.dispatcher.domains[Owner.SALES_HUMAN]
+    assert isinstance(sales, SalesHumanDomain)
+    assert isinstance(sales.media_domain, SalesMediaDomain)
     assert isinstance(
         application.dispatcher.domains[Owner.LIBRARY_FACT],
         LibraryProjectionDomain,

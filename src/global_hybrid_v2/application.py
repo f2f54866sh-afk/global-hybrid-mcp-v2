@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from global_hybrid_v2.adapters.file_vehicle_configuration import (
+    configured_vehicle_configuration_provider,
+)
 from global_hybrid_v2.adapters.openai_research import configured_research_port
 from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.domains.library_projection import LibraryProjectionDomain
-from global_hybrid_v2.domains.sales_media import SalesMediaDomain
+from global_hybrid_v2.domains.sales_human import SalesHumanDomain
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
+from global_hybrid_v2.domains.vehicle_configuration import VehicleConfigurationProvider
 from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
 from global_hybrid_v2.governance.host_projection import HostCurrentStateVerifier, HostProjectionGate
@@ -43,6 +47,7 @@ def create_application(
     research: ResearchPort | None = None,
     runtime_identity: RuntimeIdentity | None = None,
     host_current_state_verifier: HostCurrentStateVerifier | None = None,
+    vehicle_configuration_provider: VehicleConfigurationProvider | None = None,
 ) -> Application:
     root = (
         Path(repo_root).resolve()
@@ -64,12 +69,20 @@ def create_application(
     runtime_trace.attach_witness(ReadOnlyWitness())
     research_port = research if research is not None else configured_research_port(runtime_settings)
     research_executor = ResearchExecutor(research_port)
+    effective_vehicle_configuration_provider = vehicle_configuration_provider
+    if effective_vehicle_configuration_provider is None:
+        effective_vehicle_configuration_provider = configured_vehicle_configuration_provider(
+            runtime_settings,
+            repo_root=root,
+        )
     domains: dict[Owner, DomainPort] = {
         owner: NotConfiguredDomain(owner)
         for owner in Owner
     }
-    domains[Owner.LIBRARY_FACT] = LibraryProjectionDomain()
-    domains[Owner.SALES_HUMAN] = SalesMediaDomain()
+    domains[Owner.LIBRARY_FACT] = LibraryProjectionDomain(
+        vehicle_configuration_provider=effective_vehicle_configuration_provider
+    )
+    domains[Owner.SALES_HUMAN] = SalesHumanDomain()
     composition_fitness = SystemFitnessFunctions.evaluate_composition(
         domains=domains,
         trace=runtime_trace,

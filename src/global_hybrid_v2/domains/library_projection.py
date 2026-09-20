@@ -15,6 +15,10 @@ from global_hybrid_v2.contracts import (
     Owner,
     TaskContract,
 )
+from global_hybrid_v2.domains.vehicle_configuration import (
+    UnavailableVehicleConfigurationProvider,
+    VehicleConfigurationProvider,
+)
 
 
 class LibraryProjectionDomain:
@@ -22,6 +26,7 @@ class LibraryProjectionDomain:
 
     owner = Owner.LIBRARY_FACT
     projection_name = "sales_media_evidence"
+    vehicle_projection_name = "vehicle_configuration_reference"
     contract_version = 1
     allowed_context_classes = {
         ContextClass.UNTRUSTED_EXTERNAL_EVIDENCE,
@@ -36,6 +41,14 @@ class LibraryProjectionDomain:
         "creative_decision",
     }
 
+    def __init__(
+        self,
+        vehicle_configuration_provider: VehicleConfigurationProvider | None = None,
+    ) -> None:
+        self.vehicle_configuration_provider = (
+            vehicle_configuration_provider or UnavailableVehicleConfigurationProvider()
+        )
+
     def project(
         self,
         request: LibraryAccessRequest,
@@ -47,6 +60,8 @@ class LibraryProjectionDomain:
             raise ValueError("sales media projection requires SALES_HUMAN consumer")
         if request.access_kind is not LibraryAccessKind.READ_PROJECTION:
             raise ValueError("sales media projection is read-only")
+        if request.projection == self.vehicle_projection_name:
+            return self._project_vehicle_configuration(request, task=task, authority=authority)
         if request.projection != self.projection_name:
             raise ValueError("unsupported Library projection")
 
@@ -94,6 +109,61 @@ class LibraryProjectionDomain:
             blocked_foreign_fields=self.blocked_sales_decisions,
             currentness=ContractCurrentness.CURRENT,
             provenance=list(dict.fromkeys(provenance)),
+            status=DomainContractStatus.PASS,
+            interaction_mode=DomainInteractionMode.SERVICE,
+            payload=payload,
+        )
+
+    def _project_vehicle_configuration(
+        self,
+        request: LibraryAccessRequest,
+        *,
+        task: TaskContract,
+        authority: AuthoritySnapshot,
+    ) -> DomainContract:
+        if task.vehicle_configuration_query is None:
+            raise ValueError("vehicle configuration projection requires typed query")
+        library_authority = authority.entries[Owner.LIBRARY_FACT]
+        lookup = self.vehicle_configuration_provider.lookup(task.vehicle_configuration_query)
+        payload: dict[str, Any] = {
+            "library_request_id": request.request_id,
+            "projection": request.projection,
+            "contract_version": request.contract_version,
+            "source_scope": request.task_scope,
+            "evidence_role": "LIBRARY_REFERENCE_NOT_INSTANCE_PROOF",
+            "lookup_state": lookup.state.value,
+            "query": lookup.query.model_dump(mode="json"),
+            "configurations": [item.model_dump(mode="json") for item in lookup.configurations],
+            "uncertainties": lookup.uncertainties,
+            "provider_id": lookup.provider_id,
+            "provider_version": lookup.provider_version,
+        }
+        required_fields = request.required_fields or set(payload)
+        provenance = list(
+            dict.fromkeys(
+                [f"library-authority:{library_authority.revision}", *lookup.provenance]
+            )
+        )
+        return DomainContract(
+            task_trace_id=task.task_trace_id,
+            schema_version=self.contract_version,
+            provider_owner=Owner.LIBRARY_FACT,
+            consumer_owner=Owner.SALES_HUMAN,
+            task_scope=request.task_scope,
+            source_authority_revision=library_authority.revision,
+            requirement_ids=["VEHICLE_CONFIGURATION_REFERENCE_NEED"],
+            required_fields=required_fields,
+            optional_fields=set(),
+            used_fields=required_fields,
+            blocked_foreign_fields=self.blocked_sales_decisions
+            | {
+                "exact_instance_trim",
+                "factory_provenance",
+                "final_sales_copy",
+                "targeting_decision",
+            },
+            currentness=ContractCurrentness.CURRENT,
+            provenance=provenance,
             status=DomainContractStatus.PASS,
             interaction_mode=DomainInteractionMode.SERVICE,
             payload=payload,
