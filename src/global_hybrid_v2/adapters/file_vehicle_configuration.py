@@ -21,7 +21,14 @@ class FileVehicleConfigurationProvider:
 
     def __init__(self, snapshot_path: str | Path):
         self.snapshot_path = Path(snapshot_path)
-        snapshot = self._load_snapshot()
+        self.snapshot_resource = None
+        try:
+            content = self.snapshot_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError("vehicle configuration snapshot is not readable") from exc
+        self._initialize_snapshot(self._parse_snapshot(content))
+
+    def _initialize_snapshot(self, snapshot: dict[str, Any]) -> None:
         self.snapshot_id = self._required_string(snapshot, "snapshot_id")
         self.source_revision = self._required_string(snapshot, "source_revision")
         self.generated_at = self._required_string(snapshot, "generated_at")
@@ -44,18 +51,18 @@ class FileVehicleConfigurationProvider:
         package: str = "global_hybrid_v2",
         resource: str = "data/vehicle_configuration_current.json",
     ) -> FileVehicleConfigurationProvider:
-        packaged_resource = resources.files(package).joinpath(resource)
         try:
-            with resources.as_file(packaged_resource) as snapshot_path:
-                return cls(snapshot_path)
-        except (FileNotFoundError, ModuleNotFoundError) as exc:
+            content = resources.files(package).joinpath(resource).read_text(encoding="utf-8")
+        except (FileNotFoundError, ModuleNotFoundError, OSError) as exc:
             raise RuntimeError("packaged vehicle configuration snapshot is unavailable") from exc
+        provider = cls.__new__(cls)
+        provider.snapshot_path = None
+        provider.snapshot_resource = f"{package}:{resource}"
+        provider._initialize_snapshot(provider._parse_snapshot(content))
+        return provider
 
-    def _load_snapshot(self) -> dict[str, Any]:
-        try:
-            content = self.snapshot_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise RuntimeError("vehicle configuration snapshot is not readable") from exc
+    @staticmethod
+    def _parse_snapshot(content: str) -> dict[str, Any]:
         try:
             snapshot = json.loads(content)
         except json.JSONDecodeError as exc:

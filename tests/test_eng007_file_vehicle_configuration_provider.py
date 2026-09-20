@@ -138,3 +138,15 @@ def test_one_malformed_configuration_invalidates_whole_snapshot(tmp_path):
     malformed = _configuration(model="   ")
     with pytest.raises(ValueError):
         _provider(tmp_path, _snapshot(configurations=[_configuration(), malformed]))
+
+
+def test_package_resource_provider_remains_usable_without_temporary_path():
+    provider = FileVehicleConfigurationProvider.from_package_resource()
+    assert provider.snapshot_path is None
+    assert (
+        provider.snapshot_resource
+        == "global_hybrid_v2:data/vehicle_configuration_current.json"
+    )
+    assert provider.provider_version == "vehicle-config-v1-4f4a27ddd89e09b6"
+    result = provider.lookup(_query())
+    assert result.state is VehicleConfigurationLookupState.HIT
