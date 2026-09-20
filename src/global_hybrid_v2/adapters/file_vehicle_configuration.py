@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from global_hybrid_v2.domains.vehicle_configuration import (
     VehicleConfigurationLookupState,
     VehicleConfigurationReference,
 )
+from global_hybrid_v2.settings import Settings
 
 
 class FileVehicleConfigurationProvider:
@@ -34,6 +36,20 @@ class FileVehicleConfigurationProvider:
             ]
         except ValidationError as exc:
             raise ValueError("vehicle configuration snapshot contains an invalid configuration") from exc
+
+    @classmethod
+    def from_package_resource(
+        cls,
+        *,
+        package: str = "global_hybrid_v2",
+        resource: str = "data/vehicle_configuration_current.json",
+    ) -> FileVehicleConfigurationProvider:
+        packaged_resource = resources.files(package).joinpath(resource)
+        try:
+            with resources.as_file(packaged_resource) as snapshot_path:
+                return cls(snapshot_path)
+        except (FileNotFoundError, ModuleNotFoundError) as exc:
+            raise RuntimeError("packaged vehicle configuration snapshot is unavailable") from exc
 
     def _load_snapshot(self) -> dict[str, Any]:
         try:
@@ -120,3 +136,17 @@ class FileVehicleConfigurationProvider:
                 or configuration.trim.casefold() != query.trim.casefold()
             )
         )
+
+
+def configured_vehicle_configuration_provider(
+    settings: Settings,
+    *,
+    repo_root: str | Path,
+) -> FileVehicleConfigurationProvider:
+    configured_path = settings.vehicle_configuration_snapshot_path
+    if configured_path is None:
+        return FileVehicleConfigurationProvider.from_package_resource()
+    snapshot_path = Path(configured_path)
+    if not snapshot_path.is_absolute():
+        snapshot_path = Path(repo_root) / snapshot_path
+    return FileVehicleConfigurationProvider(snapshot_path.resolve())

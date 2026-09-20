@@ -149,14 +149,20 @@ def _events(capsys):
     return [json.loads(line) for line in capsys.readouterr().out.splitlines()]
 
 
-def test_default_provider_runtime_returns_gap_with_vehicle_only_trace(tmp_path, capsys):
+def test_default_provider_runtime_returns_hit_with_vehicle_only_trace(tmp_path, capsys):
     application = _application(tmp_path)
     result = application.dispatcher.dispatch(_vehicle_request())
     events = _events(capsys)
 
-    assert result.status == "SALES_VEHICLE_CONFIGURATION_GAP"
-    assert result.output["state"] == "GAP"
-    assert result.output["lookup_state"] == "PROVIDER_UNAVAILABLE"
+    assert result.status == "SALES_VEHICLE_CONFIGURATION_READY"
+    assert result.output["state"] == "READY"
+    assert result.output["lookup_state"] == "HIT"
+    assert [item["configuration_id"] for item in result.output["reference_configurations"]] == [
+        "TW-BMW-F30LCI-318I-2017M08-BASE",
+        "TW-BMW-F30LCI-318I-2018M07-LUXWHITE",
+    ]
+    assert result.output["instance_trim_state"] == "UNRESOLVED"
+    assert result.output["factory_provenance_state"] == "UNRESOLVED"
     stages = [event["stage"] for event in events]
     required = [
         "current_authority",

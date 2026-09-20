@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from global_hybrid_v2.adapters.file_vehicle_configuration import (
+    configured_vehicle_configuration_provider,
+)
 from global_hybrid_v2.adapters.openai_public_copy import configured_public_copy_checks
 from global_hybrid_v2.adapters.openai_research import configured_research_port
 from global_hybrid_v2.contracts import Owner
@@ -86,9 +89,15 @@ def create_application(
         else configured_public_copy_checks(runtime_settings)
     )
     research_executor = ResearchExecutor(research_port)
+    effective_vehicle_configuration_provider = vehicle_configuration_provider
+    if effective_vehicle_configuration_provider is None:
+        effective_vehicle_configuration_provider = configured_vehicle_configuration_provider(
+            runtime_settings,
+            repo_root=root,
+        )
     domains: dict[Owner, DomainPort] = {owner: NotConfiguredDomain(owner) for owner in Owner}
     domains[Owner.LIBRARY_FACT] = LibraryProjectionDomain(
-        vehicle_configuration_provider=vehicle_configuration_provider
+        vehicle_configuration_provider=effective_vehicle_configuration_provider
     )
     domains[Owner.SALES_HUMAN] = SalesHumanDomain()
     composition_fitness = SystemFitnessFunctions.evaluate_composition(
