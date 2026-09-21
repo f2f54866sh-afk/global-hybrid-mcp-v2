@@ -1,0 +1,32 @@
+{
+  "revision": "ENGINEERING_EXECUTION_POLICY_20260921_V1",
+  "invariants": [
+    "AUTHORING_ENGINEERING_NO_REPO_MUTATION",
+    "MUTATION_ROUTE_TO_ENGINEER_BEFORE_TOOL_SELECTION",
+    "NO_DESTRUCTIVE_CAPABILITY_PROBE",
+    "UNKNOWN_WRITE_CAPABILITY_DENY",
+    "HARD_DENY_STICKY_UNTIL_CAPABILITY_EPOCH_CHANGE",
+    "OPERATION_FAMILY_DOWNGRADE_GUARD",
+    "FREEZE_MICROFIX_AFTER_REPEAT_ESCAPE",
+    "COMPLETE_MATRIX_BEFORE_PRIMARY_WRITE",
+    "SINGLE_CONSOLIDATED_ACCEPTANCE",
+    "MANDATORY_EXTERNAL_ARCHITECTURE_SEARCH_BEFORE_WRITE"
+  ],
+  "trusted_writer_evidence_producers": [
+    "TOOL_BROKER",
+    "ENGINEER_RUNTIME",
+    "AUTH_LAYER"
+  ],
+  "required_downgrade_matrix": [
+    "positive_current_path",
+    "ordinary_path_regression",
+    "omission_downgrade",
+    "direct_authority_injection",
+    "forged_stale_wrong_binding",
+    "alternate_legacy_path",
+    "missing_capability",
+    "evidence_origin_mismatch",
+    "restart_reopen",
+    "external_side_effect_cardinality"
+  ]
+}

@@ -44,6 +44,40 @@ class IdentitySecondaryRole(StrEnum):
     POSE = "POSE"
 
 
+class WriterCapabilityState(StrEnum):
+    PROVEN = "PROVEN"
+    HARD_DENY = "HARD_DENY"
+    TRANSIENT_FAILURE = "TRANSIENT_FAILURE"
+
+
+class WriterCapabilityRecord(BaseModel):
+    actor: str = Field(min_length=1)
+    writer_surface: str = Field(min_length=1)
+    repository: str = Field(min_length=1)
+    operation_family: str = Field(min_length=1)
+    auth_context_id: str = Field(min_length=1)
+    capability_epoch: str = Field(min_length=1)
+    state: WriterCapabilityState
+    evidence_producer: str = Field(min_length=1)
+    evidence_reference: str = Field(min_length=1)
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ProblemConvergenceState(BaseModel):
+    problem_signature: str = Field(min_length=1)
+    escape_count: int = Field(default=0, ge=0)
+    microfix_frozen: bool = False
+    alternate_path_seen: bool = False
+    boundary_map_complete: bool = False
+    downgrade_matrix_complete: bool = False
+    external_architecture_convergence: bool = False
+    material_gap_map_complete: bool = False
+    target_boundary_frozen: bool = False
+    test_now_complete: bool = False
+    consolidated_acceptance_emitted: bool = False
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 Sha256Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -228,6 +262,33 @@ class RuntimeStateStore(Protocol):
         runtime_task_id: str,
     ) -> IdentityAuthoritySelection: ...
 
+    def record_writer_capability(
+        self, record: WriterCapabilityRecord
+    ) -> WriterCapabilityRecord: ...
+
+    def load_writer_capability(
+        self,
+        *,
+        actor: str,
+        writer_surface: str,
+        repository: str,
+        operation_family: str,
+        auth_context_id: str,
+        capability_epoch: str,
+    ) -> WriterCapabilityRecord: ...
+
+    def record_problem_escape(
+        self, problem_signature: str, *, alternate_path: bool = False
+    ) -> ProblemConvergenceState: ...
+
+    def load_problem_convergence(
+        self, problem_signature: str
+    ) -> ProblemConvergenceState: ...
+
+    def update_problem_convergence(
+        self, state: ProblemConvergenceState
+    ) -> ProblemConvergenceState: ...
+
 
 class RuntimeStateError(RuntimeError):
     """Base error for durable runtime state operations."""
@@ -325,9 +386,202 @@ class SQLiteRuntimeStateStore:
             for name in ("active_attempt_id", "last_terminal_result_id", "last_terminal_status"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE image_attempt_budget ADD COLUMN {name} TEXT NULL")
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS engineering_writer_capability (
+                actor TEXT NOT NULL, writer_surface TEXT NOT NULL,
+                repository TEXT NOT NULL, operation_family TEXT NOT NULL,
+                auth_context_id TEXT NOT NULL, capability_epoch TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (
+                    actor, writer_surface, repository, operation_family,
+                    auth_context_id, capability_epoch
+                ))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS engineering_problem_convergence (
+                problem_signature TEXT PRIMARY KEY, payload TEXT NOT NULL)"""
+            )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
+
+    def record_writer_capability(
+        self, record: WriterCapabilityRecord
+    ) -> WriterCapabilityRecord:
+        payload = json.dumps(record.model_dump(mode="json"))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """SELECT payload FROM engineering_writer_capability
+                WHERE actor=? AND writer_surface=? AND repository=?
+                AND operation_family=? AND auth_context_id=? AND capability_epoch=?""",
+                (
+                    record.actor,
+                    record.writer_surface,
+                    record.repository,
+                    record.operation_family,
+                    record.auth_context_id,
+                    record.capability_epoch,
+                ),
+            ).fetchone()
+            family_hard_deny = connection.execute(
+                """SELECT payload FROM engineering_writer_capability
+                WHERE actor=? AND repository=? AND operation_family=?
+                AND auth_context_id=? AND capability_epoch=?""",
+                (
+                    record.actor,
+                    record.repository,
+                    record.operation_family,
+                    record.auth_context_id,
+                    record.capability_epoch,
+                ),
+            ).fetchall()
+            if record.state is not WriterCapabilityState.HARD_DENY and any(
+                WriterCapabilityRecord.model_validate_json(row[0]).state
+                is WriterCapabilityState.HARD_DENY
+                for row in family_hard_deny
+            ):
+                raise RuntimeStateError(
+                    "WRITER_HARD_DENY_REQUIRES_CAPABILITY_EPOCH_CHANGE"
+                )
+            if existing is not None:
+                prior = WriterCapabilityRecord.model_validate_json(existing[0])
+                if (
+                    prior.state is WriterCapabilityState.HARD_DENY
+                    and record.state is not WriterCapabilityState.HARD_DENY
+                ):
+                    raise RuntimeStateError(
+                        "WRITER_HARD_DENY_REQUIRES_CAPABILITY_EPOCH_CHANGE"
+                    )
+            connection.execute(
+                """INSERT INTO engineering_writer_capability (
+                actor, writer_surface, repository, operation_family,
+                auth_context_id, capability_epoch, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (
+                    actor, writer_surface, repository, operation_family,
+                    auth_context_id, capability_epoch
+                ) DO UPDATE SET payload=excluded.payload""",
+                (
+                    record.actor,
+                    record.writer_surface,
+                    record.repository,
+                    record.operation_family,
+                    record.auth_context_id,
+                    record.capability_epoch,
+                    payload,
+                ),
+            )
+        return record
+
+    def load_writer_capability(
+        self,
+        *,
+        actor: str,
+        writer_surface: str,
+        repository: str,
+        operation_family: str,
+        auth_context_id: str,
+        capability_epoch: str,
+    ) -> WriterCapabilityRecord:
+        with self._connect() as connection:
+            family_rows = connection.execute(
+                """SELECT payload FROM engineering_writer_capability
+                WHERE actor=? AND repository=? AND operation_family=?
+                AND auth_context_id=? AND capability_epoch=?""",
+                (
+                    actor,
+                    repository,
+                    operation_family,
+                    auth_context_id,
+                    capability_epoch,
+                ),
+            ).fetchall()
+            for family_row in family_rows:
+                family_record = WriterCapabilityRecord.model_validate_json(
+                    family_row[0]
+                )
+                if family_record.state is WriterCapabilityState.HARD_DENY:
+                    return family_record
+            row = connection.execute(
+                """SELECT payload FROM engineering_writer_capability
+                WHERE actor=? AND writer_surface=? AND repository=?
+                AND operation_family=? AND auth_context_id=? AND capability_epoch=?""",
+                (
+                    actor,
+                    writer_surface,
+                    repository,
+                    operation_family,
+                    auth_context_id,
+                    capability_epoch,
+                ),
+            ).fetchone()
+        if row is None:
+            raise RuntimeStateNotFound("writer capability attestation not found")
+        return WriterCapabilityRecord.model_validate_json(row[0])
+
+    def record_problem_escape(
+        self, problem_signature: str, *, alternate_path: bool = False
+    ) -> ProblemConvergenceState:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT payload FROM engineering_problem_convergence
+                WHERE problem_signature=?""",
+                (problem_signature,),
+            ).fetchone()
+            current = (
+                ProblemConvergenceState.model_validate_json(row[0])
+                if row is not None
+                else ProblemConvergenceState(problem_signature=problem_signature)
+            )
+            escape_count = current.escape_count + 1
+            updated = current.model_copy(
+                update={
+                    "escape_count": escape_count,
+                    "alternate_path_seen": current.alternate_path_seen or alternate_path,
+                    "microfix_frozen": (
+                        current.microfix_frozen or escape_count >= 2 or alternate_path
+                    ),
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            connection.execute(
+                """INSERT INTO engineering_problem_convergence (
+                problem_signature, payload) VALUES (?, ?)
+                ON CONFLICT(problem_signature) DO UPDATE SET payload=excluded.payload""",
+                (problem_signature, json.dumps(updated.model_dump(mode="json"))),
+            )
+        return updated
+
+    def load_problem_convergence(
+        self, problem_signature: str
+    ) -> ProblemConvergenceState:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT payload FROM engineering_problem_convergence
+                WHERE problem_signature=?""",
+                (problem_signature,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeStateNotFound("problem convergence state not found")
+        return ProblemConvergenceState.model_validate_json(row[0])
+
+    def update_problem_convergence(
+        self, state: ProblemConvergenceState
+    ) -> ProblemConvergenceState:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE engineering_problem_convergence SET payload=?
+                WHERE problem_signature=?""",
+                (
+                    json.dumps(state.model_dump(mode="json")),
+                    state.problem_signature,
+                ),
+            )
+        if cursor.rowcount != 1:
+            raise RuntimeStateNotFound("problem convergence state not found")
+        return state
 
     def create_identity_authority_selection(
         self, selection: IdentityAuthoritySelection
