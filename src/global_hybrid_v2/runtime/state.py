@@ -38,6 +38,12 @@ class IdentitySelectionLifecycle(StrEnum):
     REVOKED = "REVOKED"
 
 
+class IdentitySecondaryRole(StrEnum):
+    BODY = "BODY"
+    TATTOO = "TATTOO"
+    POSE = "POSE"
+
+
 class IdentityAuthoritySelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -45,9 +51,10 @@ class IdentityAuthoritySelection(BaseModel):
     principal_subject: str = Field(min_length=1)
     conversation_or_thread_id: str = Field(min_length=1)
     runtime_task_id: str = Field(min_length=1)
+    person_binding: str | None = None
     master_asset_id: str = Field(min_length=1)
     master_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    secondary_roles: dict[str, str] = Field(default_factory=dict)
+    secondary_roles: dict[str, IdentitySecondaryRole] = Field(default_factory=dict)
     excluded_generated_source_ids: set[str] = Field(default_factory=set)
     generative_only: bool = False
     revision: int = Field(ge=1)
@@ -56,6 +63,19 @@ class IdentityAuthoritySelection(BaseModel):
     lifecycle: IdentitySelectionLifecycle = IdentitySelectionLifecycle.ACTIVE
     server_nonce: str = Field(min_length=1)
     server_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_identity_source_schema(self) -> IdentityAuthoritySelection:
+        if self.person_binding is not None and not self.person_binding.strip():
+            raise ValueError("person_binding must not be blank")
+        if any(not asset_id.strip() for asset_id in self.secondary_roles):
+            raise ValueError("secondary role asset IDs must not be blank")
+        secondary_ids = set(self.secondary_roles)
+        if self.master_asset_id in secondary_ids:
+            raise ValueError("master asset cannot occupy a secondary role")
+        if not secondary_ids.isdisjoint(self.excluded_generated_source_ids):
+            raise ValueError("excluded generated source cannot occupy a secondary role")
+        return self
 
 
 def identity_authority_selection_digest(selection: IdentityAuthoritySelection) -> str:
@@ -67,7 +87,10 @@ def identity_authority_selection_digest(selection: IdentityAuthoritySelection) -
 
 def _decode_identity_authority_selection(payload: str) -> IdentityAuthoritySelection:
     data = json.loads(payload)
-    if "lifecycle" not in data:
+    schema_migration_required = (
+        "lifecycle" not in data or "person_binding" not in data
+    )
+    if schema_migration_required:
         stored_digest = data.get("server_digest")
         legacy_body = {
             key: value for key, value in data.items() if key != "server_digest"
@@ -81,6 +104,7 @@ def _decode_identity_authority_selection(payload: str) -> IdentityAuthoritySelec
         ).hexdigest()
         if stored_digest != legacy_digest:
             raise RuntimeStateError("IDENTITY_SELECTION_LEGACY_DIGEST_MISMATCH")
+    if "lifecycle" not in data:
         revoked = bool(data.pop("revoked", False))
         current = bool(data.pop("current", True))
         data["lifecycle"] = (
@@ -92,6 +116,8 @@ def _decode_identity_authority_selection(payload: str) -> IdentityAuthoritySelec
                 else IdentitySelectionLifecycle.SUPERSEDED
             )
         )
+    if schema_migration_required:
+        data.setdefault("person_binding", None)
         migrated = IdentityAuthoritySelection.model_validate(data)
         return migrated.model_copy(
             update={"server_digest": identity_authority_selection_digest(migrated)}

@@ -9,6 +9,7 @@ def test_rd014_stage1_server_owned_selection_round_trip_and_fail_closed(tmp_path
     principal = AuthenticatedPrincipal(subject="user-1", authentication_source="fake-test")
     issued = service.issue(
         principal=principal, conversation_or_thread_id="thread", runtime_task_id="task",
+        person_binding="person-1",
         master_asset_id="master", master_sha256="a" * 64,
         secondary_roles={"body": "BODY"}, excluded_generated_source_ids={"generated"},
         generative_only=True,

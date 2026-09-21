@@ -26,9 +26,10 @@ def _selection_args(**updates):
         "principal": _principal(),
         "conversation_or_thread_id": "thread-1",
         "runtime_task_id": "task-1",
+        "person_binding": "person-1",
         "master_asset_id": "master-1",
         "master_sha256": "a" * 64,
-        "secondary_roles": {"BODY": "body-1", "POSE": "pose-1"},
+        "secondary_roles": {"body-1": "BODY", "pose-1": "POSE"},
         "excluded_generated_source_ids": {"generated-1"},
         "generative_only": True,
     }
@@ -56,7 +57,7 @@ def _legacy_selection_payload(*, master_asset_id="master-legacy"):
         "runtime_task_id": "legacy-task",
         "master_asset_id": master_asset_id,
         "master_sha256": "c" * 64,
-        "secondary_roles": {"BODY": "legacy-body"},
+        "secondary_roles": {"legacy-body": "BODY"},
         "excluded_generated_source_ids": ["legacy-generated"],
         "generative_only": True,
         "revision": 1,
@@ -284,6 +285,7 @@ def test_valid_stage1a_legacy_selection_migrates_after_digest_validation(tmp_pat
         legacy["excluded_generated_source_ids"]
     )
     assert migrated.generative_only is True
+    assert migrated.person_binding is None
     assert migrated.lifecycle is IdentitySelectionLifecycle.ACTIVE
     assert migrated.server_digest == identity_authority_selection_digest(migrated)
 
