@@ -46,13 +46,20 @@ from global_hybrid_v2.governance.resume import ResumeGate
 from global_hybrid_v2.governance.risk import TaskRiskClassifier
 from global_hybrid_v2.governance.router import OwnerRouter
 from global_hybrid_v2.image_surface import (
+    IdentitySource,
+    IdentitySourcePacket,
+    IdentitySourceRole,
     ImageInvocationGuard,
     ImageSurfaceController,
     ImageTaskSpec,
+    _identity_packet_digest,
 )
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
+from global_hybrid_v2.runtime.identity_ingress import TrustedIdentityIngress
 from global_hybrid_v2.runtime.state import (
     CURRENT_RUNTIME_STATE_VERSION,
+    AuthenticatedPrincipal,
+    IdentityAuthoritySelection,
     RuntimeStateAlreadyExists,
     RuntimeStateError,
     RuntimeStateNotFound,
@@ -236,6 +243,70 @@ class Dispatcher:
         self.research_executor = research_executor or ResearchExecutor(UnavailableResearchPort())
         self.egress = egress or ResponseEgressValidator(
             research_available=(self.research_executor.availability is ResearchProviderAvailability.CALLABLE)
+        )
+
+    def _rehydrate_identity_source_packet(
+        self,
+        *,
+        record_id: str,
+        trusted_context: TrustedDispatchContext,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+    ) -> tuple[IdentitySourcePacket, IdentityAuthoritySelection]:
+        if self.runtime_state_store is None:
+            raise RuntimeStateError("IDENTITY_SELECTION_RUNTIME_STORE_REQUIRED")
+        selection = TrustedIdentityIngress(self.runtime_state_store).verify(
+            record_id=record_id,
+            principal=AuthenticatedPrincipal(
+                subject=trusted_context.principal_subject,
+                authentication_source=trusted_context.authentication_source,
+            ),
+            conversation_or_thread_id=conversation_or_thread_id,
+            runtime_task_id=runtime_task_id,
+        )
+        if selection.person_binding is None or set(selection.secondary_roles) != set(
+            selection.secondary_sha256
+        ):
+            raise RuntimeStateError("IDENTITY_SELECTION_REHYDRATION_INCOMPLETE")
+        sources = [
+            IdentitySource(
+                asset_id=selection.master_asset_id,
+                sha256=selection.master_sha256,
+                role=IdentitySourceRole.ORIGINAL_REAL_MASTER,
+                generated=False,
+            ),
+            *[
+                IdentitySource(
+                    asset_id=asset_id,
+                    sha256=selection.secondary_sha256[asset_id],
+                    role=IdentitySourceRole(role.value),
+                    generated=False,
+                )
+                for asset_id, role in sorted(selection.secondary_roles.items())
+            ],
+        ]
+        draft = IdentitySourcePacket.model_construct(
+            task_binding=selection.runtime_task_id,
+            person_binding=selection.person_binding,
+            version=(
+                f"identity-selection:{selection.record_id}:"
+                f"revision:{selection.revision}:{selection.server_digest}"
+            ),
+            packet_digest="0" * 64,
+            identity_critical=True,
+            generative_only=selection.generative_only,
+            sources=sources,
+            excluded_generated_source_ids=selection.excluded_generated_source_ids,
+            request_lineage_required=True,
+        )
+        return (
+            IdentitySourcePacket.model_validate(
+                {
+                    **draft.model_dump(mode="json"),
+                    "packet_digest": _identity_packet_digest(draft),
+                }
+            ),
+            selection,
         )
 
     def dispatch(
@@ -663,6 +734,21 @@ class Dispatcher:
             },
         )
 
+        if request.image_task is not None:
+            trusted_identity_path = bool(
+                request.image_task.get("identity_trusted_ingress_required")
+                or request.identity_selection_record_id
+            )
+            if trusted_identity_path and (
+                request.image_task.get("identity_source_packet") is not None
+                or request.image_task.get("controlled_request_input_lineage") is not None
+            ):
+                return DomainResult(
+                    owner=owner,
+                    status="IDENTITY_DIRECT_AUTHORITY_BYPASS_BLOCKED",
+                    evidence={"image_dispatch": "BLOCK", "blocker": "direct-authority"},
+                )
+
         # Protected image permits are a durable execution boundary, so reject a
         # missing binding before any later admission path can reach the port.
         if request.image_task is not None:
@@ -781,11 +867,68 @@ class Dispatcher:
             if owner is not Owner.EXECUTION or EffectType.IMAGE_GENERATE not in request.effects:
                 raise RuntimeError("image task requires EXECUTION owner and IMAGE_GENERATE effect")
             image_spec = ImageTaskSpec.model_validate(request.image_task)
-            if image_spec.identity_trusted_ingress_required and trusted_context is None:
+            trusted_identity_path = bool(
+                image_spec.identity_trusted_ingress_required
+                or request.identity_selection_record_id
+            )
+            if trusted_identity_path:
+                if trusted_context is None:
+                    return DomainResult(
+                        owner=owner,
+                        status="IDENTITY_TRUSTED_CONTEXT_REQUIRED",
+                        evidence={"image_dispatch": "BLOCK", "blocker": "trusted-context"},
+                    )
+                if request.identity_selection_record_id is None:
+                    return DomainResult(
+                        owner=owner,
+                        status="IDENTITY_SELECTION_REFERENCE_REQUIRED",
+                        evidence={"image_dispatch": "BLOCK", "blocker": "selection-reference"},
+                    )
+                if (
+                    self.runtime_state_store is None
+                    or not request.conversation_or_thread_id
+                    or not request.runtime_task_id
+                ):
+                    return DomainResult(
+                        owner=owner,
+                        status="IDENTITY_SELECTION_RUNTIME_BINDING_REQUIRED",
+                        evidence={"image_dispatch": "BLOCK", "blocker": "runtime-binding"},
+                    )
+                try:
+                    identity_packet, selection = self._rehydrate_identity_source_packet(
+                        record_id=request.identity_selection_record_id,
+                        trusted_context=trusted_context,
+                        conversation_or_thread_id=request.conversation_or_thread_id,
+                        runtime_task_id=request.runtime_task_id,
+                    )
+                except Exception as exc:
+                    blocker = (
+                        "IDENTITY_SELECTION_REHYDRATION_BLOCKED"
+                        if str(exc) == "IDENTITY_SELECTION_REHYDRATION_INCOMPLETE"
+                        else "IDENTITY_SELECTION_VERIFICATION_BLOCKED"
+                    )
+                    return DomainResult(
+                        owner=owner,
+                        status=blocker,
+                        evidence={
+                            "image_dispatch": "BLOCK",
+                            "blocker": type(exc).__name__,
+                        },
+                    )
+                packet_data = identity_packet.model_dump(mode="json")
                 return DomainResult(
                     owner=owner,
-                    status="IDENTITY_TRUSTED_CONTEXT_REQUIRED",
-                    evidence={"image_dispatch": "BLOCK", "blocker": "trusted-context"},
+                    status="IDENTITY_REFERENCE_TRANSPORT_REQUIRED",
+                    output={"state": "IDENTITY_REFERENCE_TRANSPORT_REQUIRED"},
+                    evidence={
+                        "identity_source_packet": packet_data,
+                        "identity_selection_receipt": {
+                            "record_id": selection.record_id,
+                            "revision": selection.revision,
+                            "server_digest": selection.server_digest,
+                        },
+                        "request_input_bound": False,
+                    },
                 )
             image_guard = None
             if image_spec.side_effect_budget is not None:

@@ -21,8 +21,8 @@ def test_stage1a_requires_python_only_trusted_context_before_port():
     result = _dispatcher(port).dispatch(
         request, trusted_context=TrustedDispatchContext("fake-user", "fake-test")
     )
-    assert result.status == "PASS"
-    assert port.calls == 1
+    assert result.status == "IDENTITY_SELECTION_REFERENCE_REQUIRED"
+    assert port.calls == 0
 
 
 def test_stage1a_ordinary_image_remains_compatible():

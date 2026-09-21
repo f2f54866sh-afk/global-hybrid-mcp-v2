@@ -376,6 +376,7 @@ class TaskRequest(BaseModel):
     runtime_state_initialize: bool = False
     conversation_or_thread_id: str | None = Field(default=None, min_length=1)
     runtime_task_id: str | None = Field(default=None, min_length=1)
+    identity_selection_record_id: str | None = Field(default=None, min_length=1)
 
 
 class AuthorityDocument(BaseModel):
