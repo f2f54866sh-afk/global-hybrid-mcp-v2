@@ -3,18 +3,28 @@ import json
 import sqlite3
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from global_hybrid_v2.governance.engineering_execution import (
     REQUIRED_DOWNGRADE_MATRIX,
+    ArchitectureResearchEvidencePort,
     BoundaryMap,
     EngineeringActor,
     EngineeringExecutionGovernor,
     EngineeringOperationFamily,
     EngineeringRoute,
     EvidenceProducerClass,
-    TrustedEngineeringEvidenceIssuer,
-    TrustedEvidenceProducerContext,
+    EvidenceReceiptKind,
+    ExecutionEvidencePort,
+    GovernanceEvidencePort,
+    VerifierEvidencePort,
     WriterAdmission,
+    WriterCapabilityAttestation,
+    WriterCapabilityEvidencePort,
+)
+from global_hybrid_v2.governance.engineering_execution import (
+    TestMatrixEvidencePort as _TestMatrixEvidencePort,
 )
 from global_hybrid_v2.runtime.state import (
     RuntimeStateError,
@@ -30,6 +40,27 @@ MUTATIONS = [
     "create_blob", "update_file", "create_tree", "create_commit", "update_ref",
     "pr_mutation", "legacy_mutation", "alternate_connector_mutation", "commit", "push",
 ]
+
+_PORT_CLASSES = {
+    EvidenceProducerClass.SEARCH_EXECUTOR: ArchitectureResearchEvidencePort,
+    EvidenceProducerClass.GOVERNANCE_ENGINE: GovernanceEvidencePort,
+    EvidenceProducerClass.TEST_MATRIX_COMPILER: _TestMatrixEvidencePort,
+    EvidenceProducerClass.TOOL_BROKER: WriterCapabilityEvidencePort,
+    EvidenceProducerClass.AUTH_RUNTIME: WriterCapabilityEvidencePort,
+    EvidenceProducerClass.EXECUTION_ADAPTER: ExecutionEvidencePort,
+    EvidenceProducerClass.VERIFIER: VerifierEvidencePort,
+}
+_KEYS = {producer: Ed25519PrivateKey.generate() for producer in _PORT_CLASSES}
+_IDENTITIES = {
+    producer: f"trusted-{producer.value.lower()}" for producer in _PORT_CLASSES
+}
+_VERIFIERS = {
+    _IDENTITIES[producer]: key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    for producer, key in _KEYS.items()
+}
 
 
 class _Writer:
@@ -50,17 +81,21 @@ class _Selector:
         return self.writer
 
 
-def _context(producer_class):
-    return TrustedEvidenceProducerContext._from_trusted_runtime(
-        producer_identity=f"trusted-{producer_class.value.lower()}",
-        producer_class=producer_class,
+def _store(path):
+    return SQLiteRuntimeStateStore(
+        path, engineering_evidence_verifiers=_VERIFIERS
     )
 
 
 def _issuer(store, producer_class):
-    return TrustedEngineeringEvidenceIssuer(
-        store, trusted_context=_context(producer_class)
-    )
+    port_class = _PORT_CLASSES[producer_class]
+    kwargs = {
+        "producer_identity": _IDENTITIES[producer_class],
+        "signing_key": _KEYS[producer_class],
+    }
+    if port_class is WriterCapabilityEvidencePort:
+        kwargs["producer_class"] = producer_class
+    return port_class(store, **kwargs)
 
 
 def _admission(**updates):
@@ -104,7 +139,7 @@ def _prepare_primary(store, problem="ROOT", boundary=None):
     governance = _issuer(store, EvidenceProducerClass.GOVERNANCE_ENGINE)
     matrix = _issuer(store, EvidenceProducerClass.TEST_MATRIX_COMPILER)
     execution = _issuer(store, EvidenceProducerClass.EXECUTION_ADAPTER)
-    research_receipt = research.issue_architecture_research(
+    research_receipt = research.issue_research(
         authoritative_sources=["NIST", "OWASP", "RFC9110"],
         **_binding(problem, "research-1"),
     )
@@ -135,7 +170,7 @@ def _prepare_primary(store, problem="ROOT", boundary=None):
         matrix_receipt.receipt_id,
         problem_signature=problem, repository=REPOSITORY, capability_epoch=EPOCH,
     )
-    origin = execution.issue_evidence_origin(
+    origin = execution.issue_execution_evidence(
         evidence_name="execution-boundary-map",
         execution_binding=problem,
         **_binding(problem, "execution-1"),
@@ -145,7 +180,7 @@ def _prepare_primary(store, problem="ROOT", boundary=None):
 
 @pytest.mark.parametrize("operation", MUTATIONS)
 def test_authoring_routes_before_writer_selection(tmp_path, operation):
-    governor = EngineeringExecutionGovernor(SQLiteRuntimeStateStore(tmp_path / "db"))
+    governor = EngineeringExecutionGovernor(_store(tmp_path / "db"))
     writer = _Writer()
     selector = _Selector(writer)
     decision = governor.execute_repository_operation(
@@ -160,7 +195,7 @@ def test_authoring_routes_before_writer_selection(tmp_path, operation):
 
 
 def test_ordinary_authoring_read_path_is_unchanged(tmp_path):
-    governor = EngineeringExecutionGovernor(SQLiteRuntimeStateStore(tmp_path / "db"))
+    governor = EngineeringExecutionGovernor(_store(tmp_path / "db"))
     assert governor.admit(
         _admission(
             actor=EngineeringActor.AUTHORING_ENGINEERING,
@@ -170,7 +205,7 @@ def test_ordinary_authoring_read_path_is_unchanged(tmp_path):
 
 
 def test_unknown_writer_capability_never_selects_writer(tmp_path):
-    governor = EngineeringExecutionGovernor(SQLiteRuntimeStateStore(tmp_path / "db"))
+    governor = EngineeringExecutionGovernor(_store(tmp_path / "db"))
     writer = _Writer()
     selector = _Selector(writer)
     decision = governor.execute_repository_operation(
@@ -180,12 +215,86 @@ def test_unknown_writer_capability_never_selects_writer(tmp_path):
     assert selector.calls == writer.calls == 0
 
 
-def test_caller_cannot_construct_trusted_producer_context():
-    with pytest.raises(PermissionError, match="CONTEXT_REQUIRED"):
-        TrustedEvidenceProducerContext(
-            producer_identity="caller-says-tool-broker",
-            producer_class=EvidenceProducerClass.TOOL_BROKER,
-            _marker=object(),
+def test_general_state_store_has_zero_receipt_issuance_authority(tmp_path):
+    store = SQLiteRuntimeStateStore(tmp_path / "ordinary.db")
+    assert not hasattr(store, "issue_engineering_evidence_receipt")
+    with pytest.raises(RuntimeStateError, match="ISSUER_UNTRUSTED"):
+        store.persist_engineering_evidence_receipt(
+            {
+                "receipt_id": "caller-id",
+                "receipt_kind": "ARCHITECTURE_RESEARCH",
+                "producer_identity": "caller",
+                "producer_class": "SEARCH_EXECUTOR",
+                "problem_signature": "ROOT",
+                "repository": REPOSITORY,
+                "capability_epoch": EPOCH,
+                "revision": 1,
+                "evidence_reference": "caller",
+                "issued_at": "2026-09-21T00:00:00+00:00",
+                "integrity_signature": "00" * 64,
+            }
+        )
+
+
+def test_verifier_registry_is_composition_owned_and_sealed(tmp_path):
+    empty_path = tmp_path / "ordinary.db"
+    SQLiteRuntimeStateStore(empty_path)
+    with pytest.raises(RuntimeStateError, match="REGISTRY_SEALED"):
+        _store(empty_path)
+
+    trusted_path = tmp_path / "trusted.db"
+    _store(trusted_path)
+    attacker_verifiers = dict(_VERIFIERS)
+    attacker_verifiers[_IDENTITIES[EvidenceProducerClass.SEARCH_EXECUTOR]] = (
+        Ed25519PrivateKey.generate().public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    with pytest.raises(RuntimeStateError, match="REGISTRY_SEALED"):
+        SQLiteRuntimeStateStore(
+            trusted_path,
+            engineering_evidence_verifiers=attacker_verifiers,
+        )
+
+
+def test_caller_generated_signing_key_cannot_impersonate_producer(tmp_path):
+    store = _store(tmp_path / "db")
+    attacker = ArchitectureResearchEvidencePort(
+        store,
+        producer_identity=_IDENTITIES[EvidenceProducerClass.SEARCH_EXECUTOR],
+        signing_key=Ed25519PrivateKey.generate(),
+    )
+    with pytest.raises(RuntimeStateError, match="INTEGRITY_MISMATCH"):
+        attacker.issue_research(
+            authoritative_sources=["NIST", "OWASP", "RFC9110"],
+            **_binding("ROOT", "attacker"),
+        )
+
+
+def test_producer_specific_ports_cannot_cross_issue(tmp_path):
+    store = _store(tmp_path / "db")
+    search = _issuer(store, EvidenceProducerClass.SEARCH_EXECUTOR)
+    broker = _issuer(store, EvidenceProducerClass.TOOL_BROKER)
+    governance = _issuer(store, EvidenceProducerClass.GOVERNANCE_ENGINE)
+    assert not hasattr(search, "issue_writer_capability")
+    assert not hasattr(broker, "issue_research")
+    assert not hasattr(governance, "issue_execution_evidence")
+    with pytest.raises(RuntimeStateError, match="PRODUCER_KIND_MISMATCH"):
+        search._issue(
+            EvidenceReceiptKind.WRITER_CAPABILITY,
+            problem_signature="ROOT",
+            repository=REPOSITORY,
+            capability_epoch=EPOCH,
+            evidence_reference="private-method-is-not-authority",
+            details={
+                "actor": EngineeringActor.ENGINEER.value,
+                "writer_surface": "github-app",
+                "auth_context_id": "auth-1",
+                "operation_family": "REPOSITORY_MUTATION",
+                "capability_state": "PROVEN",
+            },
+            model=WriterCapabilityAttestation,
         )
 
 
@@ -203,7 +312,7 @@ def test_primary_api_has_no_caller_completion_booleans():
 
 
 def test_no_research_receipt_blocks_primary_implementation(tmp_path):
-    governor = EngineeringExecutionGovernor(SQLiteRuntimeStateStore(tmp_path / "db"))
+    governor = EngineeringExecutionGovernor(_store(tmp_path / "db"))
     governor.register_escape("NO-RESEARCH")
     decision = governor.admit_primary_implementation(
         problem_signature="NO-RESEARCH", repository=REPOSITORY,
@@ -215,7 +324,7 @@ def test_no_research_receipt_blocks_primary_implementation(tmp_path):
 
 
 def test_positive_trusted_receipt_path(tmp_path):
-    store = SQLiteRuntimeStateStore(tmp_path / "db")
+    store = _store(tmp_path / "db")
     governor, boundary, origin = _prepare_primary(store)
     decision = governor.admit_primary_implementation(
         problem_signature="ROOT", repository=REPOSITORY, capability_epoch=EPOCH,
@@ -228,7 +337,7 @@ def test_positive_trusted_receipt_path(tmp_path):
 
 def test_empty_evidence_list_is_capability_debt(tmp_path):
     governor, boundary, _ = _prepare_primary(
-        SQLiteRuntimeStateStore(tmp_path / "db")
+        _store(tmp_path / "db")
     )
     decision = governor.admit_primary_implementation(
         problem_signature="ROOT", repository=REPOSITORY, capability_epoch=EPOCH,
@@ -241,7 +350,7 @@ def test_empty_evidence_list_is_capability_debt(tmp_path):
 
 
 def test_caller_produced_downstream_evidence_is_rejected(tmp_path):
-    store = SQLiteRuntimeStateStore(tmp_path / "db")
+    store = _store(tmp_path / "db")
     governor, boundary, _ = _prepare_primary(store)
     decision = governor.admit_primary_implementation(
         problem_signature="ROOT", repository=REPOSITORY, capability_epoch=EPOCH,
@@ -254,12 +363,12 @@ def test_caller_produced_downstream_evidence_is_rejected(tmp_path):
 
 def test_forged_research_receipt_integrity_fails(tmp_path):
     path = tmp_path / "db"
-    store = SQLiteRuntimeStateStore(path)
+    store = _store(path)
     governor = EngineeringExecutionGovernor(store)
     governor.register_escape("FORGED")
     receipt = _issuer(
         store, EvidenceProducerClass.SEARCH_EXECUTOR
-    ).issue_architecture_research(
+    ).issue_research(
         authoritative_sources=["NIST", "OWASP", "RFC9110"],
         **_binding("FORGED", "research"),
     )
@@ -281,15 +390,15 @@ def test_forged_research_receipt_integrity_fails(tmp_path):
 
 
 def test_wrong_problem_binding_and_stale_research_are_rejected(tmp_path):
-    store = SQLiteRuntimeStateStore(tmp_path / "db")
+    store = _store(tmp_path / "db")
     governor = EngineeringExecutionGovernor(store)
     governor.register_escape("ROOT")
     issuer = _issuer(store, EvidenceProducerClass.SEARCH_EXECUTOR)
-    old = issuer.issue_architecture_research(
+    old = issuer.issue_research(
         authoritative_sources=["NIST", "OWASP", "RFC9110"],
         **_binding("ROOT", "old"),
     )
-    issuer.issue_architecture_research(
+    issuer.issue_research(
         authoritative_sources=["NIST", "OWASP", "Kubernetes"],
         **_binding("ROOT", "new"),
     )
@@ -298,7 +407,7 @@ def test_wrong_problem_binding_and_stale_research_are_rejected(tmp_path):
             old.receipt_id, problem_signature="ROOT",
             repository=REPOSITORY, capability_epoch=EPOCH,
         )
-    wrong = issuer.issue_architecture_research(
+    wrong = issuer.issue_research(
         authoritative_sources=["NIST", "OWASP", "RFC9110"],
         **_binding("OTHER", "wrong"),
     )
@@ -310,7 +419,7 @@ def test_wrong_problem_binding_and_stale_research_are_rejected(tmp_path):
 
 
 def test_writer_attestation_is_trusted_bound_and_single_use(tmp_path):
-    store = SQLiteRuntimeStateStore(tmp_path / "db")
+    store = _store(tmp_path / "db")
     governor = EngineeringExecutionGovernor(store)
     admission = _admission()
     attestation = _issuer(
@@ -333,7 +442,7 @@ def test_writer_attestation_is_trusted_bound_and_single_use(tmp_path):
     ],
 )
 def test_writer_attestation_wrong_binding_is_rejected(tmp_path, change):
-    store = SQLiteRuntimeStateStore(tmp_path / "db")
+    store = _store(tmp_path / "db")
     original = _admission()
     receipt = _issuer(
         store, EvidenceProducerClass.AUTH_RUNTIME
@@ -345,7 +454,7 @@ def test_writer_attestation_wrong_binding_is_rejected(tmp_path, change):
 
 
 def test_forged_writer_attestation_and_direct_record_do_not_admit(tmp_path):
-    store = SQLiteRuntimeStateStore(tmp_path / "db")
+    store = _store(tmp_path / "db")
     governor = EngineeringExecutionGovernor(store)
     with pytest.raises(RuntimeStateNotFound):
         governor.attest_writer_capability("forged", admission=_admission())
@@ -364,13 +473,19 @@ def test_forged_writer_attestation_and_direct_record_do_not_admit(tmp_path):
 
 def test_hard_deny_is_family_sticky_across_reopen_and_alternate_path(tmp_path):
     path = tmp_path / "db"
-    store = SQLiteRuntimeStateStore(path)
-    context = _context(EvidenceProducerClass.AUTH_RUNTIME)
-    EngineeringExecutionGovernor(store).record_writer_failure(
-        _admission(), error="Resource not accessible by integration",
-        trusted_context=context, evidence_reference="deny-1",
+    store = _store(path)
+    admission = _admission()
+    receipt = _issuer(
+        store, EvidenceProducerClass.AUTH_RUNTIME
+    ).issue_writer_capability(
+        admission,
+        state=WriterCapabilityState.HARD_DENY,
+        evidence_reference="deny-1",
     )
-    reopened = EngineeringExecutionGovernor(SQLiteRuntimeStateStore(path))
+    EngineeringExecutionGovernor(store).attest_writer_capability(
+        receipt.receipt_id, admission=admission
+    )
+    reopened = EngineeringExecutionGovernor(_store(path))
     alternate = _admission(
         writer_surface="legacy-connector", operation="alternate_connector_mutation"
     )
@@ -385,9 +500,9 @@ def test_hard_deny_is_family_sticky_across_reopen_and_alternate_path(tmp_path):
 
 def test_receipt_derived_convergence_survives_reopen(tmp_path):
     path = tmp_path / "db"
-    governor, boundary, origin = _prepare_primary(SQLiteRuntimeStateStore(path))
+    governor, boundary, origin = _prepare_primary(_store(path))
     del governor
-    reopened = EngineeringExecutionGovernor(SQLiteRuntimeStateStore(path))
+    reopened = EngineeringExecutionGovernor(_store(path))
     decision = reopened.admit_primary_implementation(
         problem_signature="ROOT", repository=REPOSITORY, capability_epoch=EPOCH,
         change_scope="BOUNDARY", boundary_map=boundary,
@@ -398,14 +513,14 @@ def test_receipt_derived_convergence_survives_reopen(tmp_path):
 
 
 def test_repeat_escape_and_alternate_path_freeze_microfix(tmp_path):
-    governor = EngineeringExecutionGovernor(SQLiteRuntimeStateStore(tmp_path / "db"))
+    governor = EngineeringExecutionGovernor(_store(tmp_path / "db"))
     governor.register_escape("REPEAT")
     assert governor.register_escape("REPEAT").microfix_frozen
     assert governor.register_escape("ALTERNATE", alternate_path=True).microfix_frozen
 
 
 def test_incomplete_matrix_and_port_contract_block(tmp_path):
-    store = SQLiteRuntimeStateStore(tmp_path / "db")
+    store = _store(tmp_path / "db")
     governor, boundary, origin = _prepare_primary(store)
     incomplete = set(REQUIRED_DOWNGRADE_MATRIX) - {"restart_reopen"}
     decision = governor.admit_primary_implementation(
@@ -416,7 +531,7 @@ def test_incomplete_matrix_and_port_contract_block(tmp_path):
     )
     assert decision.status == "COMPLETE_MATRIX_BEFORE_PRIMARY_WRITE"
     debt_governor, unsupported, evidence = _prepare_primary(
-        SQLiteRuntimeStateStore(tmp_path / "debt.db"),
+        _store(tmp_path / "debt.db"),
         problem="DEBT", boundary=_boundary(False),
     )
     debt = debt_governor.admit_primary_implementation(
@@ -429,12 +544,15 @@ def test_incomplete_matrix_and_port_contract_block(tmp_path):
 
 
 def test_policy_and_receipt_types_are_runtime_consumed(tmp_path):
-    governor = EngineeringExecutionGovernor(SQLiteRuntimeStateStore(tmp_path / "db"))
+    governor = EngineeringExecutionGovernor(_store(tmp_path / "db"))
     assert {
         "MANDATORY_EXTERNAL_ARCHITECTURE_SEARCH_BEFORE_WRITE",
         "CALLER_ASSERTION_NOT_TRUSTED_EVIDENCE",
         "EVIDENCE_PRODUCER_OWNERSHIP",
         "CLIENT_DOWNGRADE_INVARIANT",
         "UNATTESTED_EVIDENCE_DENY",
+        "STATE_STORE_ACCESS_NOT_RECEIPT_ISSUER_ACCESS",
+        "PRODUCER_SPECIFIC_SIGNING_AUTHORITY",
+        "GOVERNOR_CONSUMES_EVIDENCE_ONLY",
     } <= set(governor.policy.invariants)
     assert set(governor.policy.required_downgrade_matrix) == REQUIRED_DOWNGRADE_MATRIX

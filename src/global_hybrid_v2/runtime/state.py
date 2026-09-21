@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
-import secrets
 import sqlite3
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Protocol
 from uuid import uuid4
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CURRENT_RUNTIME_STATE_VERSION = 1
@@ -292,7 +293,16 @@ class RuntimeStateStore(Protocol):
         self, state: ProblemConvergenceState
     ) -> ProblemConvergenceState: ...
 
-    def issue_engineering_evidence_receipt(
+    def next_engineering_evidence_revision(
+        self,
+        *,
+        receipt_kind: str,
+        problem_signature: str,
+        repository: str,
+        capability_epoch: str,
+    ) -> int: ...
+
+    def persist_engineering_evidence_receipt(
         self, payload: dict[str, object]
     ) -> dict[str, object]: ...
 
@@ -326,8 +336,14 @@ class RuntimeStateVersionError(RuntimeStateError):
 class SQLiteRuntimeStateStore:
     """SQLite-backed state store keyed by (conversation_or_thread_id, task_id)."""
 
-    def __init__(self, path: str | Path):
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        engineering_evidence_verifiers: Mapping[str, bytes] | None = None,
+    ):
         self.path = Path(path)
+        configured_verifiers = dict(engineering_evidence_verifiers or {})
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute(
@@ -419,15 +435,6 @@ class SQLiteRuntimeStateStore:
                 problem_signature TEXT PRIMARY KEY, payload TEXT NOT NULL)"""
             )
             connection.execute(
-                """CREATE TABLE IF NOT EXISTS engineering_evidence_secret (
-                singleton INTEGER PRIMARY KEY CHECK(singleton=1), secret TEXT NOT NULL)"""
-            )
-            connection.execute(
-                """INSERT OR IGNORE INTO engineering_evidence_secret (singleton, secret)
-                VALUES (1, ?)""",
-                (secrets.token_hex(32),),
-            )
-            connection.execute(
                 """CREATE TABLE IF NOT EXISTS engineering_evidence_receipt (
                 receipt_id TEXT PRIMARY KEY, receipt_kind TEXT NOT NULL,
                 problem_signature TEXT NOT NULL, repository TEXT NOT NULL,
@@ -443,35 +450,121 @@ class SQLiteRuntimeStateStore:
                     receipt_kind, problem_signature, repository, capability_epoch
                 ))"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS engineering_evidence_verifier (
+                producer_identity TEXT PRIMARY KEY, public_key BLOB NOT NULL)"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS engineering_evidence_registry (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), sealed INTEGER NOT NULL)"""
+            )
+            registry = connection.execute(
+                "SELECT sealed FROM engineering_evidence_registry WHERE singleton=1"
+            ).fetchone()
+            if registry is None:
+                for identity, public_key in configured_verifiers.items():
+                    connection.execute(
+                        """INSERT INTO engineering_evidence_verifier (
+                        producer_identity, public_key) VALUES (?, ?)""",
+                        (identity, public_key),
+                    )
+                connection.execute(
+                    "INSERT INTO engineering_evidence_registry VALUES (1, 1)"
+                )
+            else:
+                persisted = dict(
+                    connection.execute(
+                        "SELECT producer_identity, public_key FROM engineering_evidence_verifier"
+                    ).fetchall()
+                )
+                if configured_verifiers and configured_verifiers != persisted:
+                    raise RuntimeStateError(
+                        "ENGINEERING_EVIDENCE_VERIFIER_REGISTRY_SEALED"
+                    )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
 
     @staticmethod
     def _receipt_body(payload: dict[str, object]) -> bytes:
-        body = {key: value for key, value in payload.items() if key != "integrity_digest"}
+        body = {
+            key: value
+            for key, value in payload.items()
+            if key != "integrity_signature"
+        }
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
 
-    @classmethod
-    def _receipt_digest(cls, secret: str, payload: dict[str, object]) -> str:
-        return hmac.new(
-            bytes.fromhex(secret), cls._receipt_body(payload), hashlib.sha256
-        ).hexdigest()
+    def _verify_engineering_receipt(self, payload: dict[str, object]) -> None:
+        allowed = {
+            "SEARCH_EXECUTOR": {"ARCHITECTURE_RESEARCH"},
+            "GOVERNANCE_ENGINE": {"MATERIAL_GAP", "BOUNDARY_FREEZE"},
+            "TEST_MATRIX_COMPILER": {"TEST_NOW"},
+            "TOOL_BROKER": {"WRITER_CAPABILITY"},
+            "AUTH_RUNTIME": {"WRITER_CAPABILITY"},
+            "ENGINEER_RUNTIME": {"WRITER_CAPABILITY"},
+            "EXECUTION_ADAPTER": {"EVIDENCE_ORIGIN"},
+            "VERIFIER": {"EVIDENCE_ORIGIN"},
+        }
+        producer_class = str(payload.get("producer_class", ""))
+        receipt_kind = str(payload.get("receipt_kind", ""))
+        if receipt_kind not in allowed.get(producer_class, set()):
+            raise RuntimeStateError("ENGINEERING_RECEIPT_PRODUCER_KIND_MISMATCH")
+        producer_identity = str(payload.get("producer_identity", ""))
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT public_key FROM engineering_evidence_verifier
+                WHERE producer_identity=?""",
+                (producer_identity,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeStateError("ENGINEERING_RECEIPT_ISSUER_UNTRUSTED")
+        public_key = row[0]
+        try:
+            Ed25519PublicKey.from_public_bytes(public_key).verify(
+                bytes.fromhex(str(payload.get("integrity_signature", ""))),
+                self._receipt_body(payload),
+            )
+        except (InvalidSignature, ValueError) as exc:
+            raise RuntimeStateError(
+                "TRUSTED_EVIDENCE_RECEIPT_INTEGRITY_MISMATCH"
+            ) from exc
 
-    def issue_engineering_evidence_receipt(
+    def next_engineering_evidence_revision(
+        self,
+        *,
+        receipt_kind: str,
+        problem_signature: str,
+        repository: str,
+        capability_epoch: str,
+    ) -> int:
+        with self._connect() as connection:
+            current = connection.execute(
+                """SELECT revision FROM engineering_evidence_current
+                WHERE receipt_kind=? AND problem_signature=? AND repository=?
+                AND capability_epoch=?""",
+                (receipt_kind, problem_signature, repository, capability_epoch),
+            ).fetchone()
+        return 1 if current is None else int(current[0]) + 1
+
+    def persist_engineering_evidence_receipt(
         self, payload: dict[str, object]
     ) -> dict[str, object]:
         required = {
+            "receipt_id",
             "receipt_kind",
             "producer_identity",
             "producer_class",
             "problem_signature",
             "repository",
             "capability_epoch",
+            "revision",
             "evidence_reference",
+            "issued_at",
+            "integrity_signature",
         }
         if required - payload.keys():
             raise RuntimeStateError("engineering evidence receipt is incomplete")
+        self._verify_engineering_receipt(payload)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             key = (
@@ -486,27 +579,19 @@ class SQLiteRuntimeStateStore:
                 AND capability_epoch=?""",
                 key,
             ).fetchone()
-            revision = 1 if current is None else int(current[0]) + 1
-            secret = connection.execute(
-                "SELECT secret FROM engineering_evidence_secret WHERE singleton=1"
-            ).fetchone()[0]
-            issued = {
-                **payload,
-                "receipt_id": str(uuid4()),
-                "revision": revision,
-                "issued_at": datetime.now(UTC).isoformat(),
-            }
-            issued["integrity_digest"] = self._receipt_digest(secret, issued)
-            encoded = json.dumps(issued)
+            expected_revision = 1 if current is None else int(current[0]) + 1
+            if int(payload["revision"]) != expected_revision:
+                raise RuntimeStateError("ENGINEERING_RECEIPT_REVISION_MISMATCH")
+            encoded = json.dumps(payload)
             connection.execute(
                 """INSERT INTO engineering_evidence_receipt (
                 receipt_id, receipt_kind, problem_signature, repository,
                 capability_epoch, revision, payload, consumed
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
                 (
-                    issued["receipt_id"],
+                    payload["receipt_id"],
                     *key,
-                    revision,
+                    payload["revision"],
                     encoded,
                 ),
             )
@@ -518,9 +603,9 @@ class SQLiteRuntimeStateStore:
                     receipt_kind, problem_signature, repository, capability_epoch
                 ) DO UPDATE SET receipt_id=excluded.receipt_id,
                 revision=excluded.revision""",
-                (*key, issued["receipt_id"], revision),
+                (*key, payload["receipt_id"], payload["revision"]),
             )
-        return issued
+        return payload
 
     def consume_engineering_evidence_receipt(
         self,
@@ -559,14 +644,7 @@ class SQLiteRuntimeStateStore:
             ).fetchone()
             if current != (receipt_id, payload["revision"]):
                 raise RuntimeStateError("TRUSTED_EVIDENCE_RECEIPT_STALE")
-            secret = connection.execute(
-                "SELECT secret FROM engineering_evidence_secret WHERE singleton=1"
-            ).fetchone()[0]
-            if not hmac.compare_digest(
-                str(payload.get("integrity_digest", "")),
-                self._receipt_digest(secret, payload),
-            ):
-                raise RuntimeStateError("TRUSTED_EVIDENCE_RECEIPT_INTEGRITY_MISMATCH")
+            self._verify_engineering_receipt(payload)
             connection.execute(
                 "UPDATE engineering_evidence_receipt SET consumed=1 WHERE receipt_id=?",
                 (receipt_id,),

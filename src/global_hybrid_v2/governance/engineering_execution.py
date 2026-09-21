@@ -6,11 +6,13 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from importlib import resources
 from typing import Protocol
+from uuid import uuid4
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import BaseModel, Field, model_validator
 
 from global_hybrid_v2.runtime.state import (
@@ -79,40 +81,12 @@ READ_OPERATIONS = {
     "diff_readback": EngineeringOperationFamily.DIFF_READBACK,
     "ci_read": EngineeringOperationFamily.CI_READ,
 }
-HARD_DENY_MARKERS = (
-    "403", "accessdenied", "resource not accessible by integration",
-    "missing required repository write permission",
-)
 REQUIRED_DOWNGRADE_MATRIX = {
     "positive_current_path", "ordinary_path_regression", "omission_downgrade",
     "direct_authority_injection", "forged_stale_wrong_binding",
     "alternate_legacy_path", "missing_capability", "evidence_origin_mismatch",
     "restart_reopen", "external_side_effect_cardinality",
 }
-_TRUSTED_CONTEXT_MARKER = object()
-
-
-@dataclass(frozen=True)
-class TrustedEvidenceProducerContext:
-    """Python-only producer identity supplied by trusted runtime composition."""
-
-    producer_identity: str
-    producer_class: EvidenceProducerClass
-    _marker: object
-
-    def __post_init__(self) -> None:
-        if self._marker is not _TRUSTED_CONTEXT_MARKER:
-            raise PermissionError("TRUSTED_EVIDENCE_PRODUCER_CONTEXT_REQUIRED")
-        if not self.producer_identity.strip():
-            raise ValueError("producer identity cannot be blank")
-
-    @classmethod
-    def _from_trusted_runtime(
-        cls, *, producer_identity: str, producer_class: EvidenceProducerClass
-    ) -> TrustedEvidenceProducerContext:
-        return cls(producer_identity, producer_class, _TRUSTED_CONTEXT_MARKER)
-
-
 class EngineeringExecutionPolicy(BaseModel):
     revision: str = Field(min_length=1)
     invariants: list[str] = Field(min_length=1)
@@ -163,7 +137,7 @@ class TrustedReceipt(BaseModel):
     revision: int = Field(ge=1)
     evidence_reference: str = Field(min_length=1)
     issued_at: datetime
-    integrity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    integrity_signature: str = Field(pattern=r"^[0-9a-f]{128}$")
 
 
 class ArchitectureResearchReceipt(TrustedReceipt):
@@ -226,90 +200,147 @@ class WriterAdmission:
     capability_epoch: str
 
 
-class TrustedEngineeringEvidenceIssuer:
-    """Server-owned receipt producer; caller requests cannot construct its context."""
+class _ProducerEvidencePort:
+    producer_class: EvidenceProducerClass
 
     def __init__(
-        self, store: RuntimeStateStore, *, trusted_context: TrustedEvidenceProducerContext
+        self,
+        store: RuntimeStateStore,
+        *,
+        producer_identity: str,
+        signing_key: Ed25519PrivateKey,
     ):
+        if not producer_identity.strip():
+            raise ValueError("producer identity cannot be blank")
         self.store = store
-        self.context = trusted_context
-
-    def _require(self, *allowed: EvidenceProducerClass) -> None:
-        if self.context.producer_class not in allowed:
-            raise PermissionError("EVIDENCE_PRODUCER_CLASS_NOT_AUTHORIZED")
+        self.producer_identity = producer_identity
+        self.__signing_key = signing_key
 
     def _issue(
-        self, kind: EvidenceReceiptKind, *, problem_signature: str, repository: str,
-        capability_epoch: str, evidence_reference: str,
-        details: dict[str, object], model: type[TrustedReceipt],
+        self,
+        kind: EvidenceReceiptKind,
+        *,
+        problem_signature: str,
+        repository: str,
+        capability_epoch: str,
+        evidence_reference: str,
+        details: dict[str, object],
+        model: type[TrustedReceipt],
     ) -> TrustedReceipt:
-        issued = self.store.issue_engineering_evidence_receipt({
+        revision = self.store.next_engineering_evidence_revision(
+            receipt_kind=kind.value,
+            problem_signature=problem_signature,
+            repository=repository,
+            capability_epoch=capability_epoch,
+        )
+        payload: dict[str, object] = {
+            "receipt_id": str(uuid4()),
             "receipt_kind": kind.value,
-            "producer_identity": self.context.producer_identity,
-            "producer_class": self.context.producer_class.value,
+            "producer_identity": self.producer_identity,
+            "producer_class": self.producer_class.value,
             "problem_signature": problem_signature,
             "repository": repository,
             "capability_epoch": capability_epoch,
+            "revision": revision,
             "evidence_reference": evidence_reference,
+            "issued_at": datetime.now(UTC).isoformat(),
             **details,
-        })
-        return model.model_validate(issued)
+        }
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        payload["integrity_signature"] = self.__signing_key.sign(body).hex()
+        persisted = self.store.persist_engineering_evidence_receipt(payload)
+        return model.model_validate(persisted)
 
-    def issue_architecture_research(
-        self, *, problem_signature: str, repository: str, capability_epoch: str,
-        evidence_reference: str, authoritative_sources: list[str],
+
+class ArchitectureResearchEvidencePort(_ProducerEvidencePort):
+    producer_class = EvidenceProducerClass.SEARCH_EXECUTOR
+
+    def issue_research(
+        self,
+        *,
+        problem_signature: str,
+        repository: str,
+        capability_epoch: str,
+        evidence_reference: str,
+        authoritative_sources: list[str],
     ) -> ArchitectureResearchReceipt:
-        self._require(EvidenceProducerClass.SEARCH_EXECUTOR)
         return self._issue(
             EvidenceReceiptKind.ARCHITECTURE_RESEARCH,
-            problem_signature=problem_signature, repository=repository,
-            capability_epoch=capability_epoch, evidence_reference=evidence_reference,
-            details={"authoritative_sources": authoritative_sources, "convergence_state": "PASS"},
+            problem_signature=problem_signature,
+            repository=repository,
+            capability_epoch=capability_epoch,
+            evidence_reference=evidence_reference,
+            details={
+                "authoritative_sources": authoritative_sources,
+                "convergence_state": "PASS",
+            },
             model=ArchitectureResearchReceipt,
         )
 
-    def issue_material_gap(self, *, material_gaps: list[str], **binding: object) -> MaterialGapReceipt:
-        self._require(EvidenceProducerClass.GOVERNANCE_ENGINE)
+
+class GovernanceEvidencePort(_ProducerEvidencePort):
+    producer_class = EvidenceProducerClass.GOVERNANCE_ENGINE
+
+    def issue_material_gap(
+        self, *, material_gaps: list[str], **binding: object
+    ) -> MaterialGapReceipt:
         return self._issue(
-            EvidenceReceiptKind.MATERIAL_GAP, details={"material_gaps": material_gaps},
-            model=MaterialGapReceipt, **binding,
+            EvidenceReceiptKind.MATERIAL_GAP,
+            details={"material_gaps": material_gaps},
+            model=MaterialGapReceipt,
+            **binding,
         )
 
     def issue_boundary_freeze(
         self, *, boundary_map: BoundaryMap, **binding: object
     ) -> BoundaryFreezeReceipt:
-        self._require(EvidenceProducerClass.GOVERNANCE_ENGINE)
         return self._issue(
             EvidenceReceiptKind.BOUNDARY_FREEZE,
             details={"boundary_digest": boundary_map.digest},
-            model=BoundaryFreezeReceipt, **binding,
+            model=BoundaryFreezeReceipt,
+            **binding,
         )
+
+
+class TestMatrixEvidencePort(_ProducerEvidencePort):
+    producer_class = EvidenceProducerClass.TEST_MATRIX_COMPILER
 
     def issue_test_now(
         self, *, matrix_categories: set[str], **binding: object
     ) -> TestNowReceipt:
-        self._require(EvidenceProducerClass.TEST_MATRIX_COMPILER)
         if matrix_categories != REQUIRED_DOWNGRADE_MATRIX:
             raise ValueError("COMPLETE_MATRIX_BEFORE_PRIMARY_WRITE")
         return self._issue(
             EvidenceReceiptKind.TEST_NOW,
             details={"matrix_categories": sorted(matrix_categories)},
-            model=TestNowReceipt, **binding,
+            model=TestNowReceipt,
+            **binding,
         )
 
+
+class WriterCapabilityEvidencePort(_ProducerEvidencePort):
+    def __init__(self, *args: object, producer_class: EvidenceProducerClass, **kwargs: object):
+        if producer_class not in {
+            EvidenceProducerClass.TOOL_BROKER,
+            EvidenceProducerClass.AUTH_RUNTIME,
+            EvidenceProducerClass.ENGINEER_RUNTIME,
+        }:
+            raise ValueError("writer capability port requires a writer producer")
+        self.producer_class = producer_class
+        super().__init__(*args, **kwargs)
+
     def issue_writer_capability(
-        self, admission: WriterAdmission, *, evidence_reference: str,
+        self,
+        admission: WriterAdmission,
+        *,
+        evidence_reference: str,
         state: WriterCapabilityState = WriterCapabilityState.PROVEN,
     ) -> WriterCapabilityAttestation:
-        self._require(
-            EvidenceProducerClass.TOOL_BROKER, EvidenceProducerClass.AUTH_RUNTIME,
-            EvidenceProducerClass.ENGINEER_RUNTIME,
-        )
         return self._issue(
             EvidenceReceiptKind.WRITER_CAPABILITY,
             problem_signature=_writer_problem_signature(admission),
-            repository=admission.repository, capability_epoch=admission.capability_epoch,
+            repository=admission.repository,
+            capability_epoch=admission.capability_epoch,
             evidence_reference=evidence_reference,
             details={
                 "actor": admission.actor.value,
@@ -321,17 +352,26 @@ class TrustedEngineeringEvidenceIssuer:
             model=WriterCapabilityAttestation,
         )
 
-    def issue_evidence_origin(
+
+class ExecutionEvidencePort(_ProducerEvidencePort):
+    producer_class = EvidenceProducerClass.EXECUTION_ADAPTER
+
+    def issue_execution_evidence(
         self, *, evidence_name: str, execution_binding: str, **binding: object
     ) -> EvidenceOriginReceipt:
-        self._require(
-            EvidenceProducerClass.EXECUTION_ADAPTER, EvidenceProducerClass.VERIFIER
-        )
         return self._issue(
             EvidenceReceiptKind.EVIDENCE_ORIGIN,
-            details={"evidence_name": evidence_name, "execution_binding": execution_binding},
-            model=EvidenceOriginReceipt, **binding,
+            details={
+                "evidence_name": evidence_name,
+                "execution_binding": execution_binding,
+            },
+            model=EvidenceOriginReceipt,
+            **binding,
         )
+
+
+class VerifierEvidencePort(ExecutionEvidencePort):
+    producer_class = EvidenceProducerClass.VERIFIER
 
 
 def _writer_problem_signature(admission: WriterAdmission) -> str:
@@ -384,31 +424,6 @@ class EngineeringExecutionGovernor:
             state=attestation.capability_state,
             evidence_producer=attestation.producer_class,
             evidence_reference=attestation.receipt_id,
-        ))
-
-    def record_writer_failure(
-        self, admission: WriterAdmission, *, error: str,
-        trusted_context: TrustedEvidenceProducerContext, evidence_reference: str,
-    ) -> WriterCapabilityRecord:
-        if trusted_context.producer_class not in {
-            EvidenceProducerClass.TOOL_BROKER, EvidenceProducerClass.AUTH_RUNTIME,
-            EvidenceProducerClass.ENGINEER_RUNTIME,
-        }:
-            raise PermissionError("WRITER_ATTESTATION_PRODUCER_UNTRUSTED")
-        normalized = error.lower()
-        state = (
-            WriterCapabilityState.HARD_DENY
-            if any(marker in normalized for marker in HARD_DENY_MARKERS)
-            else WriterCapabilityState.TRANSIENT_FAILURE
-        )
-        return self.store.record_writer_capability(WriterCapabilityRecord(
-            actor=admission.actor, writer_surface=admission.writer_surface,
-            repository=admission.repository,
-            operation_family=EngineeringOperationFamily.REPOSITORY_MUTATION,
-            auth_context_id=admission.auth_context_id,
-            capability_epoch=admission.capability_epoch, state=state,
-            evidence_producer=trusted_context.producer_class,
-            evidence_reference=evidence_reference,
         ))
 
     def admit(self, admission: WriterAdmission) -> EngineeringRouteDecision:
