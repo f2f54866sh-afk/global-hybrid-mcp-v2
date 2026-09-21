@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -30,7 +32,15 @@ class AuthenticatedPrincipal(BaseModel):
     authentication_source: str = Field(min_length=1)
 
 
+class IdentitySelectionLifecycle(StrEnum):
+    ACTIVE = "ACTIVE"
+    SUPERSEDED = "SUPERSEDED"
+    REVOKED = "REVOKED"
+
+
 class IdentityAuthoritySelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     record_id: str = Field(min_length=1)
     principal_subject: str = Field(min_length=1)
     conversation_or_thread_id: str = Field(min_length=1)
@@ -43,10 +53,37 @@ class IdentityAuthoritySelection(BaseModel):
     revision: int = Field(ge=1)
     issued_at: datetime
     expires_at: datetime
-    current: bool = True
-    revoked: bool = False
+    lifecycle: IdentitySelectionLifecycle = IdentitySelectionLifecycle.ACTIVE
     server_nonce: str = Field(min_length=1)
     server_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def identity_authority_selection_digest(selection: IdentityAuthoritySelection) -> str:
+    body = selection.model_dump(mode="json", exclude={"server_digest"})
+    return hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _decode_identity_authority_selection(payload: str) -> IdentityAuthoritySelection:
+    data = json.loads(payload)
+    if "lifecycle" not in data:
+        revoked = bool(data.pop("revoked", False))
+        current = bool(data.pop("current", True))
+        data["lifecycle"] = (
+            IdentitySelectionLifecycle.REVOKED
+            if revoked
+            else (
+                IdentitySelectionLifecycle.ACTIVE
+                if current
+                else IdentitySelectionLifecycle.SUPERSEDED
+            )
+        )
+        migrated = IdentityAuthoritySelection.model_validate(data)
+        return migrated.model_copy(
+            update={"server_digest": identity_authority_selection_digest(migrated)}
+        )
+    return IdentityAuthoritySelection.model_validate(data)
 
 
 class RuntimeTaskFrame(BaseModel):
@@ -109,6 +146,40 @@ class RuntimeStateStore(Protocol):
 
     def load(self, conversation_or_thread_id: str, task_id: str) -> RuntimeTaskState: ...
 
+    def create_identity_authority_selection(
+        self, selection: IdentityAuthoritySelection
+    ) -> IdentityAuthoritySelection: ...
+
+    def load_identity_authority_selection(
+        self, record_id: str
+    ) -> IdentityAuthoritySelection: ...
+
+    def load_current_identity_authority_selection(
+        self,
+        principal_subject: str,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+    ) -> IdentityAuthoritySelection: ...
+
+    def supersede_identity_authority_selection(
+        self,
+        prior_record_id: str,
+        replacement: IdentityAuthoritySelection,
+        *,
+        principal_subject: str,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+    ) -> IdentityAuthoritySelection: ...
+
+    def revoke_identity_authority_selection(
+        self,
+        record_id: str,
+        *,
+        principal_subject: str,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+    ) -> IdentityAuthoritySelection: ...
+
 
 class RuntimeStateError(RuntimeError):
     """Base error for durable runtime state operations."""
@@ -158,8 +229,45 @@ class SQLiteRuntimeStateStore:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS identity_authority_selection (
                 record_id TEXT PRIMARY KEY, conversation_or_thread_id TEXT NOT NULL,
-                task_id TEXT NOT NULL, payload TEXT NOT NULL)"""
+                task_id TEXT NOT NULL, payload TEXT NOT NULL,
+                principal_subject TEXT, lifecycle TEXT, revision INTEGER, expires_at TEXT)"""
             )
+            identity_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(identity_authority_selection)"
+                )
+            }
+            for name, column_type in (
+                ("principal_subject", "TEXT"),
+                ("lifecycle", "TEXT"),
+                ("revision", "INTEGER"),
+                ("expires_at", "TEXT"),
+            ):
+                if name not in identity_columns:
+                    connection.execute(
+                        f"ALTER TABLE identity_authority_selection "
+                        f"ADD COLUMN {name} {column_type}"
+                    )
+            for record_id, payload in connection.execute(
+                "SELECT record_id, payload FROM identity_authority_selection"
+            ).fetchall():
+                selection = _decode_identity_authority_selection(payload)
+                connection.execute(
+                    """
+                    UPDATE identity_authority_selection
+                    SET payload=?, principal_subject=?, lifecycle=?, revision=?, expires_at=?
+                    WHERE record_id=?
+                    """,
+                    (
+                        json.dumps(selection.model_dump(mode="json")),
+                        selection.principal_subject,
+                        selection.lifecycle.value,
+                        selection.revision,
+                        selection.expires_at.isoformat(),
+                        record_id,
+                    ),
+                )
             connection.execute("""CREATE TABLE IF NOT EXISTS image_attempt_budget (
                 conversation_or_thread_id TEXT NOT NULL, task_id TEXT NOT NULL,
                 source_key TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
@@ -176,15 +284,18 @@ class SQLiteRuntimeStateStore:
     def create_identity_authority_selection(
         self, selection: IdentityAuthoritySelection
     ) -> IdentityAuthoritySelection:
+        self._validate_new_identity_selection(selection, expected_revision=1)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_no_current_identity_selection(connection, selection)
             connection.execute(
-                "INSERT INTO identity_authority_selection VALUES (?, ?, ?, ?)",
-                (
-                    selection.record_id,
-                    selection.conversation_or_thread_id,
-                    selection.runtime_task_id,
-                    json.dumps(selection.model_dump(mode="json")),
-                ),
+                """
+                INSERT INTO identity_authority_selection (
+                    record_id, conversation_or_thread_id, task_id, payload,
+                    principal_subject, lifecycle, revision, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                self._identity_selection_row(selection),
             )
         return selection
 
@@ -195,7 +306,214 @@ class SQLiteRuntimeStateStore:
             ).fetchone()
         if row is None:
             raise RuntimeStateNotFound(f"identity authority selection not found: {record_id}")
-        return IdentityAuthoritySelection.model_validate_json(row[0])
+        return _decode_identity_authority_selection(row[0])
+
+    def load_current_identity_authority_selection(
+        self,
+        principal_subject: str,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+    ) -> IdentityAuthoritySelection:
+        now = datetime.now(UTC)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload FROM identity_authority_selection
+                WHERE principal_subject=? AND conversation_or_thread_id=? AND task_id=?
+                    AND lifecycle='ACTIVE'
+                ORDER BY revision DESC
+                """,
+                (principal_subject, conversation_or_thread_id, runtime_task_id),
+            ).fetchall()
+        current = [
+            _decode_identity_authority_selection(row[0])
+            for row in rows
+            if _decode_identity_authority_selection(row[0]).expires_at > now
+        ]
+        if len(current) != 1:
+            raise RuntimeStateError("IDENTITY_SELECTION_CURRENTNESS_INVALID")
+        return current[0]
+
+    def supersede_identity_authority_selection(
+        self,
+        prior_record_id: str,
+        replacement: IdentityAuthoritySelection,
+        *,
+        principal_subject: str,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+    ) -> IdentityAuthoritySelection:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior = self._load_identity_selection_in_transaction(connection, prior_record_id)
+            self._validate_active_identity_selection(
+                prior,
+                principal_subject=principal_subject,
+                conversation_or_thread_id=conversation_or_thread_id,
+                runtime_task_id=runtime_task_id,
+            )
+            if (
+                replacement.principal_subject != principal_subject
+                or replacement.conversation_or_thread_id != conversation_or_thread_id
+                or replacement.runtime_task_id != runtime_task_id
+                or replacement.revision != prior.revision + 1
+                or replacement.lifecycle is not IdentitySelectionLifecycle.ACTIVE
+            ):
+                raise RuntimeStateError("IDENTITY_SELECTION_REPLACEMENT_BINDING_MISMATCH")
+            self._validate_new_identity_selection(
+                replacement,
+                expected_revision=prior.revision + 1,
+            )
+            superseded = prior.model_copy(
+                update={"lifecycle": IdentitySelectionLifecycle.SUPERSEDED}
+            )
+            superseded = superseded.model_copy(
+                update={"server_digest": identity_authority_selection_digest(superseded)}
+            )
+            connection.execute(
+                """
+                UPDATE identity_authority_selection
+                SET payload=?, lifecycle=?
+                WHERE record_id=? AND lifecycle='ACTIVE'
+                """,
+                (
+                    json.dumps(superseded.model_dump(mode="json")),
+                    superseded.lifecycle.value,
+                    prior_record_id,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO identity_authority_selection (
+                    record_id, conversation_or_thread_id, task_id, payload,
+                    principal_subject, lifecycle, revision, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                self._identity_selection_row(replacement),
+            )
+        return replacement
+
+    def revoke_identity_authority_selection(
+        self,
+        record_id: str,
+        *,
+        principal_subject: str,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+    ) -> IdentityAuthoritySelection:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            selection = self._load_identity_selection_in_transaction(connection, record_id)
+            self._validate_active_identity_selection(
+                selection,
+                principal_subject=principal_subject,
+                conversation_or_thread_id=conversation_or_thread_id,
+                runtime_task_id=runtime_task_id,
+            )
+            revoked = selection.model_copy(
+                update={"lifecycle": IdentitySelectionLifecycle.REVOKED}
+            )
+            revoked = revoked.model_copy(
+                update={"server_digest": identity_authority_selection_digest(revoked)}
+            )
+            cursor = connection.execute(
+                """
+                UPDATE identity_authority_selection
+                SET payload=?, lifecycle=?
+                WHERE record_id=? AND lifecycle='ACTIVE'
+                """,
+                (json.dumps(revoked.model_dump(mode="json")), revoked.lifecycle.value, record_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeStateError("IDENTITY_SELECTION_REVOKE_CONFLICT")
+        return revoked
+
+    @staticmethod
+    def _identity_selection_row(selection: IdentityAuthoritySelection) -> tuple:
+        return (
+            selection.record_id,
+            selection.conversation_or_thread_id,
+            selection.runtime_task_id,
+            json.dumps(selection.model_dump(mode="json")),
+            selection.principal_subject,
+            selection.lifecycle.value,
+            selection.revision,
+            selection.expires_at.isoformat(),
+        )
+
+    @staticmethod
+    def _load_identity_selection_in_transaction(
+        connection: sqlite3.Connection, record_id: str
+    ) -> IdentityAuthoritySelection:
+        row = connection.execute(
+            "SELECT payload FROM identity_authority_selection WHERE record_id=?",
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeStateNotFound(
+                f"identity authority selection not found: {record_id}"
+            )
+        return _decode_identity_authority_selection(row[0])
+
+    @staticmethod
+    def _validate_active_identity_selection(
+        selection: IdentityAuthoritySelection,
+        *,
+        principal_subject: str,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+    ) -> None:
+        if selection.server_digest != identity_authority_selection_digest(selection):
+            raise RuntimeStateError("IDENTITY_SELECTION_DIGEST_MISMATCH")
+        if (
+            selection.principal_subject != principal_subject
+            or selection.conversation_or_thread_id != conversation_or_thread_id
+            or selection.runtime_task_id != runtime_task_id
+        ):
+            raise RuntimeStateError("IDENTITY_SELECTION_BINDING_MISMATCH")
+        if selection.lifecycle is not IdentitySelectionLifecycle.ACTIVE:
+            raise RuntimeStateError("IDENTITY_SELECTION_NOT_ACTIVE")
+        if selection.expires_at <= datetime.now(UTC):
+            raise RuntimeStateError("IDENTITY_SELECTION_EXPIRED")
+
+    @staticmethod
+    def _validate_new_identity_selection(
+        selection: IdentityAuthoritySelection,
+        *,
+        expected_revision: int,
+    ) -> None:
+        if selection.lifecycle is not IdentitySelectionLifecycle.ACTIVE:
+            raise RuntimeStateError("IDENTITY_SELECTION_NOT_ACTIVE")
+        if selection.revision != expected_revision:
+            raise RuntimeStateError("IDENTITY_SELECTION_REVISION_MISMATCH")
+        if selection.expires_at <= selection.issued_at:
+            raise RuntimeStateError("IDENTITY_SELECTION_EXPIRY_INVALID")
+        if selection.server_digest != identity_authority_selection_digest(selection):
+            raise RuntimeStateError("IDENTITY_SELECTION_DIGEST_MISMATCH")
+
+    @staticmethod
+    def _assert_no_current_identity_selection(
+        connection: sqlite3.Connection,
+        selection: IdentityAuthoritySelection,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT payload FROM identity_authority_selection
+            WHERE principal_subject=? AND conversation_or_thread_id=? AND task_id=?
+                AND lifecycle='ACTIVE'
+            """,
+            (
+                selection.principal_subject,
+                selection.conversation_or_thread_id,
+                selection.runtime_task_id,
+            ),
+        ).fetchall()
+        now = datetime.now(UTC)
+        if any(
+            _decode_identity_authority_selection(row[0]).expires_at > now
+            for row in rows
+        ):
+            raise RuntimeStateAlreadyExists("IDENTITY_SELECTION_ACTIVE_ALREADY_EXISTS")
 
     @staticmethod
     def _validate(state: RuntimeTaskState) -> RuntimeTaskState:
