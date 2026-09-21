@@ -8,7 +8,7 @@ import sqlite3
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Annotated, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -44,6 +44,9 @@ class IdentitySecondaryRole(StrEnum):
     POSE = "POSE"
 
 
+Sha256Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
 class IdentityAuthoritySelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -55,6 +58,7 @@ class IdentityAuthoritySelection(BaseModel):
     master_asset_id: str = Field(min_length=1)
     master_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     secondary_roles: dict[str, IdentitySecondaryRole] = Field(default_factory=dict)
+    secondary_sha256: dict[str, Sha256Digest] = Field(default_factory=dict)
     excluded_generated_source_ids: set[str] = Field(default_factory=set)
     generative_only: bool = False
     revision: int = Field(ge=1)
@@ -71,6 +75,8 @@ class IdentityAuthoritySelection(BaseModel):
         if any(not asset_id.strip() for asset_id in self.secondary_roles):
             raise ValueError("secondary role asset IDs must not be blank")
         secondary_ids = set(self.secondary_roles)
+        if self.secondary_sha256 and set(self.secondary_sha256) != secondary_ids:
+            raise ValueError("secondary digest keys must exactly match secondary role keys")
         if self.master_asset_id in secondary_ids:
             raise ValueError("master asset cannot occupy a secondary role")
         if not secondary_ids.isdisjoint(self.excluded_generated_source_ids):
@@ -88,7 +94,9 @@ def identity_authority_selection_digest(selection: IdentityAuthoritySelection) -
 def _decode_identity_authority_selection(payload: str) -> IdentityAuthoritySelection:
     data = json.loads(payload)
     schema_migration_required = (
-        "lifecycle" not in data or "person_binding" not in data
+        "lifecycle" not in data
+        or "person_binding" not in data
+        or "secondary_sha256" not in data
     )
     if schema_migration_required:
         stored_digest = data.get("server_digest")
@@ -118,6 +126,7 @@ def _decode_identity_authority_selection(payload: str) -> IdentityAuthoritySelec
         )
     if schema_migration_required:
         data.setdefault("person_binding", None)
+        data.setdefault("secondary_sha256", {})
         migrated = IdentityAuthoritySelection.model_validate(data)
         return migrated.model_copy(
             update={"server_digest": identity_authority_selection_digest(migrated)}

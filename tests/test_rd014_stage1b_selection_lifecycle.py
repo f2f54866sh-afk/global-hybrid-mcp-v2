@@ -30,6 +30,7 @@ def _selection_args(**updates):
         "master_asset_id": "master-1",
         "master_sha256": "a" * 64,
         "secondary_roles": {"body-1": "BODY", "pose-1": "POSE"},
+        "secondary_sha256": {"body-1": "b" * 64, "pose-1": "c" * 64},
         "excluded_generated_source_ids": {"generated-1"},
         "generative_only": True,
     }

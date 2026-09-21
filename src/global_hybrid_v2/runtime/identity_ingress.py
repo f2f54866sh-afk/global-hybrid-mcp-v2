@@ -41,6 +41,7 @@ class TrustedIdentityIngress:
         master_asset_id: str,
         master_sha256: str,
         secondary_roles: dict[str, IdentitySecondaryRole],
+        secondary_sha256: dict[str, str],
         excluded_generated_source_ids: set[str],
         generative_only: bool,
     ) -> IdentityAuthoritySelection:
@@ -52,6 +53,7 @@ class TrustedIdentityIngress:
             master_asset_id=master_asset_id,
             master_sha256=master_sha256,
             secondary_roles=secondary_roles,
+            secondary_sha256=secondary_sha256,
             excluded_generated_source_ids=excluded_generated_source_ids,
             generative_only=generative_only,
             revision=1,
@@ -69,6 +71,7 @@ class TrustedIdentityIngress:
         master_asset_id: str,
         master_sha256: str,
         secondary_roles: dict[str, IdentitySecondaryRole],
+        secondary_sha256: dict[str, str],
         excluded_generated_source_ids: set[str],
         generative_only: bool,
     ) -> IdentityAuthoritySelection:
@@ -81,6 +84,7 @@ class TrustedIdentityIngress:
             master_asset_id=master_asset_id,
             master_sha256=master_sha256,
             secondary_roles=secondary_roles,
+            secondary_sha256=secondary_sha256,
             excluded_generated_source_ids=excluded_generated_source_ids,
             generative_only=generative_only,
             revision=prior.revision + 1,
@@ -146,10 +150,15 @@ class TrustedIdentityIngress:
         master_asset_id: str,
         master_sha256: str,
         secondary_roles: dict[str, IdentitySecondaryRole],
+        secondary_sha256: dict[str, str],
         excluded_generated_source_ids: set[str],
         generative_only: bool,
         revision: int,
     ) -> IdentityAuthoritySelection:
+        if set(secondary_sha256) != set(secondary_roles):
+            raise ValueError(
+                "secondary digest keys must exactly match secondary role keys"
+            )
         now = datetime.now(UTC)
         draft = IdentityAuthoritySelection(
             record_id=str(uuid4()),
@@ -160,6 +169,7 @@ class TrustedIdentityIngress:
             master_asset_id=master_asset_id,
             master_sha256=master_sha256,
             secondary_roles=secondary_roles,
+            secondary_sha256=secondary_sha256,
             excluded_generated_source_ids=excluded_generated_source_ids,
             generative_only=generative_only,
             revision=revision,

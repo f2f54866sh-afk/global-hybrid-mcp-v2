@@ -28,6 +28,11 @@ def _args(**updates):
             "tattoo-asset": IdentitySecondaryRole.TATTOO,
             "pose-asset": IdentitySecondaryRole.POSE,
         },
+        "secondary_sha256": {
+            "body-asset": "b" * 64,
+            "tattoo-asset": "c" * 64,
+            "pose-asset": "d" * 64,
+        },
         "excluded_generated_source_ids": {"generated-1"},
         "generative_only": True,
     }
@@ -110,22 +115,44 @@ def test_secondary_role_schema_rejects_reversed_unsupported_and_blank_assets(
 ):
     service = TrustedIdentityIngress(SQLiteRuntimeStateStore(tmp_path / "runtime.db"))
     with pytest.raises(ValidationError):
-        service.issue(**_args(secondary_roles=secondary_roles))
+        service.issue(
+            **_args(
+                secondary_roles=secondary_roles,
+                secondary_sha256={asset_id: "e" * 64 for asset_id in secondary_roles},
+            )
+        )
 
 
 def test_secondary_roles_reject_master_and_excluded_sources(tmp_path):
     service = TrustedIdentityIngress(SQLiteRuntimeStateStore(tmp_path / "runtime.db"))
     with pytest.raises(ValidationError, match="master asset"):
-        service.issue(**_args(secondary_roles={"master-1": "BODY"}))
+        service.issue(
+            **_args(
+                secondary_roles={"master-1": "BODY"},
+                secondary_sha256={"master-1": "e" * 64},
+            )
+        )
     with pytest.raises(ValidationError, match="excluded generated source"):
-        service.issue(**_args(secondary_roles={"generated-1": "POSE"}))
+        service.issue(
+            **_args(
+                secondary_roles={"generated-1": "POSE"},
+                secondary_sha256={"generated-1": "e" * 64},
+            )
+        )
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("person_binding", "tampered-person"),
-        ("secondary_roles", {"body-asset": "POSE"}),
+        (
+            "secondary_roles",
+            {
+                "body-asset": "POSE",
+                "tattoo-asset": "TATTOO",
+                "pose-asset": "POSE",
+            },
+        ),
     ],
 )
 def test_tampered_packet_schema_fields_fail_digest_verification(tmp_path, field, value):

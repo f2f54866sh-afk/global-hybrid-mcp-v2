@@ -12,6 +12,7 @@ def test_rd014_stage1_server_owned_selection_round_trip_and_fail_closed(tmp_path
         person_binding="person-1",
         master_asset_id="master", master_sha256="a" * 64,
         secondary_roles={"body": "BODY"}, excluded_generated_source_ids={"generated"},
+        secondary_sha256={"body": "b" * 64},
         generative_only=True,
     )
     assert issued.record_id and issued.server_digest
