@@ -68,6 +68,19 @@ def identity_authority_selection_digest(selection: IdentityAuthoritySelection) -
 def _decode_identity_authority_selection(payload: str) -> IdentityAuthoritySelection:
     data = json.loads(payload)
     if "lifecycle" not in data:
+        stored_digest = data.get("server_digest")
+        legacy_body = {
+            key: value for key, value in data.items() if key != "server_digest"
+        }
+        legacy_digest = hashlib.sha256(
+            json.dumps(
+                legacy_body,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        if stored_digest != legacy_digest:
+            raise RuntimeStateError("IDENTITY_SELECTION_LEGACY_DIGEST_MISMATCH")
         revoked = bool(data.pop("revoked", False))
         current = bool(data.pop("current", True))
         data["lifecycle"] = (

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -44,6 +45,48 @@ def _verify(service, record_id, **updates):
     }
     values.update(updates)
     return service.verify(**values)
+
+
+def _legacy_selection_payload(*, master_asset_id="master-legacy"):
+    issued_at = datetime.now(UTC)
+    body = {
+        "record_id": "legacy-record",
+        "principal_subject": "legacy-user",
+        "conversation_or_thread_id": "legacy-thread",
+        "runtime_task_id": "legacy-task",
+        "master_asset_id": master_asset_id,
+        "master_sha256": "c" * 64,
+        "secondary_roles": {"BODY": "legacy-body"},
+        "excluded_generated_source_ids": ["legacy-generated"],
+        "generative_only": True,
+        "revision": 1,
+        "issued_at": issued_at.isoformat(),
+        "expires_at": (issued_at + timedelta(minutes=10)).isoformat(),
+        "current": True,
+        "revoked": False,
+        "server_nonce": "legacy-server-nonce",
+    }
+    digest = hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return {**body, "server_digest": digest}
+
+
+def _insert_legacy_selection(store, payload):
+    with store._connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO identity_authority_selection (
+                record_id, conversation_or_thread_id, task_id, payload
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                payload["record_id"],
+                payload["conversation_or_thread_id"],
+                payload["runtime_task_id"],
+                json.dumps(payload),
+            ),
+        )
 
 
 def test_initial_issue_verify_supersede_revoke_and_reopen(tmp_path):
@@ -224,3 +267,49 @@ def test_selection_model_rejects_legacy_currentness_injection():
     }
     with pytest.raises(ValueError):
         IdentityAuthoritySelection.model_validate(base)
+
+
+def test_valid_stage1a_legacy_selection_migrates_after_digest_validation(tmp_path):
+    path = tmp_path / "runtime.db"
+    store = SQLiteRuntimeStateStore(path)
+    legacy = _legacy_selection_payload()
+    _insert_legacy_selection(store, legacy)
+
+    reopened = SQLiteRuntimeStateStore(path)
+    migrated = reopened.load_identity_authority_selection(legacy["record_id"])
+    assert migrated.master_asset_id == legacy["master_asset_id"]
+    assert migrated.master_sha256 == legacy["master_sha256"]
+    assert migrated.secondary_roles == legacy["secondary_roles"]
+    assert migrated.excluded_generated_source_ids == set(
+        legacy["excluded_generated_source_ids"]
+    )
+    assert migrated.generative_only is True
+    assert migrated.lifecycle is IdentitySelectionLifecycle.ACTIVE
+    assert migrated.server_digest == identity_authority_selection_digest(migrated)
+
+
+def test_tampered_stage1a_legacy_selection_fails_without_rewrite(tmp_path):
+    path = tmp_path / "runtime.db"
+    store = SQLiteRuntimeStateStore(path)
+    legacy = _legacy_selection_payload()
+    _insert_legacy_selection(store, legacy)
+    tampered = {**legacy, "master_asset_id": "tampered-master"}
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE identity_authority_selection SET payload=? WHERE record_id=?",
+            (json.dumps(tampered), legacy["record_id"]),
+        )
+
+    with pytest.raises(RuntimeStateError, match="LEGACY_DIGEST_MISMATCH"):
+        SQLiteRuntimeStateStore(path)
+
+    with store._connect() as connection:
+        row = connection.execute(
+            "SELECT payload, lifecycle FROM identity_authority_selection WHERE record_id=?",
+            (legacy["record_id"],),
+        ).fetchone()
+    persisted = json.loads(row[0])
+    assert persisted["master_asset_id"] == "tampered-master"
+    assert persisted["server_digest"] == legacy["server_digest"]
+    assert "lifecycle" not in persisted
+    assert row[1] is None
