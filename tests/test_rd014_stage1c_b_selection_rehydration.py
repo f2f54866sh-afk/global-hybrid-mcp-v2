@@ -18,6 +18,7 @@ from tests.test_rd_20260913_009_image_binding import (
     _RecordingPort,
     _request,
 )
+from tests.test_rd_20260919_014_identity_source_contract import _lineage, _packet
 
 PRINCIPAL = AuthenticatedPrincipal(
     subject="user-1",
@@ -261,5 +262,23 @@ def test_direct_authoritative_payload_bypass_is_blocked(tmp_path, direct_fields)
     request.image_task.update(direct_fields)
     port = _RecordingPort()
     result = _dispatch(request, port, store)
+    assert result.status == "IDENTITY_DIRECT_AUTHORITY_BYPASS_BLOCKED"
+    assert port.calls == 0
+
+
+def test_schema_valid_direct_authority_without_flag_or_selection_is_blocked():
+    packet = _packet()
+    spec = _image_spec(None).model_copy(
+        update={
+            "identity_source_packet": packet,
+            "controlled_request_input_lineage": _lineage(packet),
+        }
+    )
+    request = _request(spec, context=[_capability_context()])
+    assert request.identity_selection_record_id is None
+    assert request.image_task["identity_trusted_ingress_required"] is False
+
+    port = _RecordingPort()
+    result = _dispatcher(port).dispatch(request)
     assert result.status == "IDENTITY_DIRECT_AUTHORITY_BYPASS_BLOCKED"
     assert port.calls == 0

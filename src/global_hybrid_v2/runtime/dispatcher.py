@@ -735,11 +735,7 @@ class Dispatcher:
         )
 
         if request.image_task is not None:
-            trusted_identity_path = bool(
-                request.image_task.get("identity_trusted_ingress_required")
-                or request.identity_selection_record_id
-            )
-            if trusted_identity_path and (
+            if (
                 request.image_task.get("identity_source_packet") is not None
                 or request.image_task.get("controlled_request_input_lineage") is not None
             ):
