@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import secrets
 import sqlite3
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -74,6 +76,7 @@ class ProblemConvergenceState(BaseModel):
     material_gap_map_complete: bool = False
     target_boundary_frozen: bool = False
     test_now_complete: bool = False
+    boundary_digest: str | None = None
     consolidated_acceptance_emitted: bool = False
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -289,6 +292,20 @@ class RuntimeStateStore(Protocol):
         self, state: ProblemConvergenceState
     ) -> ProblemConvergenceState: ...
 
+    def issue_engineering_evidence_receipt(
+        self, payload: dict[str, object]
+    ) -> dict[str, object]: ...
+
+    def consume_engineering_evidence_receipt(
+        self,
+        receipt_id: str,
+        *,
+        receipt_kind: str,
+        problem_signature: str,
+        repository: str,
+        capability_epoch: str,
+    ) -> dict[str, object]: ...
+
 
 class RuntimeStateError(RuntimeError):
     """Base error for durable runtime state operations."""
@@ -401,9 +418,160 @@ class SQLiteRuntimeStateStore:
                 """CREATE TABLE IF NOT EXISTS engineering_problem_convergence (
                 problem_signature TEXT PRIMARY KEY, payload TEXT NOT NULL)"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS engineering_evidence_secret (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), secret TEXT NOT NULL)"""
+            )
+            connection.execute(
+                """INSERT OR IGNORE INTO engineering_evidence_secret (singleton, secret)
+                VALUES (1, ?)""",
+                (secrets.token_hex(32),),
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS engineering_evidence_receipt (
+                receipt_id TEXT PRIMARY KEY, receipt_kind TEXT NOT NULL,
+                problem_signature TEXT NOT NULL, repository TEXT NOT NULL,
+                capability_epoch TEXT NOT NULL, revision INTEGER NOT NULL,
+                payload TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS engineering_evidence_current (
+                receipt_kind TEXT NOT NULL, problem_signature TEXT NOT NULL,
+                repository TEXT NOT NULL, capability_epoch TEXT NOT NULL,
+                receipt_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                PRIMARY KEY (
+                    receipt_kind, problem_signature, repository, capability_epoch
+                ))"""
+            )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
+
+    @staticmethod
+    def _receipt_body(payload: dict[str, object]) -> bytes:
+        body = {key: value for key, value in payload.items() if key != "integrity_digest"}
+        return json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+
+    @classmethod
+    def _receipt_digest(cls, secret: str, payload: dict[str, object]) -> str:
+        return hmac.new(
+            bytes.fromhex(secret), cls._receipt_body(payload), hashlib.sha256
+        ).hexdigest()
+
+    def issue_engineering_evidence_receipt(
+        self, payload: dict[str, object]
+    ) -> dict[str, object]:
+        required = {
+            "receipt_kind",
+            "producer_identity",
+            "producer_class",
+            "problem_signature",
+            "repository",
+            "capability_epoch",
+            "evidence_reference",
+        }
+        if required - payload.keys():
+            raise RuntimeStateError("engineering evidence receipt is incomplete")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            key = (
+                str(payload["receipt_kind"]),
+                str(payload["problem_signature"]),
+                str(payload["repository"]),
+                str(payload["capability_epoch"]),
+            )
+            current = connection.execute(
+                """SELECT revision FROM engineering_evidence_current
+                WHERE receipt_kind=? AND problem_signature=? AND repository=?
+                AND capability_epoch=?""",
+                key,
+            ).fetchone()
+            revision = 1 if current is None else int(current[0]) + 1
+            secret = connection.execute(
+                "SELECT secret FROM engineering_evidence_secret WHERE singleton=1"
+            ).fetchone()[0]
+            issued = {
+                **payload,
+                "receipt_id": str(uuid4()),
+                "revision": revision,
+                "issued_at": datetime.now(UTC).isoformat(),
+            }
+            issued["integrity_digest"] = self._receipt_digest(secret, issued)
+            encoded = json.dumps(issued)
+            connection.execute(
+                """INSERT INTO engineering_evidence_receipt (
+                receipt_id, receipt_kind, problem_signature, repository,
+                capability_epoch, revision, payload, consumed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
+                (
+                    issued["receipt_id"],
+                    *key,
+                    revision,
+                    encoded,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO engineering_evidence_current (
+                receipt_kind, problem_signature, repository, capability_epoch,
+                receipt_id, revision) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (
+                    receipt_kind, problem_signature, repository, capability_epoch
+                ) DO UPDATE SET receipt_id=excluded.receipt_id,
+                revision=excluded.revision""",
+                (*key, issued["receipt_id"], revision),
+            )
+        return issued
+
+    def consume_engineering_evidence_receipt(
+        self,
+        receipt_id: str,
+        *,
+        receipt_kind: str,
+        problem_signature: str,
+        repository: str,
+        capability_epoch: str,
+    ) -> dict[str, object]:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT payload, consumed FROM engineering_evidence_receipt
+                WHERE receipt_id=?""",
+                (receipt_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeStateNotFound("trusted engineering receipt not found")
+            payload = json.loads(row[0])
+            if row[1]:
+                raise RuntimeStateError("TRUSTED_EVIDENCE_RECEIPT_REPLAYED")
+            expected = {
+                "receipt_kind": receipt_kind,
+                "problem_signature": problem_signature,
+                "repository": repository,
+                "capability_epoch": capability_epoch,
+            }
+            if any(payload.get(key) != value for key, value in expected.items()):
+                raise RuntimeStateError("TRUSTED_EVIDENCE_RECEIPT_BINDING_MISMATCH")
+            current = connection.execute(
+                """SELECT receipt_id, revision FROM engineering_evidence_current
+                WHERE receipt_kind=? AND problem_signature=? AND repository=?
+                AND capability_epoch=?""",
+                (receipt_kind, problem_signature, repository, capability_epoch),
+            ).fetchone()
+            if current != (receipt_id, payload["revision"]):
+                raise RuntimeStateError("TRUSTED_EVIDENCE_RECEIPT_STALE")
+            secret = connection.execute(
+                "SELECT secret FROM engineering_evidence_secret WHERE singleton=1"
+            ).fetchone()[0]
+            if not hmac.compare_digest(
+                str(payload.get("integrity_digest", "")),
+                self._receipt_digest(secret, payload),
+            ):
+                raise RuntimeStateError("TRUSTED_EVIDENCE_RECEIPT_INTEGRITY_MISMATCH")
+            connection.execute(
+                "UPDATE engineering_evidence_receipt SET consumed=1 WHERE receipt_id=?",
+                (receipt_id,),
+            )
+        return payload
 
     def record_writer_capability(
         self, record: WriterCapabilityRecord
