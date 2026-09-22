@@ -134,7 +134,7 @@ class OutsideEnvelopeVerifier(Protocol):
 
 class OutputVerifier(Protocol):
     def verify(
-        self, *, request: ImageExecutionRequest, output: bytes
+        self, *, request: ImageExecutionRequest, output: bytes, attempt_id: str
     ) -> QualifiedOutputVerification: ...
 
 
@@ -502,10 +502,10 @@ class OpenAIBoundImageExecutionPort:
         artifact_id = f"sha256:{output_sha256}"
         try:
             identity = self.identity_verifier.verify(
-                request=request, output=result.output_bytes
+                request=request, output=result.output_bytes, attempt_id=node_token
             )
             scene_result = self.scene_product_verifier.verify(
-                request=request, output=result.output_bytes
+                request=request, output=result.output_bytes, attempt_id=node_token
             )
             self._verify_output_receipt(identity, request, output_sha256)
             self._verify_output_receipt(scene_result, request, output_sha256)

@@ -395,6 +395,10 @@ class RuntimeStateStore(Protocol):
 
     def read_openai_image_execution(self, receipt_id: str) -> dict[str, object]: ...
 
+    def persist_scene_product_verification(self, receipt: dict[str, object]) -> None: ...
+
+    def read_scene_product_verification(self, receipt_id: str) -> dict[str, object]: ...
+
 
 class RuntimeStateError(RuntimeError):
     """Base error for durable runtime state operations."""
@@ -516,6 +520,14 @@ class SQLiteRuntimeStateStore:
                 slot_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
                 state TEXT NOT NULL, receipt TEXT NOT NULL, lineage TEXT,
                 UNIQUE (task_binding, workflow_id, slot_id, attempt_id))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS scene_product_verification (
+                receipt_id TEXT PRIMARY KEY, task_binding TEXT NOT NULL,
+                workflow_id TEXT NOT NULL, slot_id TEXT NOT NULL,
+                stage TEXT NOT NULL, attempt_id TEXT NOT NULL,
+                decision TEXT NOT NULL, receipt TEXT NOT NULL,
+                UNIQUE (task_binding, workflow_id, slot_id, stage, attempt_id))"""
             )
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS engineering_writer_capability (
@@ -1658,3 +1670,43 @@ class SQLiteRuntimeStateStore:
             "receipt": json.loads(row[1]),
             "lineage": lineage,
         }
+
+    def persist_scene_product_verification(self, receipt: dict[str, object]) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """INSERT INTO scene_product_verification (
+                    receipt_id, task_binding, workflow_id, slot_id, stage,
+                    attempt_id, decision, receipt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        receipt["receipt_id"],
+                        receipt["task_binding"],
+                        receipt["workflow_id"],
+                        receipt["slot_id"],
+                        receipt["stage"],
+                        receipt["attempt_id"],
+                        receipt["decision"],
+                        json.dumps(receipt, ensure_ascii=False),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise RuntimeStateError("SCENE_VERIFICATION_EVIDENCE_ALREADY_RECORDED") from exc
+
+    def read_scene_product_verification(self, receipt_id: str) -> dict[str, object]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT receipt FROM scene_product_verification WHERE receipt_id=?",
+                (receipt_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeStateNotFound("SCENE_VERIFICATION_RECEIPT_NOT_FOUND")
+        receipt = json.loads(row[0])
+        stored = receipt.get("receipt_digest")
+        body = {key: value for key, value in receipt.items() if key != "receipt_digest"}
+        expected = hashlib.sha256(
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if stored != expected:
+            raise RuntimeStateError("SCENE_VERIFICATION_RECEIPT_DIGEST_MISMATCH")
+        return receipt
