@@ -63,6 +63,7 @@ from global_hybrid_v2.runtime.state import (
     CURRENT_RUNTIME_STATE_VERSION,
     AuthenticatedPrincipal,
     IdentityAuthoritySelection,
+    IdentitySecondaryRole,
     ImageSlotLifecycle,
     ImageSlotState,
     RuntimeStateAlreadyExists,
@@ -331,7 +332,7 @@ class Dispatcher:
         )
         if selection.person_binding is None or set(selection.secondary_roles) != set(
             selection.secondary_sha256
-        ):
+        ) or IdentitySecondaryRole.SELLER in selection.secondary_roles.values():
             raise RuntimeStateError("IDENTITY_SELECTION_REHYDRATION_INCOMPLETE")
         sources = [
             IdentitySource(

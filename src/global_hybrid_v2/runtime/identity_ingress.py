@@ -155,6 +155,10 @@ class TrustedIdentityIngress:
         generative_only: bool,
         revision: int,
     ) -> IdentityAuthoritySelection:
+        if IdentitySecondaryRole.SELLER in secondary_roles.values():
+            raise ValueError(
+                "SELLER is a semantic binding of the original real master, not a secondary asset"
+            )
         if set(secondary_sha256) != set(secondary_roles):
             raise ValueError(
                 "secondary digest keys must exactly match secondary role keys"

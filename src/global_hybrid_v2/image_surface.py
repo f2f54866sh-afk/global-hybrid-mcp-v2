@@ -797,11 +797,6 @@ class ImageSurfaceController:
                 )
             capabilities = ImagePortCapabilities.model_validate(describe())
             source_roles = {source.role for source in trusted_identity_packet.sources}
-            sellers = [
-                source
-                for source in trusted_identity_packet.sources
-                if source.role is IdentitySourceRole.SELLER
-            ]
             scene_bases = [
                 source
                 for source in trusted_identity_packet.sources
@@ -809,7 +804,6 @@ class ImageSurfaceController:
             ]
             required_roles = {
                 IdentitySourceRole.ORIGINAL_REAL_MASTER,
-                IdentitySourceRole.SELLER,
                 IdentitySourceRole.SCENE_BASE,
             }
             if (
@@ -818,7 +812,7 @@ class ImageSurfaceController:
                 or not capabilities.typed_reference_roles
                 or not capabilities.source_binding_receipt
                 or not required_roles.issubset(source_roles)
-                or len(sellers) != 1
+                or IdentitySourceRole.SELLER in source_roles
                 or len(scene_bases) != 1
                 or not source_roles.issubset(capabilities.supported_reference_roles)
                 or len(trusted_identity_packet.sources)

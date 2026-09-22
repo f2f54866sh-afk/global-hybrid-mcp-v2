@@ -14,6 +14,7 @@ import mimetypes
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
@@ -53,10 +54,18 @@ class ImageAssetResolver(Protocol):
 class OpenAITransportImage(BaseModel):
     asset_id: str
     role: IdentitySourceRole
+    source_authority_role: IdentitySourceRole
     sha256: str
     filename: str
     media_type: str
     content: bytes
+
+
+class OpenAITransportBinding(BaseModel):
+    asset_id: str
+    role: IdentitySourceRole
+    source_authority_role: IdentitySourceRole
+    sha256: str
 
 
 class OpenAIImagesTransportRequest(BaseModel):
@@ -90,6 +99,17 @@ class VerificationResult(BaseModel):
     evidence: dict[str, object] = Field(default_factory=dict)
 
 
+class QualifiedOutputVerification(BaseModel):
+    verifier_id: str = Field(min_length=1)
+    verifier_version: str = Field(min_length=1)
+    task_binding: str = Field(min_length=1)
+    workflow_id: str = Field(min_length=1)
+    slot_id: str = Field(min_length=1)
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    passed: bool
+    evidence: dict[str, object] = Field(default_factory=dict)
+
+
 class OpenAIAdapterCapabilitySnapshot(BaseModel):
     snapshot_id: str
     adapter_id: str
@@ -115,7 +135,47 @@ class OutsideEnvelopeVerifier(Protocol):
 class OutputVerifier(Protocol):
     def verify(
         self, *, request: ImageExecutionRequest, output: bytes
-    ) -> VerificationResult: ...
+    ) -> QualifiedOutputVerification: ...
+
+
+class FileAssetCatalogEntry(BaseModel):
+    asset_id: str
+    relative_path: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    media_type: str
+    authoritative_roles: set[IdentitySourceRole]
+    current: bool = True
+    generated: bool = False
+
+
+class FileImageAssetResolver:
+    """Resolve immutable assets from an application-owned catalog and root."""
+
+    def __init__(self, root: str | Path, entries: list[FileAssetCatalogEntry]):
+        self.root = Path(root).resolve()
+        self.entries = {entry.asset_id: entry for entry in entries}
+        if len(self.entries) != len(entries):
+            raise ValueError("duplicate image asset catalog ID")
+
+    def resolve(self, asset_id: str) -> ResolvedImageAsset:
+        try:
+            entry = self.entries[asset_id]
+        except KeyError as exc:
+            raise OpenAIAdapterError("IMAGE_ASSET_NOT_FOUND") from exc
+        path = (self.root / entry.relative_path).resolve()
+        if self.root not in path.parents:
+            raise OpenAIAdapterError("IMAGE_ASSET_PATH_ESCAPE")
+        content = path.read_bytes()
+        if hashlib.sha256(content).hexdigest() != entry.sha256:
+            raise OpenAIAdapterError("IMAGE_ASSET_CATALOG_DIGEST_MISMATCH")
+        return ResolvedImageAsset(
+            asset_id=entry.asset_id,
+            content=content,
+            media_type=entry.media_type,
+            current=entry.current,
+            generated=entry.generated,
+            authoritative_roles=entry.authoritative_roles,
+        )
 
 
 class OpenAIActualInputReceipt(BaseModel):
@@ -131,7 +191,7 @@ class OpenAIActualInputReceipt(BaseModel):
     packet_digest: str
     operation_mode: ImageOperationMode
     capability_snapshot_id: str
-    ordered_inputs: list[ImageExecutionInput]
+    ordered_inputs: list[OpenAITransportBinding]
     mask_asset_id: str | None = None
     mask_sha256: str | None = None
     output_settings: dict[str, object]
@@ -440,10 +500,20 @@ class OpenAIBoundImageExecutionPort:
             )
             raise OpenAIAdapterError("OPENAI_IMAGE_OUTPUT_DIGEST_MISMATCH")
         artifact_id = f"sha256:{output_sha256}"
-        identity = self.identity_verifier.verify(request=request, output=result.output_bytes)
-        scene_result = self.scene_product_verifier.verify(
-            request=request, output=result.output_bytes
-        )
+        try:
+            identity = self.identity_verifier.verify(
+                request=request, output=result.output_bytes
+            )
+            scene_result = self.scene_product_verifier.verify(
+                request=request, output=result.output_bytes
+            )
+            self._verify_output_receipt(identity, request, output_sha256)
+            self._verify_output_receipt(scene_result, request, output_sha256)
+        except Exception:
+            self.ledger.finish_openai_image_execution(
+                receipt.receipt_id, state="VERIFIER_EVIDENCE_INVALID", lineage=None
+            )
+            raise
         outside = VerificationResult(passed=True, evidence={"not_applicable": True})
         if envelope is not None and mask_asset is not None:
             outside = self.outside_verifier.verify(
@@ -559,19 +629,33 @@ class OpenAIBoundImageExecutionPort:
         for required in (
             IdentitySourceRole.SCENE_BASE,
             IdentitySourceRole.ORIGINAL_REAL_MASTER,
-            IdentitySourceRole.SELLER,
         ):
             if len(by_role.get(required, [])) != 1:
                 raise OpenAIAdapterError(f"EXACT_{required.value}_REQUIRED")
+        if by_role.get(IdentitySourceRole.SELLER):
+            raise OpenAIAdapterError("SECONDARY_SELLER_IDENTITY_AUTHORITY_FORBIDDEN")
         order = [
             IdentitySourceRole.SCENE_BASE,
             IdentitySourceRole.ORIGINAL_REAL_MASTER,
-            IdentitySourceRole.SELLER,
             IdentitySourceRole.BODY,
             IdentitySourceRole.TATTOO,
             IdentitySourceRole.POSE,
         ]
         return [item for role in order for item in by_role.get(role, [])]
+
+    @staticmethod
+    def _verify_output_receipt(
+        result: QualifiedOutputVerification,
+        request: ImageExecutionRequest,
+        output_sha256: str,
+    ) -> None:
+        if (
+            result.task_binding != request.task_binding
+            or result.workflow_id != request.workflow_id
+            or result.slot_id != request.slot_id
+            or result.output_sha256 != output_sha256
+        ):
+            raise OpenAIAdapterError("OUTPUT_VERIFIER_BINDING_MISMATCH")
 
     def _transport_request(
         self,
@@ -582,18 +666,15 @@ class OpenAIBoundImageExecutionPort:
         resolved: list[ResolvedImageAsset],
         mask: ResolvedImageAsset | None,
     ) -> OpenAIImagesTransportRequest:
-        role_manifest = ", ".join(
-            f"image[{index}]={source.role.value}:{source.asset_id}"
-            for index, source in enumerate(ordered)
-        )
-        prompt = (
-            f"{request.manifest.visual_subject}. {request.manifest.current_visual_delta}. "
-            f"Server input map: {role_manifest}."
-        )
         images = [
             OpenAITransportImage(
                 asset_id=source.asset_id,
-                role=source.role,
+                role=(
+                    IdentitySourceRole.SELLER
+                    if source.role is IdentitySourceRole.ORIGINAL_REAL_MASTER
+                    else source.role
+                ),
+                source_authority_role=source.role,
                 sha256=source.sha256,
                 filename=f"{index}-{source.asset_id}{mimetypes.guess_extension(asset.media_type) or '.bin'}",
                 media_type=asset.media_type,
@@ -601,6 +682,14 @@ class OpenAIBoundImageExecutionPort:
             )
             for index, (source, asset) in enumerate(zip(ordered, resolved, strict=True))
         ]
+        role_manifest = ", ".join(
+            f"image[{index}]={image.role.value}:{image.asset_id}"
+            for index, image in enumerate(images)
+        )
+        prompt = (
+            f"{request.manifest.visual_subject}. {request.manifest.current_visual_delta}. "
+            f"Server input map: {role_manifest}."
+        )
         return OpenAIImagesTransportRequest(
             endpoint="/images/edits",
             model=self.model,
@@ -628,7 +717,12 @@ class OpenAIBoundImageExecutionPort:
             "request_id": transport.request_id,
             "operation_mode": transport.operation_mode.value,
             "inputs": [
-                {"asset_id": item.asset_id, "role": item.role.value, "sha256": item.sha256}
+                {
+                    "asset_id": item.asset_id,
+                    "role": item.role.value,
+                    "source_authority_role": item.source_authority_role.value,
+                    "sha256": item.sha256,
+                }
                 for item in transport.images
             ],
             "mask_asset_id": transport.mask_asset_id,
@@ -653,8 +747,13 @@ class OpenAIBoundImageExecutionPort:
             operation_mode=request.operation_mode,
             capability_snapshot_id=request.capability_snapshot_id,
             ordered_inputs=[
-                ImageExecutionInput(asset_id=i.asset_id, sha256=i.sha256, role=i.role)
-                for i in transport.images
+                OpenAITransportBinding(
+                    asset_id=item.asset_id,
+                    role=item.role,
+                    source_authority_role=item.source_authority_role,
+                    sha256=item.sha256,
+                )
+                for item in transport.images
             ],
             mask_asset_id=transport.mask_asset_id,
             mask_sha256=transport.mask_sha256,

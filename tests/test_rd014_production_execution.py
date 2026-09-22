@@ -108,7 +108,7 @@ class BoundRecordingPort:
     def describe_capabilities(self):
         roles = set(IdentitySourceRole)
         if not self.advertised:
-            roles.remove(IdentitySourceRole.SELLER)
+            roles.remove(IdentitySourceRole.SCENE_BASE)
         return ImagePortCapabilities(
             snapshot_id="cap-snapshot-1",
             port_id="recording-port",
@@ -183,12 +183,10 @@ def _setup(tmp_path, *, port=None):
         master_asset_id="master-real",
         master_sha256="a" * 64,
         secondary_roles={
-            "seller-real": IdentitySecondaryRole.SELLER,
             "scene-base": IdentitySecondaryRole.SCENE_BASE,
             "body-real": IdentitySecondaryRole.BODY,
         },
         secondary_sha256={
-            "seller-real": "b" * 64,
             "scene-base": "c" * 64,
             "body-real": "f" * 64,
         },
@@ -232,7 +230,6 @@ def test_trusted_selection_reaches_bound_port_and_persists_slot_lineage(tmp_path
     assert execution.operation_mode is ImageOperationMode.TARGETED_EDIT
     assert {item.role for item in execution.inputs} >= {
         IdentitySourceRole.ORIGINAL_REAL_MASTER,
-        IdentitySourceRole.SELLER,
         IdentitySourceRole.SCENE_BASE,
     }
     receipt = result.evidence["image_execution_receipt"]
@@ -248,6 +245,27 @@ def test_trusted_selection_reaches_bound_port_and_persists_slot_lineage(tmp_path
     assert slot.output_artifact_id == "artifact-77"
     assert slot.output_sha256 == "e" * 64
     assert slot.lineage["input_receipt"]["packet_digest"] == execution.packet_digest
+
+
+def test_secondary_seller_asset_cannot_be_issued_as_identity_authority(tmp_path):
+    store = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    store.create(_state(thread="thread-a", task="task-a"))
+    principal = AuthenticatedPrincipal(
+        subject="user-1", authentication_source="fake-test"
+    )
+    with pytest.raises(ValueError, match="semantic binding"):
+        TrustedIdentityIngress(store).issue(
+            principal=principal,
+            conversation_or_thread_id="thread-a",
+            runtime_task_id="task-a",
+            person_binding="person-1",
+            master_asset_id="master-real",
+            master_sha256="a" * 64,
+            secondary_roles={"generated-seller": IdentitySecondaryRole.SELLER},
+            secondary_sha256={"generated-seller": "b" * 64},
+            excluded_generated_source_ids=set(),
+            generative_only=True,
+        )
 
 
 def test_missing_advertised_role_holds_before_port_call(tmp_path):

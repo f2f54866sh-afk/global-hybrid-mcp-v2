@@ -8,11 +8,13 @@ import pytest
 from PIL import Image
 
 from global_hybrid_v2.adapters.openai_bound_image import (
+    FileAssetCatalogEntry,
+    FileImageAssetResolver,
     OpenAIAdapterError,
     OpenAIBoundImageExecutionPort,
     OpenAIImagesTransportResult,
+    QualifiedOutputVerification,
     ResolvedImageAsset,
-    VerificationResult,
 )
 from global_hybrid_v2.image_surface import (
     AuthorizedEditEnvelope,
@@ -38,7 +40,6 @@ def _png(color: tuple[int, int, int, int]) -> bytes:
 
 SCENE = _png((10, 20, 30, 255))
 MASTER = _png((40, 50, 60, 255))
-SELLER = _png((70, 80, 90, 255))
 BODY = _png((100, 110, 120, 255))
 MASK = _png((255, 255, 255, 255))
 OUTPUT = _png((10, 20, 30, 255))
@@ -57,11 +58,10 @@ class Assets:
             ),
             "master": ResolvedImageAsset(
                 asset_id="master", content=MASTER, media_type="image/png",
-                authoritative_roles={IdentitySourceRole.ORIGINAL_REAL_MASTER},
-            ),
-            "seller": ResolvedImageAsset(
-                asset_id="seller", content=SELLER, media_type="image/png",
-                authoritative_roles={IdentitySourceRole.SELLER},
+                authoritative_roles={
+                    IdentitySourceRole.ORIGINAL_REAL_MASTER,
+                    IdentitySourceRole.SELLER,
+                },
             ),
             "body": ResolvedImageAsset(
                 asset_id="body", content=BODY, media_type="image/png",
@@ -96,11 +96,22 @@ class Transport:
 
 
 class Verifier:
-    def __init__(self, passed=True):
+    def __init__(self, passed=True, *, wrong_binding=False):
         self.passed = passed
+        self.wrong_binding = wrong_binding
 
     def verify(self, **_kwargs):
-        return VerificationResult(passed=self.passed, evidence={"qualified": True})
+        request = _kwargs["request"]
+        return QualifiedOutputVerification(
+            verifier_id="fake-qualified-verifier",
+            verifier_version="1",
+            task_binding=request.task_binding,
+            workflow_id=request.workflow_id,
+            slot_id=request.slot_id,
+            output_sha256=("f" * 64 if self.wrong_binding else _sha(_kwargs["output"])),
+            passed=self.passed,
+            evidence={"qualified": True},
+        )
 
 
 def _polygon():
@@ -154,7 +165,6 @@ def _request(*, inputs=None, snapshot=None, envelope=None, workflow="workflow-1"
         capability_snapshot_id=snapshot or OpenAIBoundImageExecutionPort.SNAPSHOT_ID,
         inputs=inputs
         or [
-            _input("seller", SELLER, IdentitySourceRole.SELLER),
             _input("body", BODY, IdentitySourceRole.BODY),
             _input("scene", SCENE, IdentitySourceRole.SCENE_BASE),
             _input("master", MASTER, IdentitySourceRole.ORIGINAL_REAL_MASTER),
@@ -208,10 +218,11 @@ def test_targeted_edit_serializes_exact_order_receipt_and_lineage(tmp_path):
     assert sent.endpoint == "/images/edits"
     assert [item.role for item in sent.images] == [
         IdentitySourceRole.SCENE_BASE,
-        IdentitySourceRole.ORIGINAL_REAL_MASTER,
         IdentitySourceRole.SELLER,
         IdentitySourceRole.BODY,
     ]
+    assert sent.images[1].source_authority_role is IdentitySourceRole.ORIGINAL_REAL_MASTER
+    assert sent.images[1].asset_id == "master"
     assert sent.mask_asset_id == "mask"
     assert sent.mask_sha256 == _sha(MASK)
     assert outcome.artifact_sha256 == _sha(OUTPUT)
@@ -223,7 +234,12 @@ def test_targeted_edit_serializes_exact_order_receipt_and_lineage(tmp_path):
     )
     assert record["state"] == "ACCEPTED"
     assert record["receipt"]["endpoint"] == "/images/edits"
-    assert record["receipt"]["ordered_inputs"][0]["role"] == "SCENE_BASE"
+    assert record["receipt"]["ordered_inputs"][1] == {
+        "asset_id": "master",
+        "role": "SELLER",
+        "source_authority_role": "ORIGINAL_REAL_MASTER",
+        "sha256": _sha(MASTER),
+    }
     assert record["lineage"]["parent_scene_asset_id"] == "scene"
     assert record["lineage"]["provider_response_id"] == "request-1"
 
@@ -234,24 +250,27 @@ def test_targeted_edit_serializes_exact_order_receipt_and_lineage(tmp_path):
         (
             [
                 _input("master", MASTER, IdentitySourceRole.ORIGINAL_REAL_MASTER),
-                _input("seller", SELLER, IdentitySourceRole.SELLER),
             ],
             "EXACT_SCENE_BASE_REQUIRED",
         ),
         (
             [
                 _input("scene", SCENE, IdentitySourceRole.SCENE_BASE),
-                _input("master", MASTER, IdentitySourceRole.ORIGINAL_REAL_MASTER),
+                _input("body", BODY, IdentitySourceRole.BODY),
             ],
-            "EXACT_SELLER_REQUIRED",
+            "EXACT_ORIGINAL_REAL_MASTER_REQUIRED",
         ),
         (
             [
                 _input("scene", SCENE, IdentitySourceRole.SCENE_BASE),
-                _input("master", MASTER, IdentitySourceRole.SELLER),
-                _input("seller", SELLER, IdentitySourceRole.ORIGINAL_REAL_MASTER),
+                _input("master", MASTER, IdentitySourceRole.ORIGINAL_REAL_MASTER),
+                ImageExecutionInput(
+                    asset_id="generated-seller",
+                    sha256="f" * 64,
+                    role=IdentitySourceRole.SELLER,
+                ),
             ],
-            "SOURCE_ROLE_AUTHORITY_MISMATCH",
+            "SECONDARY_SELLER_IDENTITY_AUTHORITY_FORBIDDEN",
         ),
     ],
 )
@@ -405,6 +424,55 @@ def test_order_is_server_deterministic_regardless_of_request_order(tmp_path):
     assert [item.asset_id for item in transport.calls[0].images] == [
         "scene",
         "master",
-        "seller",
         "body",
     ]
+    assert transport.calls[0].images[1].role is IdentitySourceRole.SELLER
+    assert (
+        transport.calls[0].images[1].source_authority_role
+        is IdentitySourceRole.ORIGINAL_REAL_MASTER
+    )
+
+
+def test_file_asset_resolver_uses_server_catalog_and_recomputes_digest(tmp_path):
+    (tmp_path / "master.png").write_bytes(MASTER)
+    resolver = FileImageAssetResolver(
+        tmp_path,
+        [
+            FileAssetCatalogEntry(
+                asset_id="master",
+                relative_path="master.png",
+                sha256=_sha(MASTER),
+                media_type="image/png",
+                authoritative_roles={
+                    IdentitySourceRole.ORIGINAL_REAL_MASTER,
+                    IdentitySourceRole.SELLER,
+                },
+            )
+        ],
+    )
+    resolved = resolver.resolve("master")
+    assert resolved.content == MASTER
+    assert resolved.authoritative_roles == {
+        IdentitySourceRole.ORIGINAL_REAL_MASTER,
+        IdentitySourceRole.SELLER,
+    }
+    (tmp_path / "master.png").write_bytes(BODY)
+    with pytest.raises(OpenAIAdapterError, match="CATALOG_DIGEST_MISMATCH"):
+        resolver.resolve("master")
+
+
+def test_qualified_verifier_receipt_must_bind_exact_output_and_slot(tmp_path):
+    ledger = SQLiteRuntimeStateStore(tmp_path / "runtime.db")
+    port = OpenAIBoundImageExecutionPort(
+        assets=Assets(),
+        transport=Transport(),
+        ledger=ledger,
+        identity_verifier=Verifier(wrong_binding=True),
+        scene_product_verifier=Verifier(),
+    )
+    with pytest.raises(OpenAIAdapterError, match="OUTPUT_VERIFIER_BINDING_MISMATCH"):
+        port.invoke_bound(request=_request(), node_token="attempt-1")
+    with ledger._connect() as connection:
+        assert connection.execute(
+            "SELECT state FROM openai_bound_image_execution"
+        ).fetchone()[0] == "VERIFIER_EVIDENCE_INVALID"
