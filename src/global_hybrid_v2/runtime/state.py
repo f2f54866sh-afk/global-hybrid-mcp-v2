@@ -387,6 +387,14 @@ class RuntimeStateStore(Protocol):
         slot_id: str,
     ) -> ImageSlotState: ...
 
+    def begin_openai_image_execution(self, receipt: dict[str, object]) -> None: ...
+
+    def finish_openai_image_execution(
+        self, receipt_id: str, *, state: str, lineage: dict[str, object] | None
+    ) -> None: ...
+
+    def read_openai_image_execution(self, receipt_id: str) -> dict[str, object]: ...
+
 
 class RuntimeStateError(RuntimeError):
     """Base error for durable runtime state operations."""
@@ -500,6 +508,14 @@ class SQLiteRuntimeStateStore:
                 PRIMARY KEY (
                     conversation_or_thread_id, runtime_task_id, workflow_id, slot_id
                 ))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS openai_bound_image_execution (
+                receipt_id TEXT PRIMARY KEY, task_binding TEXT NOT NULL,
+                workflow_id TEXT NOT NULL,
+                slot_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
+                state TEXT NOT NULL, receipt TEXT NOT NULL, lineage TEXT,
+                UNIQUE (task_binding, workflow_id, slot_id, attempt_id))"""
             )
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS engineering_writer_capability (
@@ -1568,3 +1584,77 @@ class SQLiteRuntimeStateStore:
         if row is None:
             raise RuntimeStateNotFound("IMAGE_SLOT_NOT_FOUND")
         return ImageSlotState.model_validate_json(row[0])
+
+    def begin_openai_image_execution(self, receipt: dict[str, object]) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            accepted = connection.execute(
+                """SELECT 1 FROM openai_bound_image_execution
+                WHERE task_binding=? AND workflow_id=? AND slot_id=?
+                AND state='ACCEPTED'""",
+                (
+                    receipt["task_binding"],
+                    receipt["workflow_id"],
+                    receipt["slot_id"],
+                ),
+            ).fetchone()
+            if accepted is not None:
+                raise RuntimeStateError("IMAGE_SLOT_ALREADY_ACCEPTED")
+            try:
+                connection.execute(
+                    """INSERT INTO openai_bound_image_execution (
+                    receipt_id, task_binding, workflow_id, slot_id, attempt_id,
+                    state, receipt, lineage
+                    ) VALUES (?, ?, ?, ?, ?, 'SENT', ?, NULL)""",
+                    (
+                        receipt["receipt_id"],
+                        receipt["task_binding"],
+                        receipt["workflow_id"],
+                        receipt["slot_id"],
+                        receipt["attempt_id"],
+                        json.dumps(receipt, ensure_ascii=False),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise RuntimeStateError("OPENAI_IMAGE_ATTEMPT_ALREADY_RECORDED") from exc
+
+    def finish_openai_image_execution(
+        self, receipt_id: str, *, state: str, lineage: dict[str, object] | None
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """UPDATE openai_bound_image_execution SET state=?, lineage=?
+                WHERE receipt_id=? AND state='SENT'""",
+                (
+                    state,
+                    json.dumps(lineage, ensure_ascii=False) if lineage is not None else None,
+                    receipt_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeStateError("OPENAI_IMAGE_EXECUTION_STATE_MISMATCH")
+
+    def read_openai_image_execution(self, receipt_id: str) -> dict[str, object]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT state, receipt, lineage FROM openai_bound_image_execution
+                WHERE receipt_id=?""",
+                (receipt_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeStateNotFound("OPENAI_IMAGE_EXECUTION_NOT_FOUND")
+        lineage = json.loads(row[2]) if row[2] is not None else None
+        if lineage is not None:
+            stored_digest = lineage.get("lineage_digest")
+            body = {key: value for key, value in lineage.items() if key != "lineage_digest"}
+            expected_digest = hashlib.sha256(
+                json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            if stored_digest != expected_digest:
+                raise RuntimeStateError("OPENAI_IMAGE_LINEAGE_DIGEST_MISMATCH")
+        return {
+            "state": row[0],
+            "receipt": json.loads(row[1]),
+            "lineage": lineage,
+        }
