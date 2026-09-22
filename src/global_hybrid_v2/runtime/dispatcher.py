@@ -49,9 +49,12 @@ from global_hybrid_v2.image_surface import (
     IdentitySource,
     IdentitySourcePacket,
     IdentitySourceRole,
+    ImageAssetLineage,
+    ImageExecutionRequest,
     ImageInvocationGuard,
     ImageSurfaceController,
     ImageTaskSpec,
+    ImageWorkflowGuard,
     _identity_packet_digest,
 )
 from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
@@ -60,6 +63,8 @@ from global_hybrid_v2.runtime.state import (
     CURRENT_RUNTIME_STATE_VERSION,
     AuthenticatedPrincipal,
     IdentityAuthoritySelection,
+    ImageSlotLifecycle,
+    ImageSlotState,
     RuntimeStateAlreadyExists,
     RuntimeStateError,
     RuntimeStateNotFound,
@@ -194,6 +199,66 @@ class _RuntimeImageInvocationGuard(ImageInvocationGuard):
                 "terminal_result_id": terminal_result_id,
                 "terminal_status": terminal_status,
             },
+        )
+
+
+class _RuntimeImageWorkflowGuard(ImageWorkflowGuard):
+    """Durably binds one workflow slot to one advertised port invocation."""
+
+    def __init__(
+        self,
+        *,
+        store: RuntimeStateStore,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+        attempt_number: int,
+    ):
+        self._store = store
+        self._conversation_or_thread_id = conversation_or_thread_id
+        self._runtime_task_id = runtime_task_id
+        self._attempt_number = attempt_number
+        self._attempt_id: str | None = None
+
+    def begin(self, request: ImageExecutionRequest, *, attempt_id: str) -> bool:
+        scene = next(
+            (item for item in request.inputs if item.role is IdentitySourceRole.SCENE_BASE),
+            None,
+        )
+        if scene is None:
+            return False
+        try:
+            self._store.begin_image_slot(
+                ImageSlotState(
+                    conversation_or_thread_id=self._conversation_or_thread_id,
+                    runtime_task_id=self._runtime_task_id,
+                    workflow_id=request.workflow_id,
+                    slot_id=request.slot_id,
+                    stage=request.stage.value,
+                    operation_mode=request.operation_mode.value,
+                    attempt_number=self._attempt_number,
+                    lifecycle=ImageSlotLifecycle.PLANNED,
+                    parent_asset_id=scene.asset_id,
+                    parent_sha256=scene.sha256,
+                ),
+                attempt_id=attempt_id,
+                capability_snapshot_id=request.capability_snapshot_id,
+            )
+        except RuntimeStateError:
+            return False
+        self._attempt_id = attempt_id
+        return True
+
+    def complete(self, lineage: ImageAssetLineage, *, terminal_status: str) -> None:
+        if self._attempt_id != lineage.attempt_id:
+            raise RuntimeStateError("IMAGE_SLOT_COMPLETION_BINDING_MISMATCH")
+        self._store.complete_image_slot(
+            self._conversation_or_thread_id,
+            self._runtime_task_id,
+            lineage.workflow_id,
+            lineage.slot_id,
+            attempt_id=lineage.attempt_id,
+            terminal_status=terminal_status,
+            lineage=lineage.model_dump(mode="json"),
         )
 
 
@@ -912,18 +977,92 @@ class Dispatcher:
                         },
                     )
                 packet_data = identity_packet.model_dump(mode="json")
+                if not (
+                    image_spec.workflow_id
+                    and image_spec.slot_id
+                    and image_spec.operation_mode
+                    and image_spec.identity_stage
+                ):
+                    return DomainResult(
+                        owner=owner,
+                        status="IDENTITY_REFERENCE_TRANSPORT_REQUIRED",
+                        output={"state": "IDENTITY_REFERENCE_TRANSPORT_REQUIRED"},
+                        evidence={
+                            "identity_source_packet": packet_data,
+                            "identity_selection_receipt": {
+                                "record_id": selection.record_id,
+                                "revision": selection.revision,
+                                "server_digest": selection.server_digest,
+                            },
+                            "request_input_bound": False,
+                        },
+                    )
+                if image_spec.side_effect_budget is None:
+                    return DomainResult(
+                        owner=owner,
+                        status="IDENTITY_IMAGE_BUDGET_REQUIRED",
+                        evidence={"image_dispatch": "BLOCK"},
+                    )
+                if not all(
+                    hasattr(self.runtime_state_store, name)
+                    for name in (
+                        "begin_image_slot",
+                        "complete_image_slot",
+                        "read_image_slot",
+                    )
+                ):
+                    return DomainResult(
+                        owner=owner,
+                        status="IDENTITY_SLOT_STATE_CAPABILITY_REQUIRED",
+                        evidence={"image_dispatch": "BLOCK"},
+                    )
+                budget = image_spec.side_effect_budget
+                authorization_id = (
+                    budget.explicit_user_authorization_receipt
+                    if budget.attempt_number > 1
+                    else None
+                )
+                image_guard = _RuntimeImageInvocationGuard(
+                    store=self.runtime_state_store,
+                    conversation_or_thread_id=request.conversation_or_thread_id,
+                    runtime_task_id=request.runtime_task_id,
+                    authorization_id=authorization_id,
+                    prior_terminal_result_id=budget.prior_terminal_result_id,
+                    trace=self.trace,
+                    trace_task_id=contract.task_id,
+                )
+                workflow_guard = _RuntimeImageWorkflowGuard(
+                    store=self.runtime_state_store,
+                    conversation_or_thread_id=request.conversation_or_thread_id,
+                    runtime_task_id=request.runtime_task_id,
+                    attempt_number=budget.attempt_number,
+                )
+                receipt = self.image_controller.execute(
+                    image_spec,
+                    invocation_guard=image_guard,
+                    trusted_identity_packet=identity_packet,
+                    workflow_guard=workflow_guard,
+                )
+                self.trace.emit(
+                    task_id=contract.task_id,
+                    stage="identity_image_execution",
+                    decision=receipt.state.value,
+                    owner=owner,
+                    span_owner="EXECUTION",
+                    metadata=receipt.model_dump(mode="json"),
+                )
                 return DomainResult(
                     owner=owner,
-                    status="IDENTITY_REFERENCE_TRANSPORT_REQUIRED",
-                    output={"state": "IDENTITY_REFERENCE_TRANSPORT_REQUIRED"},
+                    status=receipt.state.value,
+                    output=receipt.model_dump(mode="json"),
                     evidence={
-                        "identity_source_packet": packet_data,
+                        "image_execution_receipt": receipt.model_dump(mode="json"),
                         "identity_selection_receipt": {
                             "record_id": selection.record_id,
                             "revision": selection.revision,
                             "server_digest": selection.server_digest,
                         },
-                        "request_input_bound": False,
+                        "request_input_bound": receipt.asset_lineage is not None,
                     },
                 )
             image_guard = None

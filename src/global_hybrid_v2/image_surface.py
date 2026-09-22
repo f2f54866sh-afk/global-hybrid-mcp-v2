@@ -60,6 +60,8 @@ class ImageRetryAuthorization(StrEnum):
 
 class IdentitySourceRole(StrEnum):
     ORIGINAL_REAL_MASTER = "ORIGINAL_REAL_MASTER"
+    SELLER = "SELLER"
+    SCENE_BASE = "SCENE_BASE"
     BODY = "BODY"
     TATTOO = "TATTOO"
     POSE = "POSE"
@@ -76,6 +78,12 @@ class IdentityStage(StrEnum):
     MULTI_POSE = "MULTI_POSE_STRESS"
     FOUR_SCENE = "FOUR_SCENE_STRESS"
     GRID_16 = "GRID_16"
+
+
+class ImageOperationMode(StrEnum):
+    GENERATE = "GENERATE"
+    EDIT = "EDIT"
+    TARGETED_EDIT = "TARGETED_EDIT"
 
 
 class IdentitySource(BaseModel):
@@ -289,6 +297,86 @@ class ImageSurfaceFingerprint(BaseModel):
         return self
 
 
+class ImagePortCapabilities(BaseModel):
+    """Port-owned, current capability advertisement used for admission."""
+
+    snapshot_id: str = Field(min_length=1)
+    port_id: str = Field(min_length=1)
+    port_version: str = Field(min_length=1)
+    supported_operation_modes: set[ImageOperationMode] = Field(min_length=1)
+    supported_reference_roles: set[IdentitySourceRole] = Field(default_factory=set)
+    max_reference_inputs: int = Field(ge=0)
+    typed_reference_roles: bool = False
+    mask_input: bool = False
+    source_binding_receipt: bool = False
+    outside_region_verification: bool = False
+    current: bool = True
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ImageExecutionInput(BaseModel):
+    asset_id: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    role: IdentitySourceRole
+
+
+class ImageExecutionRequest(BaseModel):
+    workflow_id: str = Field(min_length=1)
+    slot_id: str = Field(min_length=1)
+    stage: IdentityStage
+    operation_mode: ImageOperationMode
+    task_binding: str = Field(min_length=1)
+    person_binding: str = Field(min_length=1)
+    packet_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    capability_snapshot_id: str = Field(min_length=1)
+    inputs: list[ImageExecutionInput] = Field(min_length=1)
+    excluded_generated_source_ids: set[str] = Field(default_factory=set)
+    manifest: RenderManifest
+    locality_envelope: AuthorizedEditEnvelope | None = None
+
+
+class ImagePortInputReceipt(BaseModel):
+    """Adapter-produced receipt for the exact inputs handed to its provider."""
+
+    capability_snapshot_id: str = Field(min_length=1)
+    workflow_id: str = Field(min_length=1)
+    slot_id: str = Field(min_length=1)
+    operation_mode: ImageOperationMode
+    task_binding: str = Field(min_length=1)
+    packet_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    inputs: list[ImageExecutionInput] = Field(min_length=1)
+
+
+class ImageAssetLineage(BaseModel):
+    lineage_id: str = Field(min_length=1)
+    workflow_id: str = Field(min_length=1)
+    slot_id: str = Field(min_length=1)
+    stage: IdentityStage
+    attempt_id: str = Field(min_length=1)
+    operation_mode: ImageOperationMode
+    capability_snapshot_id: str = Field(min_length=1)
+    input_receipt: ImagePortInputReceipt
+    output_artifact_id: str = Field(min_length=1)
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider_operation_id: str | None = None
+    accepted: bool
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    lineage_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def digest_binds_lineage(self) -> ImageAssetLineage:
+        if self.lineage_digest != _image_asset_lineage_digest(self):
+            raise ValueError("image asset lineage digest mismatch")
+        return self
+
+
+def _image_asset_lineage_digest(lineage: ImageAssetLineage) -> str:
+    payload = lineage.model_dump(mode="json", exclude={"lineage_digest"})
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 class ImageCapabilityEvidence(BaseModel):
     route_family: ImageRouteFamily
     model_revision_or_unexposed: str = Field(min_length=1)
@@ -362,6 +450,9 @@ class ImageTaskSpec(BaseModel):
     lower_stage_witnesses: list[IdentityStageWitness] = Field(default_factory=list)
     host_internal_conditioning_required: bool = False
     identity_trusted_ingress_required: bool = False
+    workflow_id: str | None = Field(default=None, min_length=1)
+    slot_id: str | None = Field(default=None, min_length=1)
+    operation_mode: ImageOperationMode | None = None
 
     @model_validator(mode="after")
     def routes_are_admissible(self) -> ImageTaskSpec:
@@ -398,7 +489,7 @@ class ImageTaskSpec(BaseModel):
             )
         )
         if packet is None:
-            if identity_fields_present:
+            if identity_fields_present and not self.identity_trusted_ingress_required:
                 raise ValueError("identity controls require a task-local source packet")
             return
         if packet.task_binding != self.task_scope:
@@ -447,6 +538,9 @@ class ImageTaskSpec(BaseModel):
 
 class ImageRenderOutcome(BaseModel):
     artifact_id: str | None = None
+    artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    provider_operation_id: str | None = None
+    input_receipt: ImagePortInputReceipt | None = None
     actual_tool_family: ImageToolFamily
     requested_delta_completed: bool
     changed_regions: set[str] = Field(default_factory=set)
@@ -474,6 +568,8 @@ class ImageExecutionReceipt(BaseModel):
     user_constraint_receipt: dict[str, object]
     audit: dict[str, object]
     blocker: str | None = None
+    terminal_result_id: str | None = None
+    asset_lineage: ImageAssetLineage | None = None
 
 
 class ImageExecutionPort(Protocol):
@@ -489,12 +585,26 @@ class ImageExecutionPort(Protocol):
     ) -> ImageRenderOutcome: ...
 
 
+class BoundImageExecutionPort(Protocol):
+    def describe_capabilities(self) -> ImagePortCapabilities: ...
+
+    def invoke_bound(
+        self, *, request: ImageExecutionRequest, node_token: str
+    ) -> ImageRenderOutcome: ...
+
+
 class ImageInvocationGuard(Protocol):
     """Durable reservation edge invoked only after controller preflight passes."""
 
     def reserve(self, spec: ImageTaskSpec) -> bool: ...
 
     def complete(self, *, terminal_result_id: str, terminal_status: str) -> None: ...
+
+
+class ImageWorkflowGuard(Protocol):
+    def begin(self, request: ImageExecutionRequest, *, attempt_id: str) -> bool: ...
+
+    def complete(self, lineage: ImageAssetLineage, *, terminal_status: str) -> None: ...
 
 
 @dataclass
@@ -537,6 +647,8 @@ class ImageSurfaceController:
         spec: ImageTaskSpec,
         *,
         invocation_guard: ImageInvocationGuard | None = None,
+        trusted_identity_packet: IdentitySourcePacket | None = None,
+        workflow_guard: ImageWorkflowGuard | None = None,
     ) -> ImageExecutionReceipt:
         fingerprint = self.port.fingerprint()
         expected_evidence = ImageCapabilityEvidence(
@@ -667,12 +779,120 @@ class ImageSurfaceController:
                     "AUTHORIZED_ENVELOPE_ENFORCEMENT_UNAVAILABLE",
                 )
 
+        bound_request: ImageExecutionRequest | None = None
+        if trusted_identity_packet is not None:
+            if not spec.workflow_id or not spec.slot_id or not spec.operation_mode:
+                return self._capability_boundary(
+                    spec, fingerprint, constraints, "IDENTITY_WORKFLOW_BINDING_REQUIRED"
+                )
+            if spec.identity_stage is None:
+                return self._capability_boundary(
+                    spec, fingerprint, constraints, "IDENTITY_STAGE_REQUIRED"
+                )
+            describe = getattr(self.port, "describe_capabilities", None)
+            invoke_bound = getattr(self.port, "invoke_bound", None)
+            if not callable(describe) or not callable(invoke_bound):
+                return self._capability_boundary(
+                    spec, fingerprint, constraints, "BOUND_IMAGE_PORT_CAPABILITY_UNAVAILABLE"
+                )
+            capabilities = ImagePortCapabilities.model_validate(describe())
+            source_roles = {source.role for source in trusted_identity_packet.sources}
+            sellers = [
+                source
+                for source in trusted_identity_packet.sources
+                if source.role is IdentitySourceRole.SELLER
+            ]
+            scene_bases = [
+                source
+                for source in trusted_identity_packet.sources
+                if source.role is IdentitySourceRole.SCENE_BASE
+            ]
+            required_roles = {
+                IdentitySourceRole.ORIGINAL_REAL_MASTER,
+                IdentitySourceRole.SELLER,
+                IdentitySourceRole.SCENE_BASE,
+            }
+            if (
+                not capabilities.current
+                or spec.operation_mode not in capabilities.supported_operation_modes
+                or not capabilities.typed_reference_roles
+                or not capabilities.source_binding_receipt
+                or not required_roles.issubset(source_roles)
+                or len(sellers) != 1
+                or len(scene_bases) != 1
+                or not source_roles.issubset(capabilities.supported_reference_roles)
+                or len(trusted_identity_packet.sources)
+                > capabilities.max_reference_inputs
+            ):
+                return self._capability_boundary(
+                    spec, fingerprint, constraints, "BOUND_IMAGE_PORT_CAPABILITY_HOLD"
+                )
+            if spec.operation_mode is ImageOperationMode.TARGETED_EDIT and (
+                spec.authorized_edit_envelope is None
+                or not capabilities.mask_input
+                or not capabilities.outside_region_verification
+            ):
+                return self._capability_boundary(
+                    spec, fingerprint, constraints, "TARGETED_EDIT_CAPABILITY_HOLD"
+                )
+            if spec.operation_mode is ImageOperationMode.TARGETED_EDIT:
+                assert spec.authorized_edit_envelope is not None
+                scene_base = scene_bases[0]
+                if (
+                    scene_base.asset_id != spec.authorized_edit_envelope.source_asset_id
+                    or scene_base.sha256 != spec.authorized_edit_envelope.source_sha256
+                ):
+                    return self._capability_boundary(
+                        spec,
+                        fingerprint,
+                        constraints,
+                        "SCENE_BASE_ENVELOPE_BINDING_MISMATCH",
+                    )
+            bound_request = ImageExecutionRequest(
+                workflow_id=spec.workflow_id,
+                slot_id=spec.slot_id,
+                stage=spec.identity_stage,
+                operation_mode=spec.operation_mode,
+                task_binding=trusted_identity_packet.task_binding,
+                person_binding=trusted_identity_packet.person_binding,
+                packet_digest=trusted_identity_packet.packet_digest,
+                capability_snapshot_id=capabilities.snapshot_id,
+                inputs=[
+                    ImageExecutionInput(
+                        asset_id=source.asset_id,
+                        sha256=source.sha256,
+                        role=source.role,
+                    )
+                    for source in trusted_identity_packet.sources
+                ],
+                excluded_generated_source_ids=(
+                    trusted_identity_packet.excluded_generated_source_ids
+                ),
+                manifest=spec.render_manifest,
+                locality_envelope=spec.authorized_edit_envelope,
+            )
+
         token = str(uuid4())
         guard = invocation_guard or self.invocation_guard
         if guard is not None and not guard.reserve(spec):
             return self._blocked(spec, fingerprint, constraints, "IMAGE_ATTEMPT_RESERVATION_BLOCKED")
+        if bound_request is not None and (
+            workflow_guard is None
+            or not workflow_guard.begin(bound_request, attempt_id=token)
+        ):
+            receipt = self._blocked(
+                spec, fingerprint, constraints, "IMAGE_SLOT_STATE_ADMISSION_BLOCKED"
+            )
+            if guard is not None:
+                guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
+            return receipt
         try:
-            if envelope is None:
+            if bound_request is not None:
+                outcome = self.port.invoke_bound(  # type: ignore[attr-defined]
+                    request=bound_request,
+                    node_token=token,
+                )
+            elif envelope is None:
                 outcome = self.port.invoke(
                     manifest=spec.render_manifest,
                     tool_family=spec.allowed_tool_family,
@@ -720,6 +940,21 @@ class ImageSurfaceController:
         if outcome.actual_tool_family is not spec.allowed_tool_family:
             receipt = self._blocked(
                 spec, fingerprint, constraints, "ACTUAL_TOOL_FAMILY_MISMATCH", token, outcome
+            )
+            if guard is not None:
+                guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
+            return receipt
+
+        if bound_request is not None and not self._input_receipt_matches(
+            bound_request, outcome.input_receipt
+        ):
+            receipt = self._capability_boundary(
+                spec,
+                fingerprint,
+                constraints,
+                "PORT_INPUT_BINDING_RECEIPT_MISMATCH",
+                node_token=token,
+                outcome=outcome,
             )
             if guard is not None:
                 guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
@@ -780,6 +1015,46 @@ class ImageSurfaceController:
         )
         passed = all(bool(audit[key]) for key in required_checks)
         locality_failed = any(not bool(audit[key]) for key in locality_checks)
+        lineage = None
+        if bound_request is not None:
+            if not outcome.artifact_id or not outcome.artifact_sha256:
+                receipt = self._capability_boundary(
+                    spec,
+                    fingerprint,
+                    constraints,
+                    "OUTPUT_ASSET_LINEAGE_REQUIRED",
+                    node_token=token,
+                    outcome=outcome,
+                )
+                if guard is not None:
+                    guard.complete(
+                        terminal_result_id=(outcome.provider_operation_id or token),
+                        terminal_status=receipt.state.value,
+                    )
+                return receipt
+            assert outcome.input_receipt is not None
+            lineage_draft = ImageAssetLineage.model_construct(
+                lineage_id=str(uuid4()),
+                workflow_id=bound_request.workflow_id,
+                slot_id=bound_request.slot_id,
+                stage=bound_request.stage,
+                attempt_id=token,
+                operation_mode=bound_request.operation_mode,
+                capability_snapshot_id=bound_request.capability_snapshot_id,
+                input_receipt=outcome.input_receipt,
+                output_artifact_id=outcome.artifact_id,
+                output_sha256=outcome.artifact_sha256,
+                provider_operation_id=outcome.provider_operation_id,
+                accepted=passed,
+                lineage_digest="0" * 64,
+            )
+            lineage = ImageAssetLineage.model_validate(
+                {
+                    **lineage_draft.model_dump(mode="json"),
+                    "lineage_digest": _image_asset_lineage_digest(lineage_draft),
+                }
+            )
+        terminal_result_id = outcome.artifact_id or outcome.provider_operation_id or token
         receipt = ImageExecutionReceipt(
             state=ImageExecutionState.PASS if passed else ImageExecutionState.FAIL,
             node_token=token,
@@ -797,10 +1072,34 @@ class ImageSurfaceController:
                 if locality_failed
                 else "VISUAL_ACCEPTANCE_FAILED"
             ),
+            terminal_result_id=terminal_result_id,
+            asset_lineage=lineage,
         )
         if guard is not None:
-            guard.complete(terminal_result_id=token, terminal_status=receipt.state.value)
+            guard.complete(
+                terminal_result_id=terminal_result_id,
+                terminal_status=receipt.state.value,
+            )
+        if workflow_guard is not None and lineage is not None:
+            workflow_guard.complete(lineage, terminal_status=receipt.state.value)
         return receipt
+
+    @staticmethod
+    def _input_receipt_matches(
+        request: ImageExecutionRequest,
+        receipt: ImagePortInputReceipt | None,
+    ) -> bool:
+        if receipt is None:
+            return False
+        return receipt.model_dump(mode="json") == {
+            "capability_snapshot_id": request.capability_snapshot_id,
+            "workflow_id": request.workflow_id,
+            "slot_id": request.slot_id,
+            "operation_mode": request.operation_mode.value,
+            "task_binding": request.task_binding,
+            "packet_digest": request.packet_digest,
+            "inputs": [item.model_dump(mode="json") for item in request.inputs],
+        }
 
     @staticmethod
     def _tool_for_lane(lane: ImageRouteFamily) -> ImageToolFamily:
@@ -832,6 +1131,28 @@ class ImageSurfaceController:
     ) -> ImageExecutionReceipt:
         return ImageExecutionReceipt(
             state=ImageExecutionState.BLOCKED,
+            node_token=node_token,
+            enforcement="ENGINEERING_DISPATCHER_CONTROLLED",
+            fingerprint=fingerprint,
+            render_manifest=spec.render_manifest,
+            admitted_tool_family=spec.allowed_tool_family,
+            actual_invoked_tool_family=(outcome.actual_tool_family if outcome else None),
+            user_constraint_receipt=constraints,
+            audit={},
+            blocker=blocker,
+        )
+
+    @staticmethod
+    def _capability_boundary(
+        spec: ImageTaskSpec,
+        fingerprint: ImageSurfaceFingerprint,
+        constraints: dict[str, object],
+        blocker: str,
+        node_token: str | None = None,
+        outcome: ImageRenderOutcome | None = None,
+    ) -> ImageExecutionReceipt:
+        return ImageExecutionReceipt(
+            state=ImageExecutionState.CAPABILITY_BOUNDARY,
             node_token=node_token,
             enforcement="ENGINEERING_DISPATCHER_CONTROLLED",
             fingerprint=fingerprint,

@@ -28,6 +28,51 @@ class ImageAttemptState(BaseModel):
     last_terminal_status: str | None = None
 
 
+class ImageSlotLifecycle(StrEnum):
+    PLANNED = "PLANNED"
+    IN_FLIGHT = "IN_FLIGHT"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+
+
+class ImageSlotState(BaseModel):
+    conversation_or_thread_id: str = Field(min_length=1)
+    runtime_task_id: str = Field(min_length=1)
+    workflow_id: str = Field(min_length=1)
+    slot_id: str = Field(min_length=1)
+    stage: str = Field(min_length=1)
+    operation_mode: str = Field(min_length=1)
+    attempt_number: int = Field(ge=1)
+    lifecycle: ImageSlotLifecycle
+    active_attempt_id: str | None = None
+    capability_snapshot_id: str | None = None
+    parent_asset_id: str = Field(min_length=1)
+    parent_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_artifact_id: str | None = None
+    output_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    lineage: dict[str, object] | None = None
+    terminal_status: str | None = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def lineage_is_bound_to_output(self) -> ImageSlotState:
+        if self.lineage is None:
+            return self
+        stored = self.lineage.get("lineage_digest")
+        body = {key: value for key, value in self.lineage.items() if key != "lineage_digest"}
+        observed = hashlib.sha256(
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if stored != observed:
+            raise ValueError("image slot lineage digest mismatch")
+        if (
+            self.output_artifact_id != self.lineage.get("output_artifact_id")
+            or self.output_sha256 != self.lineage.get("output_sha256")
+        ):
+            raise ValueError("image slot output lineage mismatch")
+        return self
+
+
 class AuthenticatedPrincipal(BaseModel):
     """Server-injected identity; Stage 1 callers cannot construct trusted ingress."""
 
@@ -42,6 +87,8 @@ class IdentitySelectionLifecycle(StrEnum):
 
 
 class IdentitySecondaryRole(StrEnum):
+    SELLER = "SELLER"
+    SCENE_BASE = "SCENE_BASE"
     BODY = "BODY"
     TATTOO = "TATTOO"
     POSE = "POSE"
@@ -316,6 +363,30 @@ class RuntimeStateStore(Protocol):
         capability_epoch: str,
     ) -> dict[str, object]: ...
 
+    def begin_image_slot(
+        self, state: ImageSlotState, *, attempt_id: str, capability_snapshot_id: str
+    ) -> ImageSlotState: ...
+
+    def complete_image_slot(
+        self,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+        workflow_id: str,
+        slot_id: str,
+        *,
+        attempt_id: str,
+        terminal_status: str,
+        lineage: dict[str, object],
+    ) -> ImageSlotState: ...
+
+    def read_image_slot(
+        self,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+        workflow_id: str,
+        slot_id: str,
+    ) -> ImageSlotState: ...
+
 
 class RuntimeStateError(RuntimeError):
     """Base error for durable runtime state operations."""
@@ -419,6 +490,17 @@ class SQLiteRuntimeStateStore:
             for name in ("active_attempt_id", "last_terminal_result_id", "last_terminal_status"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE image_attempt_budget ADD COLUMN {name} TEXT NULL")
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS image_workflow_slot (
+                conversation_or_thread_id TEXT NOT NULL,
+                runtime_task_id TEXT NOT NULL,
+                workflow_id TEXT NOT NULL,
+                slot_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY (
+                    conversation_or_thread_id, runtime_task_id, workflow_id, slot_id
+                ))"""
+            )
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS engineering_writer_capability (
                 actor TEXT NOT NULL, writer_surface TEXT NOT NULL,
@@ -1346,3 +1428,143 @@ class SQLiteRuntimeStateStore:
             )
             if cursor.rowcount != 1:
                 raise RuntimeStateError("IMAGE_ATTEMPT_COMPLETION_BINDING_MISMATCH")
+
+    def begin_image_slot(
+        self,
+        state: ImageSlotState,
+        *,
+        attempt_id: str,
+        capability_snapshot_id: str,
+    ) -> ImageSlotState:
+        """Persist the exact slot transition immediately before the port call."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT payload FROM image_workflow_slot
+                WHERE conversation_or_thread_id=? AND runtime_task_id=?
+                AND workflow_id=? AND slot_id=?""",
+                (
+                    state.conversation_or_thread_id,
+                    state.runtime_task_id,
+                    state.workflow_id,
+                    state.slot_id,
+                ),
+            ).fetchone()
+            if row is not None:
+                previous = ImageSlotState.model_validate_json(row[0])
+                if previous.lifecycle is ImageSlotLifecycle.ACCEPTED:
+                    raise RuntimeStateError("IMAGE_SLOT_ALREADY_ACCEPTED")
+                if previous.lifecycle is ImageSlotLifecycle.IN_FLIGHT:
+                    raise RuntimeStateError("IMAGE_SLOT_PRIOR_OUTCOME_UNKNOWN")
+                if state.attempt_number != previous.attempt_number + 1:
+                    raise RuntimeStateError("IMAGE_SLOT_ATTEMPT_NUMBER_MISMATCH")
+                if (
+                    state.parent_asset_id != previous.parent_asset_id
+                    or state.parent_sha256 != previous.parent_sha256
+                ):
+                    raise RuntimeStateError("IMAGE_SLOT_PARENT_BINDING_MISMATCH")
+            elif state.attempt_number != 1:
+                raise RuntimeStateError("IMAGE_SLOT_ATTEMPT_NUMBER_MISMATCH")
+            active = state.model_copy(
+                update={
+                    "lifecycle": ImageSlotLifecycle.IN_FLIGHT,
+                    "active_attempt_id": attempt_id,
+                    "capability_snapshot_id": capability_snapshot_id,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            connection.execute(
+                """INSERT INTO image_workflow_slot (
+                conversation_or_thread_id, runtime_task_id, workflow_id, slot_id, payload
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    conversation_or_thread_id, runtime_task_id, workflow_id, slot_id
+                ) DO UPDATE SET payload=excluded.payload""",
+                (
+                    active.conversation_or_thread_id,
+                    active.runtime_task_id,
+                    active.workflow_id,
+                    active.slot_id,
+                    active.model_dump_json(),
+                ),
+            )
+        return active
+
+    def complete_image_slot(
+        self,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+        workflow_id: str,
+        slot_id: str,
+        *,
+        attempt_id: str,
+        terminal_status: str,
+        lineage: dict[str, object],
+    ) -> ImageSlotState:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT payload FROM image_workflow_slot
+                WHERE conversation_or_thread_id=? AND runtime_task_id=?
+                AND workflow_id=? AND slot_id=?""",
+                (conversation_or_thread_id, runtime_task_id, workflow_id, slot_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeStateNotFound("IMAGE_SLOT_NOT_FOUND")
+            state = ImageSlotState.model_validate_json(row[0])
+            if (
+                state.lifecycle is not ImageSlotLifecycle.IN_FLIGHT
+                or state.active_attempt_id != attempt_id
+                or lineage.get("attempt_id") != attempt_id
+                or lineage.get("workflow_id") != workflow_id
+                or lineage.get("slot_id") != slot_id
+            ):
+                raise RuntimeStateError("IMAGE_SLOT_COMPLETION_BINDING_MISMATCH")
+            accepted = bool(lineage.get("accepted"))
+            terminal = state.model_copy(
+                update={
+                    "lifecycle": (
+                        ImageSlotLifecycle.ACCEPTED
+                        if accepted
+                        else ImageSlotLifecycle.REJECTED
+                    ),
+                    "active_attempt_id": None,
+                    "output_artifact_id": lineage.get("output_artifact_id"),
+                    "output_sha256": lineage.get("output_sha256"),
+                    "lineage": lineage,
+                    "terminal_status": terminal_status,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            connection.execute(
+                """UPDATE image_workflow_slot SET payload=?
+                WHERE conversation_or_thread_id=? AND runtime_task_id=?
+                AND workflow_id=? AND slot_id=?""",
+                (
+                    terminal.model_dump_json(),
+                    conversation_or_thread_id,
+                    runtime_task_id,
+                    workflow_id,
+                    slot_id,
+                ),
+            )
+        return terminal
+
+    def read_image_slot(
+        self,
+        conversation_or_thread_id: str,
+        runtime_task_id: str,
+        workflow_id: str,
+        slot_id: str,
+    ) -> ImageSlotState:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT payload FROM image_workflow_slot
+                WHERE conversation_or_thread_id=? AND runtime_task_id=?
+                AND workflow_id=? AND slot_id=?""",
+                (conversation_or_thread_id, runtime_task_id, workflow_id, slot_id),
+            ).fetchone()
+        if row is None:
+            raise RuntimeStateNotFound("IMAGE_SLOT_NOT_FOUND")
+        return ImageSlotState.model_validate_json(row[0])
