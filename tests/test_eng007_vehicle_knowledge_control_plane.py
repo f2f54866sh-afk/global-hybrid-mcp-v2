@@ -317,13 +317,16 @@ def test_render_control_endpoint_authenticates_and_forbids_target_override():
     endpoint = RenderVehicleReconciliationEndpoint(
         shared_secret="secret", reconcile=lambda: {"status": "PASS"}
     )
-    body = b'{"operation":"vehicle-knowledge-reconcile"}'
+    body = (
+        b'{"operation":"vehicle-knowledge-reconcile","run_id":"cf-1790208000000",'
+        b'"scheduled_at":"2026-09-24T00:00:00.000Z"}'
+    )
     import hmac
 
     signature = hmac.new(b"secret", body, hashlib.sha256).hexdigest()
     assert endpoint.handle(body=body, signature=signature) == {"status": "PASS"}
     assert endpoint.handle(body=body, signature="bad")["status"] == "REJECTED"
-    other = b'{"operation":"vehicle-knowledge-reconcile","spreadsheet_id":"caller"}'
+    other = body[:-1] + b',"spreadsheet_id":"caller"}'
     other_signature = hmac.new(b"secret", other, hashlib.sha256).hexdigest()
     assert (
         endpoint.handle(body=other, signature=other_signature)["blocker"]

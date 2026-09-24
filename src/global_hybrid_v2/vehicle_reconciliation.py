@@ -11,6 +11,11 @@ from global_hybrid_v2.adapters.google_vehicle_control import (
     GoogleInventoryReader,
     GoogleSheetsRestTransport,
 )
+from global_hybrid_v2.google_auth import (
+    GoogleAuthUnavailable,
+    ServiceAccountAccessTokenProvider,
+    ServiceAccountIdentity,
+)
 from global_hybrid_v2.settings import Settings
 from global_hybrid_v2.vehicle_knowledge import canonical_json
 
@@ -51,12 +56,15 @@ class ConfiguredVehicleReconciliation:
         self.invocation_count += 1
         if self.inventory_reader is None or self.control_client is None:
             return {"status": "HOLD", "blocker": "RECONCILIATION_DEPENDENCY_NOT_CONFIGURED"}
-        inventory = self.inventory_reader.read()
+        try:
+            inventory = self.inventory_reader.read()
+        except GoogleAuthUnavailable:
+            return {"status": "HOLD", "blocker": "GOOGLE_AUTH_UNAVAILABLE"}
         if inventory.state != "PASS":
             return {"status": "HOLD", "blocker": inventory.blocker or "INVENTORY_READ_FAILED"}
         row_payloads = [
             {
-                "id": f"inventory-row-{row.row_number}",
+                "row_number": row.row_number,
                 "payload": {
                     "row_number": row.row_number,
                     "make": row.make,
@@ -98,14 +106,17 @@ class ConfiguredVehicleReconciliation:
 
 
 def configured_vehicle_reconciliation(settings: Settings) -> ConfiguredVehicleReconciliation:
-    google_token = settings.google_sheets_access_token
+    google_credential = settings.google_service_account_json
     control_url = settings.vehicle_control_http_base_url
     control_secret = settings.vehicle_control_http_write_secret
-    if google_token is None or not control_url or control_secret is None:
+    if google_credential is None or not control_url or control_secret is None:
         return ConfiguredVehicleReconciliation(inventory_reader=None, control_client=None)
+    token_provider = ServiceAccountAccessTokenProvider(
+        ServiceAccountIdentity.from_json(google_credential.get_secret_value())
+    )
     return ConfiguredVehicleReconciliation(
         inventory_reader=GoogleInventoryReader(
-            GoogleSheetsRestTransport(lambda: google_token.get_secret_value())
+            GoogleSheetsRestTransport(token_provider)
         ),
         control_client=CloudflareVehicleControlClient(
             base_url=control_url,

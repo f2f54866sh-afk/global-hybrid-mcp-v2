@@ -7,7 +7,6 @@ const bearer = request => request.headers.get("authorization") || "";
 const controlAuthorized = (request, env) => bearer(request) === `Bearer ${env.CONTROL_PLANE_WRITE_SECRET}`;
 const readAuthorized = (request, env) => bearer(request) === `Bearer ${env.RUNTIME_READ_SECRET}`;
 const reconciliationUrl = "https://global-hybrid-mcp-v2.onrender.com/internal/vehicle-knowledge/reconcile";
-const reconciliationBody = '{"operation":"vehicle-knowledge-reconcile"}';
 const rejectInjection = body => [
   "sql", "raw_sql", "table", "table_name", "spreadsheet_id", "verified",
   "promoted", "promotion_state", "authority_state", "query_ready",
@@ -20,6 +19,16 @@ const required = (body, names) => {
     }
   }
 };
+
+const canonicalJson = value => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const collision = () => { throw new Error("IDENTITY_COLLISION"); };
 
 const database = env => {
   if (!env.DB || typeof env.DB.prepare !== "function" || typeof env.DB.batch !== "function") {
@@ -34,20 +43,49 @@ async function control(db, path, body) {
   if (path === "/internal/control/inventory-observation") {
     required(body, ["observation_id", "source_revision", "observed_at"]);
     const rows = Array.isArray(body.rows) ? body.rows : [];
+    for (const row of rows) {
+      if (!Number.isInteger(row.row_number) || row.row_number < 1) throw new Error("INVALID_ROW_NUMBER");
+    }
+    const semanticPayload = canonicalJson({
+      source_revision: body.source_revision,
+      payload: body.payload || {},
+      rows: rows.map(row => ({row_number: row.row_number, payload: row.payload || {}})),
+    });
+    const existing = await db.prepare(
+      "SELECT source_revision,payload FROM inventory_source_observation WHERE id=?",
+    ).bind(body.observation_id).first();
+    if (existing) {
+      if (existing.source_revision !== body.source_revision || existing.payload !== semanticPayload) collision();
+      return {state: "IDEMPOTENT_SUCCESS", observation_id: body.observation_id, row_count: rows.length};
+    }
     const statements = [db.prepare(
       "INSERT INTO inventory_source_observation(id,source_revision,payload,observed_at) VALUES(?,?,?,?)",
-    ).bind(body.observation_id, body.source_revision, JSON.stringify(body.payload || {}), body.observed_at)];
+    ).bind(body.observation_id, body.source_revision, semanticPayload, body.observed_at)];
     for (const row of rows) {
-      required(row, ["id"]);
       statements.push(db.prepare(
         "INSERT INTO inventory_vehicle_row(id,observation_id,payload) VALUES(?,?,?)",
-      ).bind(row.id, body.observation_id, JSON.stringify(row.payload || {})));
+      ).bind(`${body.observation_id}:row:${row.row_number}`, body.observation_id, canonicalJson(row.payload || {})));
     }
-    await db.batch(statements);
+    try {
+      await db.batch(statements);
+    } catch (error) {
+      const raced = await db.prepare(
+        "SELECT source_revision,payload FROM inventory_source_observation WHERE id=?",
+      ).bind(body.observation_id).first();
+      if (!raced || raced.source_revision !== body.source_revision || raced.payload !== semanticPayload) throw error;
+      return {state: "IDEMPOTENT_SUCCESS", observation_id: body.observation_id, row_count: rows.length};
+    }
     return {state: "RECORDED", observation_id: body.observation_id, row_count: rows.length};
   }
   if (path === "/internal/control/coverage-work") {
     required(body, ["work_id", "scope_key"]);
+    const existing = await db.prepare(
+      "SELECT scope_key,state FROM vehicle_coverage_work WHERE id=?",
+    ).bind(body.work_id).first();
+    if (existing) {
+      if (existing.scope_key !== body.scope_key) collision();
+      return {state: "IDEMPOTENT_SUCCESS", work_id: body.work_id, work_state: existing.state};
+    }
     await db.prepare(
       "INSERT INTO vehicle_coverage_work(id,scope_key,state) VALUES(?,?,?)",
     ).bind(body.work_id, body.scope_key, "OPEN").run();
@@ -57,6 +95,20 @@ async function control(db, path, body) {
     required(body, ["work_id", "revision_id", "receipt_id"]);
     if (!body.receipt || body.receipt.decision !== "PASS" || !Array.isArray(body.facts)) {
       throw new Error("VERIFIED_RECEIPT_REQUIRED");
+    }
+    const semanticPayload = canonicalJson({
+      work_id: body.work_id,
+      receipt_id: body.receipt_id,
+      receipt: body.receipt,
+      revision: body.revision || {},
+      facts: body.facts,
+    });
+    const existing = await db.prepare(
+      "SELECT work_id,state,payload FROM vehicle_configuration_revision WHERE id=?",
+    ).bind(body.revision_id).first();
+    if (existing) {
+      if (existing.work_id !== body.work_id || existing.state !== "VERIFIED" || existing.payload !== semanticPayload) collision();
+      return {state: "IDEMPOTENT_SUCCESS", revision_id: body.revision_id};
     }
     const work = await db.prepare(
       "SELECT state FROM vehicle_coverage_work WHERE id=?",
@@ -68,7 +120,7 @@ async function control(db, path, body) {
       ).bind(body.receipt_id, body.work_id, "PASS", JSON.stringify(body.receipt)),
       db.prepare(
         "INSERT INTO vehicle_configuration_revision(id,work_id,state,payload) VALUES(?,?,?,?)",
-      ).bind(body.revision_id, body.work_id, "VERIFIED", JSON.stringify(body.revision || {})),
+      ).bind(body.revision_id, body.work_id, "VERIFIED", semanticPayload),
     ];
     for (const fact of body.facts) {
       required(fact, ["fact_id"]);
@@ -84,6 +136,13 @@ async function control(db, path, body) {
   }
   if (path === "/internal/control/snapshot-promote") {
     required(body, ["snapshot_id", "promotion_id", "promoted_at"]);
+    const previous = await db.prepare(
+      "SELECT snapshot_id,promoted_at FROM vehicle_snapshot_promotion WHERE id=?",
+    ).bind(body.promotion_id).first();
+    if (previous) {
+      if (previous.snapshot_id !== body.snapshot_id || previous.promoted_at !== body.promoted_at) collision();
+      return {state: "IDEMPOTENT_SUCCESS", snapshot_id: body.snapshot_id};
+    }
     const build = await db.prepare(
       "SELECT id FROM vehicle_snapshot_build WHERE id=?",
     ).bind(body.snapshot_id).first();
@@ -168,8 +227,14 @@ export async function handleRequest(request, env) {
   }
 }
 
-export async function handleScheduled(_event, env, _ctx, fetcher = fetch) {
+export async function handleScheduled(event, env, _ctx, fetcher = fetch) {
   if (!env.RENDER_RECONCILIATION_SHARED_SECRET) throw new Error("RECONCILIATION_SECRET_REQUIRED");
+  if (!Number.isFinite(event.scheduledTime)) throw new Error("SCHEDULED_TIME_REQUIRED");
+  const reconciliationBody = JSON.stringify({
+    operation: "vehicle-knowledge-reconcile",
+    run_id: `cf-${event.scheduledTime}`,
+    scheduled_at: new Date(event.scheduledTime).toISOString(),
+  });
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(env.RENDER_RECONCILIATION_SHARED_SECRET),

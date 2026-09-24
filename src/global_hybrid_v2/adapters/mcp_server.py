@@ -73,6 +73,14 @@ def create_mcp_server(
     vehicle_reconciliation: Callable[[], dict] | None = None,
 ) -> MCPServer:
     server = MCPServer("GLOBAL Hybrid v2")
+    reconciliation_endpoint = None
+    settings = getattr(application, "settings", None)
+    secret = getattr(settings, "vehicle_reconciliation_shared_secret", None)
+    if secret is not None and vehicle_reconciliation is not None:
+        reconciliation_endpoint = RenderVehicleReconciliationEndpoint(
+            shared_secret=secret.get_secret_value(),
+            reconcile=vehicle_reconciliation,
+        )
 
     @server.custom_route("/health", methods=["GET"])
     async def health(_: Request) -> JSONResponse:
@@ -136,17 +144,12 @@ def create_mcp_server(
 
     @server.custom_route("/internal/vehicle-knowledge/reconcile", methods=["POST"])
     async def vehicle_knowledge_reconcile(request: Request) -> JSONResponse:
-        secret = application.settings.vehicle_reconciliation_shared_secret
-        if secret is None or vehicle_reconciliation is None:
+        if reconciliation_endpoint is None:
             return JSONResponse(
                 {"status": "REJECTED", "blocker": "RECONCILIATION_NOT_CONFIGURED"},
                 status_code=503,
             )
-        endpoint = RenderVehicleReconciliationEndpoint(
-            shared_secret=secret.get_secret_value(),
-            reconcile=vehicle_reconciliation,
-        )
-        result = endpoint.handle(
+        result = reconciliation_endpoint.handle(
             body=await request.body(),
             signature=request.headers.get("x-vehicle-control-signature", ""),
         )

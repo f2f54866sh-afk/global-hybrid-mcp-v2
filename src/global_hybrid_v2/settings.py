@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     vehicle_configuration_http_base_url: str | None = None
     vehicle_configuration_http_read_secret: str | None = None
     vehicle_reconciliation_shared_secret: SecretStr | None = None
-    google_sheets_access_token: SecretStr | None = None
+    google_service_account_json: SecretStr | None = None
     vehicle_control_http_base_url: str | None = None
     vehicle_control_http_write_secret: SecretStr | None = None
 

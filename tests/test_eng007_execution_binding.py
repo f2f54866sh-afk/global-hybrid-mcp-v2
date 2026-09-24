@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import subprocess
 import sys
 import tomllib
@@ -19,6 +20,17 @@ from tests._authority_signing import TEST_KEY_ID, TEST_PUBLIC_KEY
 from tests.test_mcp_server import _copy_authority_repo
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _scheduled_body(timestamp_ms=1790208000000):
+    return json.dumps(
+        {
+            "operation": "vehicle-knowledge-reconcile",
+            "run_id": f"cf-{timestamp_ms}",
+            "scheduled_at": "2026-09-24T00:00:00.000Z",
+        },
+        separators=(",", ":"),
+    ).encode()
 
 
 def test_concrete_reconciliation_reads_normalizes_and_records_fixed_observation():
@@ -94,7 +106,7 @@ def _client(tmp_path, *, secret=None, reconcile=None):
 
 def test_render_reconciliation_route_is_callable_and_hmac_bound(tmp_path):
     called = []
-    body = b'{"operation":"vehicle-knowledge-reconcile"}'
+    body = _scheduled_body()
     signature = hmac.new(b"secret", body, hashlib.sha256).hexdigest()
     reconcile = lambda: called.append(True) or {"status": "PASS"}  # noqa: E731
     with _client(tmp_path, secret="secret", reconcile=reconcile) as client:
@@ -107,8 +119,30 @@ def test_render_reconciliation_route_is_callable_and_hmac_bound(tmp_path):
         assert response.json() == {"status": "PASS"}
         assert called == [True]
 
+        replay = client.post(
+            "/internal/vehicle-knowledge/reconcile",
+            content=body,
+            headers={"x-vehicle-control-signature": signature},
+        )
+        assert replay.status_code == 200
+        assert called == [True]
+
+        reordered = (
+            b'{"scheduled_at":"2026-09-24T00:00:00.000Z",'
+            b'"run_id":"cf-1790208000000","operation":"vehicle-knowledge-reconcile"}'
+        )
+        reordered_signature = hmac.new(b"secret", reordered, hashlib.sha256).hexdigest()
+        collision = client.post(
+            "/internal/vehicle-knowledge/reconcile",
+            content=reordered,
+            headers={"x-vehicle-control-signature": reordered_signature},
+        )
+        assert collision.status_code == 403
+        assert collision.json()["blocker"] == "SCHEDULER_RUN_COLLISION"
+        assert called == [True]
+
         assert client.post("/internal/vehicle-knowledge/reconcile", content=body).status_code == 403
-        override = b'{"operation":"vehicle-knowledge-reconcile","target":"caller"}'
+        override = body[:-1] + b',"target":"caller"}'
         override_signature = hmac.new(b"secret", override, hashlib.sha256).hexdigest()
         rejected = client.post(
             "/internal/vehicle-knowledge/reconcile",
@@ -119,12 +153,33 @@ def test_render_reconciliation_route_is_callable_and_hmac_bound(tmp_path):
         assert rejected.json()["blocker"] == "CONTROL_TARGET_OVERRIDE_REJECTED"
         assert called == [True]
 
+        new_body = _scheduled_body(1790208001000).replace(
+            b"2026-09-24T00:00:00.000Z", b"2026-09-24T00:00:01.000Z"
+        )
+        new_signature = hmac.new(b"secret", new_body, hashlib.sha256).hexdigest()
+        assert client.post(
+            "/internal/vehicle-knowledge/reconcile",
+            content=new_body,
+            headers={"x-vehicle-control-signature": new_signature},
+        ).status_code == 200
+        assert called == [True, True]
+
+        legacy = b'{"operation":"vehicle-knowledge-reconcile"}'
+        legacy_signature = hmac.new(b"secret", legacy, hashlib.sha256).hexdigest()
+        legacy_response = client.post(
+            "/internal/vehicle-knowledge/reconcile",
+            content=legacy,
+            headers={"x-vehicle-control-signature": legacy_signature},
+        )
+        assert legacy_response.status_code == 403
+        assert legacy_response.json()["blocker"] == "CONTROL_TARGET_OVERRIDE_REJECTED"
+
 
 def test_render_reconciliation_route_fails_closed_when_not_configured(tmp_path):
     with _client(tmp_path) as client:
         response = client.post(
             "/internal/vehicle-knowledge/reconcile",
-            content=b'{"operation":"vehicle-knowledge-reconcile"}',
+            content=_scheduled_body(),
         )
     assert response.status_code == 503
     assert response.json()["blocker"] == "RECONCILIATION_NOT_CONFIGURED"
@@ -137,7 +192,10 @@ import hmac
 from starlette.testclient import TestClient
 import global_hybrid_v2.adapters.mcp_server as production
 
-body = b'{"operation":"vehicle-knowledge-reconcile"}'
+body = (
+    b'{"operation":"vehicle-knowledge-reconcile","run_id":"cf-1790208000000",'
+    b'"scheduled_at":"2026-09-24T00:00:00.000Z"}'
+)
 signature = hmac.new(b"entrypoint-secret", body, hashlib.sha256).hexdigest()
 with TestClient(production.mcp.streamable_http_app(stateless_http=True, json_response=True)) as client:
     response = client.post(
