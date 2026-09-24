@@ -1,0 +1,23 @@
+{
+  "$schema": "../../../.preflight-tools/node-v24.19.0-win-x64/node_modules/wrangler/config-schema.json",
+  "name": "vehicle-knowledge-preflight",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-24",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vehicle-knowledge-preflight",
+      "database_id": "41ac9497-647d-4ceb-99e5-829e4b772485"
+    }
+  ],
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+  "vars": {
+    "PREFLIGHT_MODE": "ZERO_COST_PREFLIGHT",
+    "GITHUB_OWNER": "f2f54866sh-afk",
+    "GITHUB_REPO": "global-hybrid-mcp-v2",
+    "GITHUB_WORKFLOW": "vehicle-knowledge-preflight.yml",
+    "GITHUB_REF": "eng007/zero-cost-infra-preflight"
+  }
+}

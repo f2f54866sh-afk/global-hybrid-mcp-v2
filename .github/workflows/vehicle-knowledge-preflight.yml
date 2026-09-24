@@ -1,0 +1,39 @@
+name: Vehicle Knowledge Zero-Cost Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eng007-vehicle-knowledge-control-plane
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: eng007/zero-cost-infra-preflight
+      - name: Verify bounded run identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "f2f54866sh-afk/global-hybrid-mcp-v2"
+          test "$GITHUB_REF_NAME" = "eng007/zero-cost-infra-preflight"
+          echo "mode=ZERO_COST_PREFLIGHT"
+          echo "run_id=$GITHUB_RUN_ID"
+      - name: Verify required secret names are configured
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          COMPANY_INVENTORY_SPREADSHEET_ID: ${{ secrets.COMPANY_INVENTORY_SPREADSHEET_ID }}
+          CONTROL_SPREADSHEET_ID: ${{ secrets.CONTROL_SPREADSHEET_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$GOOGLE_SERVICE_ACCOUNT_JSON"
+          test -n "$COMPANY_INVENTORY_SPREADSHEET_ID"
+          test -n "$CONTROL_SPREADSHEET_ID"
+          echo "secret_presence=PASS"

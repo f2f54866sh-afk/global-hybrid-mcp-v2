@@ -13,3 +13,5 @@ output/
 authority/trust/*.key
 authority/trust/*.pem
 authority/trust/*.private
+.preflight-tools/
+.wrangler/
