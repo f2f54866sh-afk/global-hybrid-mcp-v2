@@ -14,10 +14,6 @@
     "crons": ["0 * * * *"]
   },
   "vars": {
-    "PREFLIGHT_MODE": "ZERO_COST_PREFLIGHT",
-    "GITHUB_OWNER": "f2f54866sh-afk",
-    "GITHUB_REPO": "global-hybrid-mcp-v2",
-    "GITHUB_WORKFLOW": "vehicle-knowledge-preflight.yml",
-    "GITHUB_REF": "eng007/zero-cost-infra-preflight"
+    "PREFLIGHT_MODE": "ZERO_COST_PREFLIGHT"
   }
 }

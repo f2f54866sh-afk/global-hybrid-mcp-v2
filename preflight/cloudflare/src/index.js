@@ -26,34 +26,44 @@ async function transactionFalsifier(env) {
   return { batch_failed: batchFailed, residual_rows: Number(row?.count ?? -1) };
 }
 
-async function dispatchGithub(env, eventId) {
-  if (!env.GITHUB_DISPATCH_TOKEN) {
-    return { ok: false, blocker: "GITHUB_DISPATCH_TOKEN_UNAVAILABLE" };
+const RENDER_HEALTH_URL = "https://global-hybrid-mcp-v2.onrender.com/health";
+const RENDER_TARGET_ID = "GLOBAL_HYBRID_RENDER_HEALTH";
+
+async function probeRenderHealth(env, scheduledTime) {
+  const probeId = `render-health:${scheduledTime}`;
+  const observedAt = new Date().toISOString();
+  let httpStatus = 0;
+  let healthOk = false;
+  try {
+    const response = await fetch(RENDER_HEALTH_URL, {
+      method: "GET",
+      headers: { accept: "application/json" },
+    });
+    httpStatus = response.status;
+    if (response.status === 200) {
+      const body = await response.json();
+      healthOk = body?.ok === true;
+    }
+  } catch {
+    healthOk = false;
   }
-  const admitted = await env.DB.prepare(
-    "INSERT OR IGNORE INTO preflight_dispatch(event_id, dispatched_at) VALUES (?, ?)",
-  ).bind(eventId, new Date().toISOString()).run();
-  if (admitted.meta.changes !== 1) {
-    return { ok: true, duplicate_suppressed: true, dispatch_count: 0 };
-  }
-  const url = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}`
-    + `/actions/workflows/${env.GITHUB_WORKFLOW}/dispatches`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
-      "content-type": "application/json",
-      "user-agent": "eng007-zero-cost-preflight",
-      "x-github-api-version": "2022-11-28",
-    },
-    body: JSON.stringify({ ref: env.GITHUB_REF }),
-  });
-  const requestId = response.headers.get("x-github-request-id");
   await env.DB.prepare(
-    "UPDATE preflight_dispatch SET github_status = ?, github_request_id = ? WHERE event_id = ?",
-  ).bind(response.status, requestId, eventId).run();
-  return { ok: response.status === 204, status: response.status, dispatch_count: 1, request_id: requestId };
+    `INSERT INTO scheduler_probe_receipt (
+       probe_id, scheduled_at, target_id, http_status, health_ok, attempt_count, observed_at
+     ) VALUES (?, ?, ?, ?, ?, 1, ?)
+     ON CONFLICT(probe_id) DO UPDATE SET
+       http_status = excluded.http_status,
+       health_ok = excluded.health_ok,
+       attempt_count = scheduler_probe_receipt.attempt_count + 1,
+       observed_at = excluded.observed_at`,
+  ).bind(
+    probeId,
+    new Date(scheduledTime).toISOString(),
+    RENDER_TARGET_ID,
+    httpStatus,
+    healthOk ? 1 : 0,
+    observedAt,
+  ).run();
 }
 
 export default {
@@ -64,8 +74,21 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/d1-readback") {
       const tx = await env.DB.prepare("SELECT COUNT(*) AS count FROM preflight_tx").first();
-      const dispatch = await env.DB.prepare("SELECT COUNT(*) AS count FROM preflight_dispatch").first();
-      return json({ database: "vehicle-knowledge-preflight", tx_rows: Number(tx.count), dispatch_rows: Number(dispatch.count) });
+      const probeCount = await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM scheduler_probe_receipt",
+      ).first();
+      const latestProbe = await env.DB.prepare(
+        `SELECT probe_id, scheduled_at, target_id, http_status, health_ok,
+                attempt_count, observed_at
+           FROM scheduler_probe_receipt
+          ORDER BY scheduled_at DESC LIMIT 1`,
+      ).first();
+      return json({
+        database: "vehicle-knowledge-preflight",
+        tx_rows: Number(tx.count),
+        scheduler_probe_count: Number(probeCount.count),
+        latest_scheduler_probe: latestProbe,
+      });
     }
     if (request.method === "POST" && url.pathname === "/dispatch-test") {
       if (!authorized(request, env)) return json({ error: "CONTROL_AUTH_REQUIRED" }, 403);
@@ -76,7 +99,6 @@ export default {
   },
 
   async scheduled(controller, env) {
-    const eventId = `cron:${controller.scheduledTime}`;
-    await dispatchGithub(env, eventId);
+    await probeRenderHealth(env, controller.scheduledTime);
   },
 };
