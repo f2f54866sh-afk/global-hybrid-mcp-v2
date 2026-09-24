@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -15,6 +20,52 @@ class GoogleSheetsTransport(Protocol):
 
 
 class GoogleQuotaExceeded(RuntimeError): ...
+
+
+class GoogleSheetsRestTransport:
+    """REST transport fed by a deployment-owned access-token producer."""
+
+    def __init__(self, access_token_provider: Callable[[], str], *, timeout: float = 15):
+        self._access_token_provider = access_token_provider
+        self.timeout = timeout
+
+    def _request(self, url: str, *, method: str = "GET", payload=None) -> dict:
+        data = None if payload is None else json.dumps(payload).encode()
+        request = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                "authorization": f"Bearer {self._access_token_provider()}",
+                "accept": "application/json",
+                "content-type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                raise GoogleQuotaExceeded("Google Sheets free quota exhausted") from exc
+            raise
+
+    def read_values(self, spreadsheet_id: str, range_name: str) -> list[list[str]]:
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/" + urllib.parse.quote(
+            range_name, safe=""
+        )
+        return self._request(url).get("values", [])
+
+    def write_values(self, spreadsheet_id: str, range_name: str, values: list[list[str]]) -> dict:
+        url = (
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/"
+            + urllib.parse.quote(range_name, safe="")
+            + "?valueInputOption=RAW"
+        )
+        return self._request(
+            url,
+            method="PUT",
+            payload={"range": range_name, "majorDimension": "ROWS", "values": values},
+        )
 
 
 @dataclass(frozen=True)
@@ -49,6 +100,21 @@ class GoogleControlSheetAdapter:
 
     def __init__(self, transport: GoogleSheetsTransport):
         self.transport = transport
+
+    def read(self, tab: str, range_suffix: str) -> list[list[str]]:
+        if tab not in self.allowed_tabs:
+            raise ValueError("CONTROL_SHEET_TAB_REJECTED")
+        return self.transport.read_values(CONTROL_SPREADSHEET_ID, f"{tab}!{range_suffix}")
+
+    def write_evidence(self, tab: str, range_suffix: str, values: list[list[str]]) -> dict:
+        if tab not in self.allowed_tabs:
+            raise ValueError("CONTROL_SHEET_TAB_REJECTED")
+        if tab == "CONTROL_READBACK":
+            raise ValueError("CONTROL_READBACK_IS_RECEIPT_ONLY")
+        writer = getattr(self.transport, "write_values", None)
+        if writer is None:
+            raise RuntimeError("CONTROL_SHEET_WRITE_TRANSPORT_UNAVAILABLE")
+        return writer(CONTROL_SPREADSHEET_ID, f"{tab}!{range_suffix}", values)
 
     @staticmethod
     def reject_authority_claim(payload: dict) -> None:

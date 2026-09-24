@@ -102,12 +102,17 @@ class RecordingSheets:
         self.rows = rows or []
         self.failure = failure
         self.calls = []
+        self.writes = []
 
     def read_values(self, spreadsheet_id, range_name):
         self.calls.append((spreadsheet_id, range_name))
         if self.failure:
             raise self.failure()
         return self.rows
+
+    def write_values(self, spreadsheet_id, range_name, values):
+        self.writes.append((spreadsheet_id, range_name, values))
+        return {"updatedRows": len(values)}
 
 
 def test_inventory_reader_uses_fixed_source_and_google_quota_holds():
@@ -125,6 +130,19 @@ def test_control_sheet_rejects_direct_authority_and_target_override(claim):
         GoogleControlSheetAdapter.reject_authority_claim({claim: True})
     with pytest.raises(ValueError, match="TARGET_OVERRIDE"):
         GoogleControlSheetAdapter.reject_authority_claim({"spreadsheet_id": "caller"})
+
+
+def test_control_sheet_adapter_is_bounded_to_allowed_tabs_and_evidence_role():
+    transport = RecordingSheets(rows=[["work-1"]])
+    adapter = GoogleControlSheetAdapter(transport)
+    assert adapter.read("RESEARCH_QUEUE", "A1:A10") == [["work-1"]]
+    result = adapter.write_evidence("EVIDENCE_INBOX", "A1:A1", [["evidence-1"]])
+    assert result == {"updatedRows": 1}
+    assert transport.writes[0][1] == "EVIDENCE_INBOX!A1:A1"
+    with pytest.raises(ValueError, match="TAB_REJECTED"):
+        adapter.read("VERIFIED_FACTS", "A1")
+    with pytest.raises(ValueError, match="RECEIPT_ONLY"):
+        adapter.write_evidence("CONTROL_READBACK", "A1", [["forged"]])
 
 
 def test_tiguan_taiwan_power_unit_is_ps_not_hp_and_verifier_binds_scope():
