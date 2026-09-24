@@ -3,18 +3,54 @@ from __future__ import annotations
 import hashlib
 import hmac
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
 from starlette.testclient import TestClient
 
+from global_hybrid_v2.adapters.google_vehicle_control import InventoryReadResult
 from global_hybrid_v2.adapters.mcp_server import create_mcp_server
 from global_hybrid_v2.application import create_application
 from global_hybrid_v2.settings import Settings
+from global_hybrid_v2.vehicle_knowledge import InventoryRow
+from global_hybrid_v2.vehicle_reconciliation import ConfiguredVehicleReconciliation
 from tests._authority_signing import TEST_KEY_ID, TEST_PUBLIC_KEY
 from tests.test_mcp_server import _copy_authority_repo
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_concrete_reconciliation_reads_normalizes_and_records_fixed_observation():
+    class Reader:
+        normalizer = type("Normalizer", (), {"version": "normalizer-v1"})()
+
+        def read(self):
+            return InventoryReadResult(
+                "PASS",
+                [InventoryRow(7, "VW", "2021", "TIGUAN R", ("", "", "VW", "2021"))],
+                [],
+                1,
+            )
+
+    class Control:
+        def __init__(self):
+            self.payloads = []
+
+        def record_inventory_observation(self, payload):
+            self.payloads.append(payload)
+            return {"state": "RECORDED", "observation_id": payload["observation_id"]}
+
+    control = Control()
+    reconciliation = ConfiguredVehicleReconciliation(
+        inventory_reader=Reader(),
+        control_client=control,
+    )
+    result = reconciliation()
+    assert result["status"] == "PASS"
+    assert reconciliation.invocation_count == 1
+    assert len(control.payloads) == 1
+    assert control.payloads[0]["rows"][0]["payload"]["model"] == "TIGUAN R"
 
 
 def test_worker_executes_fixed_d1_control_and_read_paths():
@@ -32,7 +68,7 @@ def test_worker_executes_fixed_d1_control_and_read_paths():
 def test_wrangler_candidate_binds_exact_entrypoint_and_d1():
     config = tomllib.loads((ROOT / "infra/vehicle_knowledge/wrangler.toml").read_text())
     assert config["main"] == "worker.js"
-    assert config["workers_dev"] is False
+    assert config["workers_dev"] is True
     assert config["triggers"] == {"crons": ["0 * * * *"]}
     assert config["d1_databases"] == [
         {
@@ -92,3 +128,38 @@ def test_render_reconciliation_route_fails_closed_when_not_configured(tmp_path):
         )
     assert response.status_code == 503
     assert response.json()["blocker"] == "RECONCILIATION_NOT_CONFIGURED"
+
+
+def test_production_module_entrypoint_binds_real_reconciliation_callable():
+    script = r'''
+import hashlib
+import hmac
+from starlette.testclient import TestClient
+import global_hybrid_v2.adapters.mcp_server as production
+
+body = b'{"operation":"vehicle-knowledge-reconcile"}'
+signature = hmac.new(b"entrypoint-secret", body, hashlib.sha256).hexdigest()
+with TestClient(production.mcp.streamable_http_app(stateless_http=True, json_response=True)) as client:
+    response = client.post(
+        "/internal/vehicle-knowledge/reconcile",
+        content=body,
+        headers={"x-vehicle-control-signature": signature},
+    )
+assert response.status_code == 200, response.text
+assert response.json()["blocker"] == "RECONCILIATION_DEPENDENCY_NOT_CONFIGURED"
+assert production.vehicle_reconciliation.invocation_count == 1
+'''
+    env = {
+        **__import__("os").environ,
+        "PYTHONPATH": str(ROOT / "src"),
+        "GLOBAL_VEHICLE_RECONCILIATION_SHARED_SECRET": "entrypoint-secret",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

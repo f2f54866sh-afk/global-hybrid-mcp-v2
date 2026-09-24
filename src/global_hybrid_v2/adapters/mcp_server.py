@@ -17,6 +17,7 @@ from global_hybrid_v2.contracts import TaskRequest
 from global_hybrid_v2.domains.vehicle_configuration import VehicleConfigurationReadbackProvider
 from global_hybrid_v2.governance.authority import AUTHORITY_ACTIVATION_INVALID, AuthorityError
 from global_hybrid_v2.render_vehicle_control import RenderVehicleReconciliationEndpoint
+from global_hybrid_v2.vehicle_reconciliation import configured_vehicle_reconciliation
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +182,8 @@ def create_mcp_server(
 
 
 application = create_application()
-mcp = create_mcp_server(application)
+vehicle_reconciliation = configured_vehicle_reconciliation(application.settings)
+mcp = create_mcp_server(application, vehicle_reconciliation=vehicle_reconciliation)
 
 
 def main() -> None:
