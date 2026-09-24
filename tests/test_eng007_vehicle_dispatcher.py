@@ -124,24 +124,23 @@ def test_missing_vehicle_library_adapter_has_vehicle_only_failure_chain(tmp_path
     } & set(by_stage)
 
 
-def test_multi_projection_fails_before_library_request(tmp_path, capsys):
+def test_multi_projection_builds_bounded_evidence_bundle(tmp_path, capsys):
     application = _application(tmp_path)
     result = application.dispatcher.dispatch(
         _vehicle_request("2018 BMW 318I Facebook media vehicle configuration")
     )
     events = _events(capsys)
 
-    assert result.status == "SALES_MULTI_PROJECTION_NOT_CONFIGURED"
-    assert result.output["requested_projections"] == [
-        "sales_media_evidence",
-        "vehicle_configuration_reference",
-    ]
-    assert not {
-        "library_request",
-        "library_boundary",
-        "library_packet",
-        "snapshot_compiled",
-    } & {event["stage"] for event in events}
+    assert result.status == "SALES_EVIDENCE_BUNDLE_READY"
+    assert result.output["state"] == "READY"
+    assert len(result.output["projection_packets"]) == 2
+    assert {item["evidence_role"] for item in result.output["projection_packets"]} == {
+        "LIBRARY_EVIDENCE_NOT_SALES_DECISION",
+        "LIBRARY_REFERENCE_NOT_INSTANCE_PROOF",
+    }
+    assert result.evidence["instance_trim_state"] == "UNRESOLVED"
+    assert result.evidence["factory_provenance_state"] == "UNRESOLVED"
+    assert sum(event["stage"] == "library_request" for event in events) == 2
 
 
 def test_legacy_non_media_sales_does_not_request_library(tmp_path, capsys):

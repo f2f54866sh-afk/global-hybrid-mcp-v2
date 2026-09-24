@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     live_execution: bool = False
     port: int = 8000
     vehicle_configuration_snapshot_path: str | None = None
+    vehicle_configuration_provider_mode: str = "file"
+    vehicle_configuration_http_base_url: str | None = None
+    vehicle_configuration_http_read_secret: str | None = None
 
     model_config = SettingsConfigDict(
         env_prefix="GLOBAL_",

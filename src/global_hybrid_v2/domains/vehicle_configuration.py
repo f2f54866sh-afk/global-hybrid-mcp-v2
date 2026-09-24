@@ -126,6 +126,11 @@ class VehicleConfigurationProvider(Protocol):
     ) -> VehicleConfigurationLookupResult: ...
 
 
+@runtime_checkable
+class VehicleConfigurationReadbackProvider(Protocol):
+    def readback(self) -> Any: ...
+
+
 class UnavailableVehicleConfigurationProvider:
     provider_id = "vehicle-configuration-provider-unavailable"
     provider_version = "1"

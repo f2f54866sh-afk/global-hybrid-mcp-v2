@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse
 
 from global_hybrid_v2.application import Application, create_application
 from global_hybrid_v2.contracts import TaskRequest
+from global_hybrid_v2.domains.vehicle_configuration import VehicleConfigurationReadbackProvider
 from global_hybrid_v2.governance.authority import AUTHORITY_ACTIVATION_INVALID, AuthorityError
 
 logger = logging.getLogger(__name__)
@@ -39,9 +40,7 @@ def _authority_verification_fingerprints(application: Application) -> dict[str, 
 
     activation: dict[str, Any] = {}
     try:
-        loaded_activation = json.loads(
-            (registry_path.parent / "activation.json").read_text(encoding="utf-8")
-        )
+        loaded_activation = json.loads((registry_path.parent / "activation.json").read_text(encoding="utf-8"))
         if isinstance(loaded_activation, dict):
             activation = loaded_activation
     except (OSError, UnicodeError, json.JSONDecodeError):
@@ -60,9 +59,7 @@ def _authority_verification_fingerprints(application: Application) -> dict[str, 
             expected_length=64,
         ),
         "trusted_key_id": trusted_key_id if isinstance(trusted_key_id, str) else "UNSET",
-        "activation_key_id": (
-            activation_key_id if isinstance(activation_key_id, str) else "UNAVAILABLE"
-        ),
+        "activation_key_id": (activation_key_id if isinstance(activation_key_id, str) else "UNAVAILABLE"),
         "registry_path": str(registry_path),
     }
 
@@ -111,13 +108,24 @@ def create_mcp_server(application: Application) -> MCPServer:
                 },
                 status_code=503,
             )
-        return JSONResponse(
-            {
-                "ready": True,
-                "resolved_owners": [owner.value for owner in snapshot.entries],
-                "runtime": application.runtime_identity.model_dump(),
+        payload = {
+            "ready": True,
+            "resolved_owners": [owner.value for owner in snapshot.entries],
+            "runtime": application.runtime_identity.model_dump(),
+        }
+        provider = application.vehicle_configuration_provider
+        if isinstance(provider, VehicleConfigurationReadbackProvider):
+            payload["vehicle_configuration_provider"] = provider.readback().model_dump(mode="json")
+        elif provider is not None:
+            payload["vehicle_configuration_provider"] = {
+                "provider_id": getattr(provider, "provider_id", type(provider).__name__),
+                "provider_version": getattr(provider, "provider_version", "UNAVAILABLE"),
+                "snapshot_id": getattr(provider, "snapshot_id", None),
+                "source_revision": getattr(provider, "source_revision", None),
+                "generated_at": getattr(provider, "generated_at", None),
+                "active": True,
             }
-        )
+        return JSONResponse(payload)
 
     @server.tool()
     def validate_task(payload: dict) -> dict:

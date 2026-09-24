@@ -47,6 +47,7 @@ from global_hybrid_v2.research import ResearchExecutor, UnavailableResearchPort
 from global_hybrid_v2.runtime.state import RuntimeStateError, RuntimeStateStore, RuntimeTaskState
 from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.runtime.transition import TransitionController
+from global_hybrid_v2.task_evidence import TaskEvidencePlanner, TrustedTaskSemantics
 
 MAX_RESEARCH_ATTEMPTS = 2
 PRE_RESEARCH_EGRESS_SUPPRESSION = "PRE_RESEARCH_EGRESS_SUPPRESSION"
@@ -143,7 +144,20 @@ class Dispatcher:
             research_available=(self.research_executor.availability is ResearchProviderAvailability.CALLABLE)
         )
 
-    def dispatch(self, request: TaskRequest, *, require_host_projection: bool = False):
+    def dispatch(
+        self,
+        request: TaskRequest,
+        *,
+        require_host_projection: bool = False,
+        trusted_task_semantics: TrustedTaskSemantics | None = None,
+    ):
+        evidence_plan = None
+        if trusted_task_semantics is not None:
+            evidence_plan = TaskEvidencePlanner().plan(trusted_task_semantics)
+            if evidence_plan.vehicle_query is not None:
+                request = request.model_copy(
+                    update={"vehicle_configuration_query": evidence_plan.vehicle_query}
+                )
         task_id = str(uuid4())
         task_trace_id = self.trace.start_task(task_id)
         contract_id = str(uuid4())
@@ -290,10 +304,7 @@ class Dispatcher:
                     },
                 )
         if request.engineering_checkpoint is not None:
-            current_authority = {
-                owner.value: entry.revision
-                for owner, entry in snapshot.entries.items()
-            }
+            current_authority = {owner.value: entry.revision for owner, entry in snapshot.entries.items()}
             resume = self.resume_gate.admit(
                 request.engineering_checkpoint,
                 current_authority=current_authority,
@@ -334,22 +345,7 @@ class Dispatcher:
         sales_vehicle_configuration_task = (
             owner is Owner.SALES_HUMAN and request.vehicle_configuration_query is not None
         )
-        if sales_media_task and sales_vehicle_configuration_task:
-            return DomainResult(
-                owner=Owner.SALES_HUMAN,
-                status="SALES_MULTI_PROJECTION_NOT_CONFIGURED",
-                output={
-                    "state": "SALES_MULTI_PROJECTION_NOT_CONFIGURED",
-                    "requested_projections": [
-                        "sales_media_evidence",
-                        "vehicle_configuration_reference",
-                    ],
-                },
-                evidence={
-                    "media_projection_requested": True,
-                    "vehicle_configuration_projection_requested": True,
-                },
-            )
+        sales_media_consumption_trace = sales_media_task and not sales_vehicle_configuration_task
         authority_entry = snapshot.entries.get(owner)
         risk_class = self.risk_classifier.classify(request)
         context_admission = self.firewall.evaluate(request.context, snapshot)
@@ -374,6 +370,9 @@ class Dispatcher:
             task_trace_id=task_trace_id,
             contract_id=contract_id,
             request_text=request.request_text,
+            required_projections=(
+                list(evidence_plan.required_projections) if evidence_plan is not None else []
+            ),
             intent=request.intent,
             owner=owner,
             effects=request.effects,
@@ -517,7 +516,8 @@ class Dispatcher:
                     responsibility_owner=owner.value,
                     effect_class=request.effects[0],
                 )
-                if runtime_state is not None and request.effects else None
+                if runtime_state is not None and request.effects
+                else None
             ),
             proposed_owner=owner.value,
         )
@@ -616,7 +616,7 @@ class Dispatcher:
         if domain is None:
             raise RuntimeError(f"domain adapter missing: {owner.value}")
 
-        if sales_media_task:
+        if sales_media_consumption_trace:
             configured = not isinstance(domain, NotConfiguredDomain)
             if not configured:
                 return self._sales_upstream_block(
@@ -658,7 +658,7 @@ class Dispatcher:
         try:
             domain_result = domain.run(contract)
         except Exception as exc:
-            if sales_media_task:
+            if sales_media_consumption_trace:
                 return self._sales_upstream_block(
                     contract=contract,
                     authority_revision=(authority_entry.revision if authority_entry else None),
@@ -667,7 +667,7 @@ class Dispatcher:
                     blocker_type=type(exc).__name__,
                 )
             raise
-        if sales_media_task:
+        if sales_media_consumption_trace:
             self.trace.emit(
                 task_id=contract.task_id,
                 stage="sales_result",
@@ -727,7 +727,7 @@ class Dispatcher:
                 }
             )
 
-        if sales_media_task:
+        if sales_media_consumption_trace:
             fitness = SystemFitnessFunctions.evaluate_sales_consumption(
                 snapshot=snapshot,
                 contract=contract,
@@ -804,14 +804,16 @@ class Dispatcher:
             },
         )
         if blocking:
-            return result.model_copy(update={
-                "status": "NO_SERIALIZE / UNKNOWN_WITH_EXACT_BLOCKER",
-                "evidence": {
-                    **result.evidence,
-                    "witness_finding_codes": [item.code for item in blocking],
-                    "witness_task_id": contract.task_id,
-                },
-            })
+            return result.model_copy(
+                update={
+                    "status": "NO_SERIALIZE / UNKNOWN_WITH_EXACT_BLOCKER",
+                    "evidence": {
+                        **result.evidence,
+                        "witness_finding_codes": [item.code for item in blocking],
+                        "witness_task_id": contract.task_id,
+                    },
+                }
+            )
         return result
 
     def _compile_sales_snapshot(
@@ -906,7 +908,7 @@ class Dispatcher:
             },
         )
         try:
-            compiled = contract.model_copy(update={"domain_contracts": [packet]})
+            compiled = contract.model_copy(update={"domain_contracts": [*contract.domain_contracts, packet]})
         except Exception as exc:
             raise _SalesConsumptionBlock("snapshot_compiled", exc) from exc
         self.trace.emit(
@@ -1017,7 +1019,7 @@ class Dispatcher:
             },
         )
         try:
-            compiled = contract.model_copy(update={"domain_contracts": [packet]})
+            compiled = contract.model_copy(update={"domain_contracts": [*contract.domain_contracts, packet]})
         except Exception as exc:
             raise _SalesConsumptionBlock("snapshot_compiled", exc) from exc
         self.trace.emit(
@@ -1177,8 +1179,7 @@ class Dispatcher:
                     "identity_currentness_token": contract.identity_currentness_token,
                 }
                 if not all(
-                    isinstance(item, dict)
-                    and all(item.get(key) == value for key, value in expected.items())
+                    isinstance(item, dict) and all(item.get(key) == value for key, value in expected.items())
                     for item in host_terminal
                 ):
                     return DomainResult(

@@ -6,6 +6,10 @@ from pathlib import Path
 from global_hybrid_v2.adapters.file_vehicle_configuration import (
     configured_vehicle_configuration_provider,
 )
+from global_hybrid_v2.adapters.http_vehicle_configuration import (
+    HttpVehicleConfigurationProvider,
+    UrlLibVehicleProviderTransport,
+)
 from global_hybrid_v2.adapters.openai_research import configured_research_port
 from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
@@ -36,6 +40,7 @@ class Application:
     runtime_identity: RuntimeIdentity
     trace: TraceBus
     dispatcher: Dispatcher
+    vehicle_configuration_provider: VehicleConfigurationProvider | None = None
     composition_fitness: FitnessReport | None = None
 
 
@@ -49,11 +54,7 @@ def create_application(
     host_current_state_verifier: HostCurrentStateVerifier | None = None,
     vehicle_configuration_provider: VehicleConfigurationProvider | None = None,
 ) -> Application:
-    root = (
-        Path(repo_root).resolve()
-        if repo_root is not None
-        else Path(__file__).resolve().parents[2]
-    )
+    root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[2]
     runtime_settings = settings or Settings()
     effective_runtime_identity = runtime_identity or read_runtime_identity()
     registry_path = Path(runtime_settings.authority_registry)
@@ -71,14 +72,26 @@ def create_application(
     research_executor = ResearchExecutor(research_port)
     effective_vehicle_configuration_provider = vehicle_configuration_provider
     if effective_vehicle_configuration_provider is None:
-        effective_vehicle_configuration_provider = configured_vehicle_configuration_provider(
-            runtime_settings,
-            repo_root=root,
-        )
-    domains: dict[Owner, DomainPort] = {
-        owner: NotConfiguredDomain(owner)
-        for owner in Owner
-    }
+        if runtime_settings.vehicle_configuration_provider_mode == "cloudflare_d1_http":
+            if (
+                not runtime_settings.vehicle_configuration_http_base_url
+                or not runtime_settings.vehicle_configuration_http_read_secret
+            ):
+                raise RuntimeError("cloudflare D1 HTTP vehicle provider is incompletely configured")
+            effective_vehicle_configuration_provider = HttpVehicleConfigurationProvider(
+                UrlLibVehicleProviderTransport(
+                    base_url=runtime_settings.vehicle_configuration_http_base_url,
+                    read_secret=runtime_settings.vehicle_configuration_http_read_secret,
+                )
+            )
+        elif runtime_settings.vehicle_configuration_provider_mode == "file":
+            effective_vehicle_configuration_provider = configured_vehicle_configuration_provider(
+                runtime_settings,
+                repo_root=root,
+            )
+        else:
+            raise RuntimeError("unknown vehicle configuration provider mode")
+    domains: dict[Owner, DomainPort] = {owner: NotConfiguredDomain(owner) for owner in Owner}
     domains[Owner.LIBRARY_FACT] = LibraryProjectionDomain(
         vehicle_configuration_provider=effective_vehicle_configuration_provider
     )
@@ -89,9 +102,7 @@ def create_application(
     )
     if not composition_fitness.passed:
         blockers = ", ".join(
-            check.blocker or check.name
-            for check in composition_fitness.checks
-            if not check.passed
+            check.blocker or check.name for check in composition_fitness.checks if not check.passed
         )
         raise RuntimeError(f"runtime composition fitness failed: {blockers}")
     dispatcher = Dispatcher(
@@ -111,5 +122,6 @@ def create_application(
         runtime_identity=effective_runtime_identity,
         trace=runtime_trace,
         dispatcher=dispatcher,
+        vehicle_configuration_provider=effective_vehicle_configuration_provider,
         composition_fitness=composition_fitness,
     )

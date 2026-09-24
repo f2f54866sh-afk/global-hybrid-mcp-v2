@@ -213,11 +213,7 @@ class MediaActivationGate:
         if len(current) != len(basis):
             blockers.append("STALE_CAMPAIGN_EVIDENCE")
 
-        capability = [
-            item
-            for item in current
-            if AudienceDimension.PLATFORM_CAPABILITY in item.dimensions
-        ]
+        capability = [item for item in current if AudienceDimension.PLATFORM_CAPABILITY in item.dimensions]
         if not any(plan.selected_strategy in item.supported_strategies for item in capability):
             blockers.append("CURRENT_PLATFORM_CAPABILITY_UNVERIFIED")
 
@@ -236,11 +232,15 @@ class MediaActivationGate:
             AudienceDataState.ACTIVE,
         }:
             blockers.append("LOOKALIKE_AUDIENCE_UNAVAILABLE")
-        if plan.selected_strategy in {
-            AudienceStrategy.RETARGETING,
-            AudienceStrategy.CUSTOM,
-            AudienceStrategy.LOOKALIKE,
-        } and not plan.audience_data_use_authorized:
+        if (
+            plan.selected_strategy
+            in {
+                AudienceStrategy.RETARGETING,
+                AudienceStrategy.CUSTOM,
+                AudienceStrategy.LOOKALIKE,
+            }
+            and not plan.audience_data_use_authorized
+        ):
             blockers.append("AUDIENCE_DATA_USE_NOT_AUTHORIZED")
 
         if plan.geo_expansion and not any(
@@ -358,10 +358,7 @@ class CampaignOutcomeRecord(BaseModel):
     def validate_outcome_window(self) -> CampaignOutcomeRecord:
         if self.owner is not Owner.SALES_HUMAN:
             raise ValueError("campaign outcome learning is owned by SALES_HUMAN")
-        if any(
-            item.tzinfo is None
-            for item in (self.period_start, self.period_end, self.stale_after)
-        ):
+        if any(item.tzinfo is None for item in (self.period_start, self.period_end, self.stale_after)):
             raise ValueError("campaign outcome timestamps must be timezone-aware")
         if not self.period_start < self.period_end <= self.stale_after:
             raise ValueError("campaign outcome time window is invalid")
@@ -419,15 +416,9 @@ class MediaLearningEvaluator:
             if record.funnel.message_starts
             else 0.0
         )
-        if (
-            ctr >= criteria.high_ctr_threshold
-            and qualified_rate < criteria.minimum_qualified_message_rate
-        ):
+        if ctr >= criteria.high_ctr_threshold and qualified_rate < criteria.minimum_qualified_message_rate:
             reasons.append("HIGH_CTR_LOW_QUALIFIED_OUTCOME")
-        if (
-            record.funnel.sold > 0
-            and record.hypothesis_alignment is HypothesisAlignment.CONTRADICTS
-        ):
+        if record.funnel.sold > 0 and record.hypothesis_alignment is HypothesisAlignment.CONTRADICTS:
             reasons.append("AUDIENCE_HYPOTHESIS_CONTRADICTED_BY_SOLD_COHORT")
         if reasons:
             return MediaLearningReceipt(
@@ -440,9 +431,7 @@ class MediaLearningEvaluator:
             campaign_id=record.campaign_id,
             decision=MediaLearningDecision.OBSERVE,
             reason_codes=["OUTCOME_LINKAGE_OBSERVED"],
-            causal_credit_allowed=(
-                record.attribution_state is AttributionState.CONTROLLED
-            ),
+            causal_credit_allowed=(record.attribution_state is AttributionState.CONTROLLED),
         )
 
 
@@ -478,6 +467,7 @@ class SalesMediaDomain:
             for item in contract.domain_contracts
             if item.provider_owner is Owner.LIBRARY_FACT
             and item.consumer_owner is Owner.SALES_HUMAN
+            and item.payload.get("projection") == "sales_media_evidence"
         ]
         if len(library_packets) != 1:
             raise ValueError("Sales media adapter requires one bounded Library packet")
@@ -494,9 +484,7 @@ class SalesMediaDomain:
             "campaign_objective": (
                 "maximize qualified conversations, appointments, show-ups, and sold outcomes"
             ),
-            "primary_hypothesis": (
-                "multi-passenger practicality may be a relevant purchase reason"
-            ),
+            "primary_hypothesis": ("multi-passenger practicality may be a relevant purchase reason"),
             "counter_hypothesis": (
                 "price, condition, local supply, and broad delivery may explain demand better "
                 "than demographic narrowing"

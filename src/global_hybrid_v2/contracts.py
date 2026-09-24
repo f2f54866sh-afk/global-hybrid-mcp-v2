@@ -503,6 +503,7 @@ class LibraryAccessRequest(BaseModel):
 
 class TaskContract(BaseModel):
     vehicle_configuration_query: VehicleConfigurationQuery | None = None
+    required_projections: list[str] = Field(default_factory=list)
     task_id: str = Field(default_factory=lambda: str(uuid4()))
     task_trace_id: str = Field(default_factory=lambda: str(uuid4()))
     contract_id: str = Field(default_factory=lambda: str(uuid4()))

@@ -205,6 +205,14 @@ def test_ready_resolves_current_authority(tmp_path):
             "git_branch": None,
             "repo_slug": None,
         },
+        "vehicle_configuration_provider": {
+            "provider_id": "file-vehicle-configuration",
+            "provider_version": "vehicle-config-v1-4f4a27ddd89e09b6",
+            "snapshot_id": "vehicle-config-v1-4f4a27ddd89e09b6",
+            "source_revision": "libfile_6af09104d854819180eb56566dfa7f02:v1",
+            "generated_at": "2026-09-20T09:50:19Z",
+            "active": True,
+        },
     }
 
 

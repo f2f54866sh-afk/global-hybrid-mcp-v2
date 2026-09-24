@@ -254,7 +254,7 @@ def test_non_hit_states_are_preserved_without_foreign_market_rows(
     assert result.output["reference_configurations"] == []
 
 
-def test_legacy_sales_and_multi_projection_remain_fail_closed(tmp_path, capsys):
+def test_legacy_sales_remains_blocked_and_multi_projection_returns_bundle(tmp_path, capsys):
     application = _application(tmp_path, FakeVehicleConfigurationProvider())
     legacy = application.dispatcher.dispatch(
         TaskRequest.model_validate(
@@ -272,5 +272,6 @@ def test_legacy_sales_and_multi_projection_remain_fail_closed(tmp_path, capsys):
     multi = _vehicle_request().model_copy(update={"request_text": MEDIA_REQUEST})
     result = application.dispatcher.dispatch(multi)
     events = _events(capsys)
-    assert result.status == "SALES_MULTI_PROJECTION_NOT_CONFIGURED"
-    assert not any(event["stage"] == "library_request" for event in events)
+    assert result.status == "SALES_EVIDENCE_BUNDLE_READY"
+    assert len(result.output["projection_packets"]) == 2
+    assert sum(event["stage"] == "library_request" for event in events) == 2
