@@ -65,6 +65,30 @@ def test_concrete_reconciliation_reads_normalizes_and_records_fixed_observation(
     assert control.payloads[0]["rows"][0]["payload"]["model"] == "TIGUAN R"
 
 
+def test_concrete_reconciliation_holds_empty_inventory_without_control_write():
+    class Reader:
+        normalizer = type("Normalizer", (), {"version": "normalizer-v1"})()
+
+        def read(self):
+            return InventoryReadResult("PASS", [], [], 0)
+
+    class Control:
+        def __init__(self):
+            self.payloads = []
+
+        def record_inventory_observation(self, payload):
+            self.payloads.append(payload)
+            return {"state": "RECORDED", "row_count": 0}
+
+    control = Control()
+    result = ConfiguredVehicleReconciliation(
+        inventory_reader=Reader(),
+        control_client=control,
+    )()
+    assert result == {"status": "HOLD", "blocker": "INVENTORY_EMPTY"}
+    assert control.payloads == []
+
+
 def test_worker_executes_fixed_d1_control_and_read_paths():
     result = subprocess.run(
         ["node", str(ROOT / "tests/fixtures/eng007_worker_execution.mjs")],
@@ -164,6 +188,26 @@ def test_render_reconciliation_route_is_callable_and_hmac_bound(tmp_path):
         assert legacy_response.json()["blocker"] == "CONTROL_TARGET_OVERRIDE_REJECTED"
 
 
+def test_render_reconciliation_route_maps_result_status_to_http(tmp_path):
+    body = _scheduled_body()
+    signature = hmac.new(b"secret", body, hashlib.sha256).hexdigest()
+    for index, (result, expected_status) in enumerate((
+        ({"status": "PASS"}, 200),
+        ({"status": "REJECTED", "blocker": "DENIED"}, 403),
+        ({"status": "HOLD", "blocker": "INVENTORY_EMPTY"}, 503),
+        ({"status": "UNKNOWN"}, 503),
+    )):
+        with _client(
+            tmp_path / str(index), secret="secret", reconcile=lambda result=result: result
+        ) as client:
+            response = client.post(
+                "/internal/vehicle-knowledge/reconcile",
+                content=body,
+                headers={"x-vehicle-control-signature": signature},
+            )
+        assert response.status_code == expected_status
+
+
 def test_render_reconciliation_route_fails_closed_when_not_configured(tmp_path):
     with _client(tmp_path) as client:
         response = client.post(
@@ -192,7 +236,7 @@ with TestClient(production.mcp.streamable_http_app(stateless_http=True, json_res
         content=body,
         headers={"x-vehicle-control-signature": signature},
     )
-assert response.status_code == 200, response.text
+assert response.status_code == 503, response.text
 assert response.json()["blocker"] == "RECONCILIATION_DEPENDENCY_NOT_CONFIGURED"
 assert production.vehicle_reconciliation.invocation_count == 1
 '''

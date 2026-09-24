@@ -62,6 +62,8 @@ class ConfiguredVehicleReconciliation:
             return {"status": "HOLD", "blocker": "GOOGLE_AUTH_UNAVAILABLE"}
         if inventory.state != "PASS":
             return {"status": "HOLD", "blocker": inventory.blocker or "INVENTORY_READ_FAILED"}
+        if not inventory.rows:
+            return {"status": "HOLD", "blocker": "INVENTORY_EMPTY"}
         row_payloads = [
             {
                 "row_number": row.row_number,

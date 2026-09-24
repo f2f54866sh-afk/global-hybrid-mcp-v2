@@ -109,6 +109,17 @@ const call = (path, token, body, method = body ? "POST" : "GET") => handleReques
   }), env,
 );
 const payload = response => response.json();
+const reconciliationResult = ({
+  status = "PASS", receiptState = "RECORDED", rowCount = 1,
+  observationId = "observation-scheduled", sourceRevision = "revision-scheduled",
+} = {}) => ({
+  status, observation_id: observationId, source_revision: sourceRevision,
+  control_receipt: {state: receiptState, row_count: rowCount},
+});
+const reconciliationResponse = (result = reconciliationResult(), ok = true) => ({
+  ok,
+  async json() { return result; },
+});
 
 assert.equal((await call("/v1/vehicle-config/readback", "bad")).status, 403);
 assert.equal((await handleRequest(new Request("https://worker.test/v1/vehicle-config/readback", {
@@ -174,7 +185,7 @@ const scheduledCalls = [];
 const scheduledEvent = {scheduledTime: 1790208000000};
 const schedulerEnv = {...env, RENDER_RECONCILIATION_SHARED_SECRET: "secret"};
 await handleScheduled(scheduledEvent, schedulerEnv, {}, async (url, init) => {
-  scheduledCalls.push({url, init}); return {ok: true};
+  scheduledCalls.push({url, init}); return reconciliationResponse();
 });
 const scheduledBody = JSON.parse(scheduledCalls[0].init.body);
 assert.equal(scheduledBody.run_id, "cf-1790208000000");
@@ -182,7 +193,7 @@ assert.equal(scheduledBody.scheduled_at, "2026-09-24T00:00:00.000Z");
 assert.match(scheduledCalls[0].init.headers["x-vehicle-control-signature"], /^[0-9a-f]{64}$/);
 const restartedWorker = await import("../../infra/vehicle_knowledge/worker.js?restart=1");
 const replay = await restartedWorker.handleScheduled(scheduledEvent, schedulerEnv, {}, async () => {
-  scheduledCalls.push({unexpected: true}); return {ok: true};
+  scheduledCalls.push({unexpected: true}); return reconciliationResponse();
 });
 assert.equal(replay.state, "DUPLICATE_SUPPRESSED");
 assert.equal(scheduledCalls.length, 1);
@@ -190,8 +201,12 @@ assert.equal(scheduledCalls.length, 1);
 const raceEvent = {scheduledTime: 1790208001000};
 let raceRenderCalls = 0;
 const raceResults = await Promise.all([
-  handleScheduled(raceEvent, schedulerEnv, {}, async () => { raceRenderCalls += 1; return {ok: true}; }),
-  handleScheduled(raceEvent, schedulerEnv, {}, async () => { raceRenderCalls += 1; return {ok: true}; }),
+  handleScheduled(raceEvent, schedulerEnv, {}, async () => {
+    raceRenderCalls += 1; return reconciliationResponse();
+  }),
+  handleScheduled(raceEvent, schedulerEnv, {}, async () => {
+    raceRenderCalls += 1; return reconciliationResponse();
+  }),
 ]);
 assert.equal(raceRenderCalls, 1);
 assert.deepEqual(new Set(raceResults.map(item => item.state)), new Set(["COMPLETED", "DUPLICATE_SUPPRESSED"]));
@@ -208,15 +223,47 @@ await assert.rejects(
 const failedEvent = {scheduledTime: 1790208003000};
 let failedRenderCalls = 0;
 await assert.rejects(handleScheduled(failedEvent, schedulerEnv, {}, async () => {
-  failedRenderCalls += 1; return {ok: false};
-}), /RENDER_RECONCILIATION_FAILED/);
+  failedRenderCalls += 1;
+  return reconciliationResponse({status: "HOLD", blocker: "UPSTREAM_HOLD"}, false);
+}), /UPSTREAM_HOLD/);
 const failedReplay = await handleScheduled(failedEvent, schedulerEnv, {}, async () => {
-  failedRenderCalls += 1; return {ok: true};
+  failedRenderCalls += 1; return reconciliationResponse();
 });
 assert.equal(failedReplay.state, "DUPLICATE_SUPPRESSED");
 assert.equal(failedRenderCalls, 1);
 
-await assert.rejects(handleScheduled({}, schedulerEnv, {}, async () => ({ok: true})), /SCHEDULED_TIME_REQUIRED/);
-await assert.rejects(handleScheduled(scheduledEvent, env, {}, async () => ({ok: true})), /SECRET_REQUIRED/);
+const semanticCases = [
+  [{status: "HOLD", blocker: "INVENTORY_READ_FAILED"}, true, "INVENTORY_READ_FAILED"],
+  [reconciliationResult({observationId: ""}), true, "RECONCILIATION_RECEIPT_INVALID"],
+  [reconciliationResult({rowCount: 0}), true, "INVENTORY_OBSERVATION_EMPTY"],
+  [reconciliationResult({receiptState: "FORGED"}), true, "RECONCILIATION_RECEIPT_INVALID"],
+];
+for (let index = 0; index < semanticCases.length; index += 1) {
+  const [result, ok, blocker] = semanticCases[index];
+  const event = {scheduledTime: 1790208010000 + index};
+  await assert.rejects(
+    handleScheduled(event, schedulerEnv, {}, async () => reconciliationResponse(result, ok)),
+    new RegExp(blocker),
+  );
+  const durable = db.tables.run.get(`cf-${event.scheduledTime}`);
+  assert.equal(durable.state, "FAILED");
+  assert.equal(durable.result_state, blocker);
+}
+
+const idempotentEvent = {scheduledTime: 1790208020000};
+const idempotent = await handleScheduled(idempotentEvent, schedulerEnv, {}, async () => (
+  reconciliationResponse(reconciliationResult({receiptState: "IDEMPOTENT_SUCCESS", rowCount: 2}))
+));
+assert.equal(idempotent.state, "COMPLETED");
+assert.equal(db.tables.run.get("cf-1790208020000").result_state, "PASS");
+
+await assert.rejects(
+  handleScheduled({}, schedulerEnv, {}, async () => reconciliationResponse()),
+  /SCHEDULED_TIME_REQUIRED/,
+);
+await assert.rejects(
+  handleScheduled(scheduledEvent, env, {}, async () => reconciliationResponse()),
+  /SECRET_REQUIRED/,
+);
 
 console.log("ENG007_WORKER_EXECUTION_BINDING_PASS");

@@ -278,7 +278,31 @@ export async function handleScheduled(event, env, _ctx, fetcher = fetch) {
       },
       body: reconciliationBody,
     });
-    if (!response.ok) throw new Error("RENDER_RECONCILIATION_FAILED");
+    let result;
+    try {
+      result = await response.json();
+    } catch (_error) {
+      throw new Error(
+        response.ok ? "RECONCILIATION_RECEIPT_INVALID" : "RENDER_RECONCILIATION_FAILED",
+      );
+    }
+    if (!response.ok) {
+      throw new Error(result?.blocker || "RENDER_RECONCILIATION_FAILED");
+    }
+    if (result?.status !== "PASS") {
+      throw new Error(result?.blocker || "RECONCILIATION_RESULT_NOT_PASS");
+    }
+    const receipt = result.control_receipt;
+    if (receipt?.row_count === 0) throw new Error("INVENTORY_OBSERVATION_EMPTY");
+    if (
+      typeof result.observation_id !== "string" || !result.observation_id.trim()
+      || typeof result.source_revision !== "string" || !result.source_revision.trim()
+      || !receipt
+      || !["RECORDED", "IDEMPOTENT_SUCCESS"].includes(receipt.state)
+      || !Number.isInteger(receipt.row_count) || receipt.row_count <= 0
+    ) {
+      throw new Error("RECONCILIATION_RECEIPT_INVALID");
+    }
     await db.prepare(
       "UPDATE vehicle_reconciliation_run SET state='COMPLETED',completed_at=?,result_state='PASS' WHERE run_id=? AND state='CLAIMED'",
     ).bind(new Date().toISOString(), runId).run();

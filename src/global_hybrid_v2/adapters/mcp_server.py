@@ -153,7 +153,8 @@ def create_mcp_server(
             body=await request.body(),
             signature=request.headers.get("x-vehicle-control-signature", ""),
         )
-        status_code = 200 if result.get("status") != "REJECTED" else 403
+        status = result.get("status")
+        status_code = 200 if status == "PASS" else 403 if status == "REJECTED" else 503
         return JSONResponse(result, status_code=status_code)
 
     @server.tool()
