@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     vehicle_configuration_provider_mode: str = "file"
     vehicle_configuration_http_base_url: str | None = None
     vehicle_configuration_http_read_secret: str | None = None
+    vehicle_reconciliation_shared_secret: SecretStr | None = None
 
     model_config = SettingsConfigDict(
         env_prefix="GLOBAL_",

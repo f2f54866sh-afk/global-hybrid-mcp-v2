@@ -1,0 +1,17 @@
+name = "vehicle-knowledge-control-plane"
+main = "worker.js"
+compatibility_date = "2026-09-24"
+workers_dev = false
+
+[triggers]
+crons = ["0 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vehicle-knowledge"
+database_id = "REQUIRED_AT_DEPLOYMENT"
+
+# Required secrets, configured through Wrangler/Cloudflare rather than committed:
+# CONTROL_PLANE_WRITE_SECRET
+# RUNTIME_READ_SECRET
+# RENDER_RECONCILIATION_SHARED_SECRET

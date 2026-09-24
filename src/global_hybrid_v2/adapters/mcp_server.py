@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -15,6 +16,7 @@ from global_hybrid_v2.application import Application, create_application
 from global_hybrid_v2.contracts import TaskRequest
 from global_hybrid_v2.domains.vehicle_configuration import VehicleConfigurationReadbackProvider
 from global_hybrid_v2.governance.authority import AUTHORITY_ACTIVATION_INVALID, AuthorityError
+from global_hybrid_v2.render_vehicle_control import RenderVehicleReconciliationEndpoint
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,11 @@ def _authority_verification_fingerprints(application: Application) -> dict[str, 
     }
 
 
-def create_mcp_server(application: Application) -> MCPServer:
+def create_mcp_server(
+    application: Application,
+    *,
+    vehicle_reconciliation: Callable[[], dict] | None = None,
+) -> MCPServer:
     server = MCPServer("GLOBAL Hybrid v2")
 
     @server.custom_route("/health", methods=["GET"])
@@ -126,6 +132,25 @@ def create_mcp_server(application: Application) -> MCPServer:
                 "active": True,
             }
         return JSONResponse(payload)
+
+    @server.custom_route("/internal/vehicle-knowledge/reconcile", methods=["POST"])
+    async def vehicle_knowledge_reconcile(request: Request) -> JSONResponse:
+        secret = application.settings.vehicle_reconciliation_shared_secret
+        if secret is None or vehicle_reconciliation is None:
+            return JSONResponse(
+                {"status": "REJECTED", "blocker": "RECONCILIATION_NOT_CONFIGURED"},
+                status_code=503,
+            )
+        endpoint = RenderVehicleReconciliationEndpoint(
+            shared_secret=secret.get_secret_value(),
+            reconcile=vehicle_reconciliation,
+        )
+        result = endpoint.handle(
+            body=await request.body(),
+            signature=request.headers.get("x-vehicle-control-signature", ""),
+        )
+        status_code = 200 if result.get("status") != "REJECTED" else 403
+        return JSONResponse(result, status_code=status_code)
 
     @server.tool()
     def validate_task(payload: dict) -> dict:
