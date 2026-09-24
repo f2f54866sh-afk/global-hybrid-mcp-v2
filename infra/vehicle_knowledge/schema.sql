@@ -11,3 +11,4 @@ CREATE TABLE vehicle_fact_conflict(id TEXT PRIMARY KEY, revision_id TEXT NOT NUL
 CREATE TABLE vehicle_snapshot_build(id TEXT PRIMARY KEY, builder_version TEXT NOT NULL, payload TEXT NOT NULL);
 CREATE TABLE vehicle_snapshot_promotion(id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL, promoted_at TEXT NOT NULL);
 CREATE TABLE vehicle_snapshot_active(singleton INTEGER PRIMARY KEY CHECK(singleton=1), snapshot_id TEXT NOT NULL, promotion_id TEXT NOT NULL);
+CREATE TABLE vehicle_reconciliation_run(run_id TEXT PRIMARY KEY, scheduled_at TEXT NOT NULL, body_digest TEXT NOT NULL, state TEXT NOT NULL, claimed_at TEXT NOT NULL, completed_at TEXT NULL, result_state TEXT NULL);

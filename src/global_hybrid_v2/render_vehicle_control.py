@@ -13,7 +13,6 @@ class RenderVehicleReconciliationEndpoint:
             raise ValueError("shared secret required")
         self._secret = shared_secret.encode()
         self._reconcile = reconcile
-        self._runs: dict[str, tuple[str, dict]] = {}
 
     def handle(self, *, body: bytes, signature: str) -> dict:
         expected = hmac.new(self._secret, body, hashlib.sha256).hexdigest()
@@ -38,12 +37,4 @@ class RenderVehicleReconciliationEndpoint:
             return {"status": "REJECTED", "blocker": "SCHEDULER_RUN_ID_REQUIRED"}
         if run_id != expected_run_id:
             return {"status": "REJECTED", "blocker": "SCHEDULER_RUN_BINDING_MISMATCH"}
-        body_digest = hashlib.sha256(body).hexdigest()
-        previous = self._runs.get(run_id)
-        if previous is not None:
-            if previous[0] != body_digest:
-                return {"status": "REJECTED", "blocker": "SCHEDULER_RUN_COLLISION"}
-            return previous[1]
-        result = self._reconcile()
-        self._runs[run_id] = (body_digest, result)
-        return result
+        return self._reconcile()

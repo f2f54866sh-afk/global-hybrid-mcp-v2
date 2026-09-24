@@ -39,6 +39,11 @@ const database = env => {
 
 const parsePayload = row => row ? JSON.parse(row.payload) : null;
 
+const sha256Hex = async value => {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(bytes)].map(item => item.toString(16).padStart(2, "0")).join("");
+};
+
 async function control(db, path, body) {
   if (path === "/internal/control/inventory-observation") {
     required(body, ["observation_id", "source_revision", "observed_at"]);
@@ -230,11 +235,28 @@ export async function handleRequest(request, env) {
 export async function handleScheduled(event, env, _ctx, fetcher = fetch) {
   if (!env.RENDER_RECONCILIATION_SHARED_SECRET) throw new Error("RECONCILIATION_SECRET_REQUIRED");
   if (!Number.isFinite(event.scheduledTime)) throw new Error("SCHEDULED_TIME_REQUIRED");
+  const db = database(env);
+  const scheduledAt = new Date(event.scheduledTime).toISOString();
+  const runId = `cf-${event.scheduledTime}`;
   const reconciliationBody = JSON.stringify({
     operation: "vehicle-knowledge-reconcile",
-    run_id: `cf-${event.scheduledTime}`,
-    scheduled_at: new Date(event.scheduledTime).toISOString(),
+    run_id: runId,
+    scheduled_at: scheduledAt,
   });
+  const bodyDigest = await sha256Hex(reconciliationBody);
+  const claimedAt = new Date().toISOString();
+  const claim = await db.prepare(
+    "INSERT OR IGNORE INTO vehicle_reconciliation_run(run_id,scheduled_at,body_digest,state,claimed_at,completed_at,result_state) VALUES(?,?,?,'CLAIMED',?,NULL,NULL)",
+  ).bind(runId, scheduledAt, bodyDigest, claimedAt).run();
+  if (!claim.meta || claim.meta.changes !== 1) {
+    const existing = await db.prepare(
+      "SELECT scheduled_at,body_digest,state,result_state FROM vehicle_reconciliation_run WHERE run_id=?",
+    ).bind(runId).first();
+    if (!existing || existing.scheduled_at !== scheduledAt || existing.body_digest !== bodyDigest) {
+      throw new Error("SCHEDULER_RUN_COLLISION");
+    }
+    return {state: "DUPLICATE_SUPPRESSED", run_id: runId};
+  }
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(env.RENDER_RECONCILIATION_SHARED_SECRET),
@@ -247,15 +269,26 @@ export async function handleScheduled(event, env, _ctx, fetcher = fetch) {
   );
   const signature = [...new Uint8Array(signatureBytes)]
     .map(value => value.toString(16).padStart(2, "0")).join("");
-  const response = await fetcher(reconciliationUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-vehicle-control-signature": signature,
-    },
-    body: reconciliationBody,
-  });
-  if (!response.ok) throw new Error("RENDER_RECONCILIATION_FAILED");
+  try {
+    const response = await fetcher(reconciliationUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-vehicle-control-signature": signature,
+      },
+      body: reconciliationBody,
+    });
+    if (!response.ok) throw new Error("RENDER_RECONCILIATION_FAILED");
+    await db.prepare(
+      "UPDATE vehicle_reconciliation_run SET state='COMPLETED',completed_at=?,result_state='PASS' WHERE run_id=? AND state='CLAIMED'",
+    ).bind(new Date().toISOString(), runId).run();
+    return {state: "COMPLETED", run_id: runId};
+  } catch (error) {
+    await db.prepare(
+      "UPDATE vehicle_reconciliation_run SET state='FAILED',completed_at=?,result_state=? WHERE run_id=? AND state='CLAIMED'",
+    ).bind(new Date().toISOString(), error.message || "RENDER_RECONCILIATION_FAILED", runId).run();
+    throw error;
+  }
 }
 
 export default {fetch: handleRequest, scheduled: handleScheduled};

@@ -89,6 +89,9 @@ def test_wrangler_candidate_binds_exact_entrypoint_and_d1():
             "database_id": "REQUIRED_AT_DEPLOYMENT",
         }
     ]
+    schema = (ROOT / "infra/vehicle_knowledge/schema.sql").read_text()
+    assert "CREATE TABLE vehicle_reconciliation_run" in schema
+    assert "run_id TEXT PRIMARY KEY" in schema
 
 
 def _client(tmp_path, *, secret=None, reconcile=None):
@@ -125,21 +128,7 @@ def test_render_reconciliation_route_is_callable_and_hmac_bound(tmp_path):
             headers={"x-vehicle-control-signature": signature},
         )
         assert replay.status_code == 200
-        assert called == [True]
-
-        reordered = (
-            b'{"scheduled_at":"2026-09-24T00:00:00.000Z",'
-            b'"run_id":"cf-1790208000000","operation":"vehicle-knowledge-reconcile"}'
-        )
-        reordered_signature = hmac.new(b"secret", reordered, hashlib.sha256).hexdigest()
-        collision = client.post(
-            "/internal/vehicle-knowledge/reconcile",
-            content=reordered,
-            headers={"x-vehicle-control-signature": reordered_signature},
-        )
-        assert collision.status_code == 403
-        assert collision.json()["blocker"] == "SCHEDULER_RUN_COLLISION"
-        assert called == [True]
+        assert called == [True, True]
 
         assert client.post("/internal/vehicle-knowledge/reconcile", content=body).status_code == 403
         override = body[:-1] + b',"target":"caller"}'
@@ -151,7 +140,7 @@ def test_render_reconciliation_route_is_callable_and_hmac_bound(tmp_path):
         )
         assert rejected.status_code == 403
         assert rejected.json()["blocker"] == "CONTROL_TARGET_OVERRIDE_REJECTED"
-        assert called == [True]
+        assert called == [True, True]
 
         new_body = _scheduled_body(1790208001000).replace(
             b"2026-09-24T00:00:00.000Z", b"2026-09-24T00:00:01.000Z"
@@ -162,7 +151,7 @@ def test_render_reconciliation_route_is_callable_and_hmac_bound(tmp_path):
             content=new_body,
             headers={"x-vehicle-control-signature": new_signature},
         ).status_code == 200
-        assert called == [True, True]
+        assert called == [True, True, True]
 
         legacy = b'{"operation":"vehicle-knowledge-reconcile"}'
         legacy_signature = hmac.new(b"secret", legacy, hashlib.sha256).hexdigest()

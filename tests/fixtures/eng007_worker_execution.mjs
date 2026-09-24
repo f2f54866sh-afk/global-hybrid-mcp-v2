@@ -10,6 +10,7 @@ class Statement {
     if (this.sql.includes("vehicle_coverage_work WHERE id")) return this.db.tables.work.get(id) || null;
     if (this.sql.includes("vehicle_configuration_revision WHERE id")) return this.db.tables.revision.get(id) || null;
     if (this.sql.includes("vehicle_snapshot_promotion WHERE id")) return this.db.tables.promotion.get(id) || null;
+    if (this.sql.includes("vehicle_reconciliation_run WHERE run_id")) return this.db.tables.run.get(id) || null;
     if (this.sql.includes("vehicle_snapshot_build WHERE id")) return this.db.tables.build.get(id) || null;
     if (this.sql.includes("vehicle_snapshot_active a JOIN")) {
       const active = this.db.tables.active;
@@ -39,6 +40,21 @@ class Statement {
       insert(this.db.tables.promotion, a, {snapshot_id: b, promoted_at: c});
     } else if (this.sql.includes("INSERT INTO vehicle_snapshot_active")) {
       this.db.tables.active = {snapshot_id: a, promotion_id: b};
+    } else if (this.sql.includes("INSERT OR IGNORE INTO vehicle_reconciliation_run")) {
+      if (this.db.tables.run.has(a)) return {success: true, meta: {changes: 0}};
+      this.db.tables.run.set(a, {
+        scheduled_at: b, body_digest: c, state: "CLAIMED", claimed_at: d,
+        completed_at: null, result_state: null,
+      });
+      return {success: true, meta: {changes: 1}};
+    } else if (this.sql.includes("UPDATE vehicle_reconciliation_run SET state='COMPLETED'")) {
+      const run = this.db.tables.run.get(b);
+      if (!run || run.state !== "CLAIMED") return {success: true, meta: {changes: 0}};
+      Object.assign(run, {state: "COMPLETED", completed_at: a, result_state: "PASS"});
+    } else if (this.sql.includes("UPDATE vehicle_reconciliation_run SET state='FAILED'")) {
+      const run = this.db.tables.run.get(c);
+      if (!run || run.state !== "CLAIMED") return {success: true, meta: {changes: 0}};
+      Object.assign(run, {state: "FAILED", completed_at: a, result_state: b});
     } else if (this.sql.includes("UPDATE vehicle_coverage_work")) {
       const work = this.db.tables.work.get(a);
       if (!work || work.state !== "OPEN") throw new Error("D1_STATE_CONFLICT");
@@ -46,7 +62,7 @@ class Statement {
     } else {
       throw new Error(`UNEXPECTED_D1_MUTATION:${this.sql}`);
     }
-    return {success: true};
+    return {success: true, meta: {changes: 1}};
   }
 }
 
@@ -54,7 +70,8 @@ class D1Harness {
   constructor() {
     this.tables = {
       observation: new Map(), row: new Map(), work: new Map(), receipt: new Map(),
-      revision: new Map(), fact: new Map(), build: new Map(), promotion: new Map(), active: null,
+      revision: new Map(), fact: new Map(), build: new Map(), promotion: new Map(),
+      run: new Map(), active: null,
     };
   }
   prepare(sql) { return new Statement(this, sql); }
@@ -155,14 +172,51 @@ assert.equal((await payload(response)).state, "HIT");
 
 const scheduledCalls = [];
 const scheduledEvent = {scheduledTime: 1790208000000};
-await handleScheduled(scheduledEvent, {RENDER_RECONCILIATION_SHARED_SECRET: "secret"}, {}, async (url, init) => {
+const schedulerEnv = {...env, RENDER_RECONCILIATION_SHARED_SECRET: "secret"};
+await handleScheduled(scheduledEvent, schedulerEnv, {}, async (url, init) => {
   scheduledCalls.push({url, init}); return {ok: true};
 });
 const scheduledBody = JSON.parse(scheduledCalls[0].init.body);
 assert.equal(scheduledBody.run_id, "cf-1790208000000");
 assert.equal(scheduledBody.scheduled_at, "2026-09-24T00:00:00.000Z");
 assert.match(scheduledCalls[0].init.headers["x-vehicle-control-signature"], /^[0-9a-f]{64}$/);
-await assert.rejects(handleScheduled({}, {RENDER_RECONCILIATION_SHARED_SECRET: "secret"}, {}, async () => ({ok: true})), /SCHEDULED_TIME_REQUIRED/);
-await assert.rejects(handleScheduled(scheduledEvent, {}, {}, async () => ({ok: true})), /SECRET_REQUIRED/);
+const restartedWorker = await import("../../infra/vehicle_knowledge/worker.js?restart=1");
+const replay = await restartedWorker.handleScheduled(scheduledEvent, schedulerEnv, {}, async () => {
+  scheduledCalls.push({unexpected: true}); return {ok: true};
+});
+assert.equal(replay.state, "DUPLICATE_SUPPRESSED");
+assert.equal(scheduledCalls.length, 1);
+
+const raceEvent = {scheduledTime: 1790208001000};
+let raceRenderCalls = 0;
+const raceResults = await Promise.all([
+  handleScheduled(raceEvent, schedulerEnv, {}, async () => { raceRenderCalls += 1; return {ok: true}; }),
+  handleScheduled(raceEvent, schedulerEnv, {}, async () => { raceRenderCalls += 1; return {ok: true}; }),
+]);
+assert.equal(raceRenderCalls, 1);
+assert.deepEqual(new Set(raceResults.map(item => item.state)), new Set(["COMPLETED", "DUPLICATE_SUPPRESSED"]));
+
+const collisionEvent = {scheduledTime: 1790208002000};
+db.tables.run.set("cf-1790208002000", {
+  scheduled_at: "2026-09-24T00:00:02.000Z", body_digest: "forged", state: "CLAIMED",
+});
+await assert.rejects(
+  handleScheduled(collisionEvent, schedulerEnv, {}, async () => { throw new Error("MUST_NOT_CALL"); }),
+  /SCHEDULER_RUN_COLLISION/,
+);
+
+const failedEvent = {scheduledTime: 1790208003000};
+let failedRenderCalls = 0;
+await assert.rejects(handleScheduled(failedEvent, schedulerEnv, {}, async () => {
+  failedRenderCalls += 1; return {ok: false};
+}), /RENDER_RECONCILIATION_FAILED/);
+const failedReplay = await handleScheduled(failedEvent, schedulerEnv, {}, async () => {
+  failedRenderCalls += 1; return {ok: true};
+});
+assert.equal(failedReplay.state, "DUPLICATE_SUPPRESSED");
+assert.equal(failedRenderCalls, 1);
+
+await assert.rejects(handleScheduled({}, schedulerEnv, {}, async () => ({ok: true})), /SCHEDULED_TIME_REQUIRED/);
+await assert.rejects(handleScheduled(scheduledEvent, env, {}, async () => ({ok: true})), /SECRET_REQUIRED/);
 
 console.log("ENG007_WORKER_EXECUTION_BINDING_PASS");
