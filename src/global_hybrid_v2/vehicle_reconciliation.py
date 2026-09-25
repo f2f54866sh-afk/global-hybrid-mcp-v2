@@ -20,6 +20,12 @@ from global_hybrid_v2.settings import Settings
 from global_hybrid_v2.vehicle_knowledge import canonical_json
 
 
+class VehicleControlResponseError(RuntimeError):
+    def __init__(self, blocker: str):
+        super().__init__(blocker)
+        self.blocker = blocker
+
+
 class CloudflareVehicleControlClient:
     def __init__(self, *, base_url: str, write_secret: str, timeout: float = 15):
         self.base_url = base_url.rstrip("/")
@@ -37,8 +43,24 @@ class CloudflareVehicleControlClient:
                 "accept": "application/json",
             },
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            return json.load(response)
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                receipt = json.load(response)
+        except urllib.error.HTTPError as exc:
+            try:
+                payload = json.loads(exc.read().decode("utf-8"))
+                blocker = payload.get("blocker") if isinstance(payload, dict) else None
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                blocker = None
+            raise VehicleControlResponseError(
+                blocker if isinstance(blocker, str) and blocker.strip()
+                else "VEHICLE_CONTROL_RESPONSE_INVALID"
+            ) from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise VehicleControlResponseError("VEHICLE_CONTROL_RESPONSE_INVALID") from exc
+        if not isinstance(receipt, dict):
+            raise VehicleControlResponseError("VEHICLE_CONTROL_RESPONSE_INVALID")
+        return receipt
 
 
 class ConfiguredVehicleReconciliation:
@@ -97,6 +119,8 @@ class ConfiguredVehicleReconciliation:
                     "rows": row_payloads,
                 }
             )
+        except VehicleControlResponseError as exc:
+            return {"status": "HOLD", "blocker": exc.blocker}
         except (OSError, TimeoutError, urllib.error.URLError):
             return {"status": "HOLD", "blocker": "VEHICLE_CONTROL_UNAVAILABLE"}
         return {
