@@ -1,0 +1,70 @@
+name: production-db-migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_git_commit:
+        description: Exact migration-source commit SHA
+        required: true
+        type: string
+      expected_schema_from:
+        description: Current exact-object receipt schema version
+        required: true
+        type: string
+      target_schema_version:
+        description: Target exact-object receipt schema version
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: production-db-migration
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_git_commit }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install candidate package
+        run: python -m pip install .
+
+      - name: Check exact checkout and migration import
+        env:
+          EXPECTED_GIT_COMMIT: ${{ inputs.expected_git_commit }}
+        run: |
+          python -c "import global_hybrid_v2.migrations"
+          python -m global_hybrid_v2.migrations exact_object_receipt check-commit \
+            --expected-git-commit "$EXPECTED_GIT_COMMIT"
+
+      - name: Validate transition without mutation
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          EXPECTED_SCHEMA_FROM: ${{ inputs.expected_schema_from }}
+          TARGET_SCHEMA_VERSION: ${{ inputs.target_schema_version }}
+        run: |
+          python -m global_hybrid_v2.migrations exact_object_receipt plan \
+            --expected-from "$EXPECTED_SCHEMA_FROM" \
+            --target-version "$TARGET_SCHEMA_VERSION"
+
+      - name: Apply exact migration
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          EXPECTED_SCHEMA_FROM: ${{ inputs.expected_schema_from }}
+          TARGET_SCHEMA_VERSION: ${{ inputs.target_schema_version }}
+        run: |
+          python -m global_hybrid_v2.migrations exact_object_receipt upgrade \
+            --expected-from "$EXPECTED_SCHEMA_FROM" \
+            --target-version "$TARGET_SCHEMA_VERSION"
+
+      - name: Read back current schema version
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+        run: python -m global_hybrid_v2.migrations exact_object_receipt status
