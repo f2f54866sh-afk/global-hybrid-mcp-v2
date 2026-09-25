@@ -14,6 +14,7 @@ dependencies = [
   "openai>=2.25,<3",
   "pydantic>=2.7,<3",
   "pydantic-settings>=2.2,<3",
+  "psycopg[binary]>=3.2,<4",
   "starlette>=0.50,<1",
   "uvicorn>=0.30,<1",
 ]

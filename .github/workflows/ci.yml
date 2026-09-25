@@ -7,9 +7,29 @@ on:
 jobs:
   core:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: stage275b_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d stage275b_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      STAGE275B_TEST_HOST: 127.0.0.1
+      STAGE275B_TEST_PORT: "5432"
+      STAGE275B_TEST_DB: stage275b_ci
+      STAGE275B_TEST_USER: postgres
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -32,3 +52,8 @@ jobs:
 
       - name: Core import
         run: python -c "from openai import OpenAI; from global_hybrid_v2.application import create_application; from global_hybrid_v2.adapters.mcp_server import mcp; print('import-ok')"
+
+      - name: Docker build and import
+        run: |
+          docker build --tag stage275-rc .
+          docker run --rm --entrypoint python stage275-rc -c "from global_hybrid_v2.governance.postgres_exact_object_source import PostgreSQLExactObjectReceiptRepository; from global_hybrid_v2.migrations import current_version; print('docker-import-ok')"
