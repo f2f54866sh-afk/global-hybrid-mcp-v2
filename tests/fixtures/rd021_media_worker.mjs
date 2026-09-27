@@ -3,12 +3,16 @@ import {createHash} from "node:crypto";
 import {handleRequest} from "../../infra/vehicle_knowledge/worker.js";
 
 const assets = new Map();
+const objects = new Map();
+const creativeRefs = new Map();
 const db = {
   prepare(sql) {
     let values = [];
     return {
       bind(...items) { values = items; return this; },
       async first() {
+        if (sql.includes("creative_media_ref WHERE creative_ref_id=?"))
+          return creativeRefs.get(values[0]) || null;
         if (sql.includes("WHERE raw_sha256=?")) {
           return [...assets.values()].find(item => item.raw_sha256 === values[0]) || null;
         }
@@ -21,6 +25,12 @@ const db = {
           .map(item => ({media_asset_id: item.media_asset_id}))};
       },
       async run() {
+        if (sql.startsWith("INSERT INTO creative_media_ref(")) {
+          const names = sql.slice("INSERT INTO creative_media_ref(".length, sql.indexOf(") VALUES"))
+            .split(",");
+          creativeRefs.set(values[0], Object.fromEntries(names.map((name, index) => [name, values[index]])));
+          return {success: true};
+        }
         if (!sql.startsWith("INSERT INTO media_asset(")) throw new Error(`UNEXPECTED_WRITE:${sql}`);
         if (assets.has(values[0])) throw new Error("D1_PK_CONFLICT");
         const names = sql.slice("INSERT INTO media_asset(".length, sql.indexOf(") VALUES"))
@@ -32,7 +42,16 @@ const db = {
   },
   batch() { throw new Error("UNEXPECTED_BATCH"); },
 };
-const env = {DB: db, CONTROL_PLANE_WRITE_SECRET: "write", RUNTIME_READ_SECRET: "read"};
+const env = {
+  DB: db, CONTROL_PLANE_WRITE_SECRET: "write", RUNTIME_READ_SECRET: "read",
+  MEDIA_BUCKET: {
+    async get(key) {
+      const bytes = objects.get(key);
+      return bytes ? {arrayBuffer: async () => Uint8Array.from(bytes).buffer} : null;
+    },
+    async put(key, bytes) { objects.set(key, Uint8Array.from(bytes)); },
+  },
+};
 const request = (path, secret, body) => handleRequest(new Request(`https://worker.test${path}`, {
   method: body ? "POST" : "GET",
   headers: {authorization: `Bearer ${secret}`, "content-type": "application/json"},
@@ -42,10 +61,12 @@ const raw = Buffer.from("server-owned-raw-media");
 const hash = createHash("sha256").update(raw).digest("hex");
 const original = {
   media_asset_id: `media:${hash}`, raw_sha256: hash,
+  object_key: `media/sha256/${hash}`, object_size: raw.length,
   normalized_pixel_hash: "0".repeat(64), perceptual_fingerprint: "0".repeat(16),
   width: 10, height: 10, mime: "image/png", provenance_class: "ORIGINAL_EVIDENCE",
+  provenance_confidence: "VERIFIED", earlier_source_status: "UNKNOWN",
   parent_asset_id: null, producing_activity: "ORIGINAL_CAPTURE",
-  truth_eligibility: "TRUTH_ELIGIBLE", first_seen_at: "2026-09-27T00:00:00Z",
+  truth_eligibility: "FULL", first_seen_at: "2026-09-27T00:00:00Z",
   source_lineage: "vehicle:a", task_lineage: "turn:1",
   independent_evidence_id: `media:${hash}`, raw_base64: raw.toString("base64"),
 };
@@ -57,25 +78,57 @@ assert.deepEqual(await response.json(), {state: "EXACT_DUPLICATE", media_asset_i
 response = await request(`/internal/media-asset/read?media_asset_id=${original.media_asset_id}`, "read");
 const readback = await response.json();
 assert.equal(readback.asset.raw_sha256, hash);
-assert.equal(readback.raw_base64, original.raw_base64);
+assert.equal(readback.asset.raw_capture_base64, undefined);
+assert.equal(readback.raw_base64, undefined);
+assert.equal(objects.get(original.object_key).length, raw.length);
+response = await request(`/internal/media-object/read?object_key=${original.object_key}`, "read");
+assert.deepEqual(Buffer.from(await response.arrayBuffer()), raw);
 response = await request("/internal/media-asset/candidates?source_lineage=vehicle%3Aa", "read");
 assert.deepEqual((await response.json()).media_asset_ids, [original.media_asset_id]);
 
 const fakeRaw = Buffer.from("creative-raw-media");
 const fakeHash = createHash("sha256").update(fakeRaw).digest("hex");
 const edited = {...original, media_asset_id: `media:${fakeHash}`, raw_sha256: fakeHash,
+  object_key: `media/sha256/${fakeHash}`, object_size: fakeRaw.length,
   raw_base64: fakeRaw.toString("base64"), provenance_class: "AI_EDITED",
   producing_activity: "AI_EDIT", parent_asset_id: original.media_asset_id,
-  truth_eligibility: "TRUTH_FORBIDDEN"};
+  truth_eligibility: "FORBIDDEN"};
 response = await request("/internal/control/media-asset", "write", edited);
 assert.equal((await response.json()).state, "RECORDED");
+const creativeId = `creative:${createHash("sha256").update(`vehicle:a\0${edited.media_asset_id}`)
+  .digest("hex")}`;
+const creative = {creative_ref_id: creativeId, media_asset_id: edited.media_asset_id,
+  vehicle_instance_id: "vehicle:a", target_column: "銷售素材Refs", channels: ["FB", "8891"]};
+response = await request("/internal/control/creative-media-ref", "write", creative);
+assert.equal((await response.json()).state, "RECORDED");
+response = await request("/internal/control/creative-media-ref", "write", creative);
+assert.equal((await response.json()).state, "IDEMPOTENT_SUCCESS");
+response = await request(`/internal/creative-media-ref/read?creative_ref_id=${creativeId}`, "read");
+assert.deepEqual((await response.json()).ref.channels, ["8891", "FB"]);
+assert.equal(creativeRefs.size, 1);
+assert.equal(assets.get(edited.media_asset_id).truth_eligibility, "FORBIDDEN");
+const externalRaw = Buffer.from("external-first-observed");
+const externalHash = createHash("sha256").update(externalRaw).digest("hex");
+const forgedFull = {...original, media_asset_id: `media:${externalHash}`,
+  raw_sha256: externalHash, object_key: `media/sha256/${externalHash}`,
+  object_size: externalRaw.length, raw_base64: externalRaw.toString("base64"),
+  provenance_class: "FIRST_OBSERVED_EXTERNAL", producing_activity: "FIRST_OBSERVED_EXTERNAL",
+  provenance_confidence: "PARTIAL", truth_eligibility: "FULL",
+  independent_evidence_id: `media:${externalHash}`};
+response = await request("/internal/control/media-asset", "write", forgedFull);
+assert.equal((await response.json()).blocker, "MEDIA_FIRST_OBSERVED_ESCALATION");
+assert.equal(objects.has(forgedFull.object_key), false);
 const childRaw = Buffer.from("resized-creative");
 const childHash = createHash("sha256").update(childRaw).digest("hex");
 const illegal = {...edited, media_asset_id: `media:${childHash}`, raw_sha256: childHash,
+  object_key: `media/sha256/${childHash}`, object_size: childRaw.length,
   raw_base64: childRaw.toString("base64"), provenance_class: "DERIVATIVE_RESIZE",
   producing_activity: "RESIZE", parent_asset_id: edited.media_asset_id,
-  truth_eligibility: "TRUTH_ELIGIBLE"};
+  truth_eligibility: "FULL"};
 response = await request("/internal/control/media-asset", "write", illegal);
 assert.equal((await response.json()).blocker, "MEDIA_FORBIDDEN_LINEAGE_UPGRADE");
 assert.equal(assets.size, 2);
+objects.delete(edited.object_key);
+response = await request(`/internal/media-object/read?object_key=${edited.object_key}`, "read");
+assert.equal((await response.json()).blocker, "MEDIA_OBJECT_MISSING");
 console.log("media-worker-ok");

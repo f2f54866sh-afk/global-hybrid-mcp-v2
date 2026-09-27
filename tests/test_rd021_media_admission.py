@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import sqlite3
 import subprocess
+import xml.etree.ElementTree as ET
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.error import URLError
 
 import pytest
 from PIL import Image
@@ -15,24 +19,38 @@ from global_hybrid_v2.adapters.controlled_responses import (
     ForcedHostDispatchAdapter,
     ServerTurnContext,
 )
+from global_hybrid_v2.adapters.d1_media_assets import D1MediaAssetRepository
+from global_hybrid_v2.adapters.drive_xlsx_workbench import DriveXlsxWorkbenchPort
+from global_hybrid_v2.creative_media import (
+    CreativeMediaAction,
+    CreativeMediaCompletionHandler,
+    CreativeXlsxMutationBuilder,
+    add_as_creative_asset,
+    original_media_ref,
+)
 from global_hybrid_v2.ingress_admission import (
     IngressTaskClass,
     IngressTurnTokenCodec,
     InMemoryNonceClaimStore,
 )
 from global_hybrid_v2.media_admission import (
+    FieldSupport,
+    FieldSupportScope,
     MediaAdmissionError,
     MediaAdmissionGate,
     MediaAsset,
     ProducingActivity,
     ProvenanceClass,
+    ProvenanceConfidence,
     TrustedMediaActivityIssuer,
     TruthEligibility,
     extract_truth_fields,
     independent_evidence_count,
     require_truth_eligible,
+    validate_asset_readback,
 )
 from global_hybrid_v2.trusted_workbench_intent import TrustBoundaryError, TrustedHostTaskCompiler
+from tests.test_rd021_completion_fence import Claims, Drive, q, workbook
 from tests.test_rd021_trusted_host_binding import HostResolver, compiler
 
 
@@ -212,14 +230,17 @@ def test_d1_worker_media_contract():
 
 def test_d1_candidate_schema_and_incremental_migration_match():
     root = Path(__file__).resolve().parents[1]
-    migration = (root / "infra/vehicle_knowledge/migrations/0002_media_asset.sql").read_text()
-    schema = (root / "infra/vehicle_knowledge/schema.sql").read_text()
+    migration = (root / "infra/vehicle_knowledge/migrations/0002_media_asset.sql").read_text(
+        encoding="utf-8"
+    )
+    schema = (root / "infra/vehicle_knowledge/schema.sql").read_text(encoding="utf-8")
     assert migration[migration.index("CREATE TABLE media_asset("):] in schema
     connection = sqlite3.connect(":memory:")
     connection.executescript(migration)
     cols = {row[1] for row in connection.execute("PRAGMA table_info(media_asset)")}
     assert {"media_asset_id", "raw_sha256", "truth_eligibility", "parent_asset_id",
-            "raw_capture_base64"}.issubset(cols)
+            "object_key", "object_size"}.issubset(cols)
+    assert "raw_capture_base64" not in cols
 
 
 def test_controlled_ingress_admits_exact_bytes_before_model_and_binds_asset(kit):
@@ -335,3 +356,235 @@ def test_matching_media_truth_checked_before_evidence_provider(kit):
             binding=binding,
         )
     assert provider.calls == 0
+
+
+def test_first_observed_external_supports_only_visible_scoped_fields(kit):
+    raw = photo()
+    asset = ingest(kit, raw, ProducingActivity.FIRST_OBSERVED_EXTERNAL).asset
+    assert asset.provenance_class is ProvenanceClass.FIRST_OBSERVED_EXTERNAL
+    assert asset.provenance_confidence is ProvenanceConfidence.PARTIAL
+    assert asset.truth_eligibility is TruthEligibility.FIELD_SCOPED
+    assert asset.earlier_source_status in {"UNKNOWN", "UNAVAILABLE"}
+    assert asset.provenance_class is not ProvenanceClass.ORIGINAL_EVIDENCE
+
+    class VisibleExtractor:
+        def extract_verified(self, *, raw, asset):
+            return {"車身型式_Canonical": FieldSupport(
+                "SUV", FieldSupportScope.VISIBLE_PRESENTATION, True, "vehicle:a",
+            )}
+
+    delta = extract_truth_fields(
+        kit[0], VisibleExtractor(), asset, resolved_vehicle_instance_id="vehicle:a",
+    )
+    assert delta.verified_fields == {"車身型式_Canonical": "SUV"}
+    with pytest.raises(MediaAdmissionError, match="MEDIA_VEHICLE_IDENTITY_UNRESOLVED"):
+        extract_truth_fields(kit[0], VisibleExtractor(), asset)
+
+
+def test_unknown_provenance_has_limited_visible_support_only(kit):
+    asset = ingest(kit, photo(), ProducingActivity.UNKNOWN).asset
+    assert asset.provenance_class is ProvenanceClass.PROVENANCE_UNVERIFIED
+    assert asset.provenance_confidence is ProvenanceConfidence.UNKNOWN
+    assert asset.truth_eligibility is TruthEligibility.LIMITED
+
+    class Extractor:
+        def extract_verified(self, *, raw, asset):
+            return {"實際配備狀態": FieldSupport(
+                "可見頭燈", FieldSupportScope.VISIBLE_EQUIPMENT, True, "vehicle:a",
+            )}
+
+    assert extract_truth_fields(
+        kit[0], Extractor(), asset, resolved_vehicle_instance_id="vehicle:a",
+    ).verified_fields == {"實際配備狀態": "可見頭燈"}
+
+
+@pytest.mark.parametrize("field,scope,visible", [
+    ("VIN", FieldSupportScope.IDENTITY_CRITICAL, True),
+    ("里程", FieldSupportScope.HIDDEN_OR_UNOBSERVABLE, False),
+    ("被遮蔽區域", FieldSupportScope.VISIBLE_PRESENTATION, False),
+])
+def test_first_observed_cannot_support_identity_or_unobservable_truth(kit, field, scope, visible):
+    asset = ingest(kit, photo(), ProducingActivity.FIRST_OBSERVED_EXTERNAL).asset
+
+    class Extractor:
+        def extract_verified(self, *, raw, asset):
+            return {field: FieldSupport("untrusted", scope, visible, "vehicle:a")}
+
+    with pytest.raises(MediaAdmissionError, match="MEDIA_FIELD_SCOPE_UNSUPPORTED"):
+        extract_truth_fields(kit[0], Extractor(), asset, resolved_vehicle_instance_id="vehicle:a")
+
+
+def test_user_cannot_self_promote_first_observed_to_full(kit):
+    raw = photo()
+    digest = hashlib.sha256(raw).hexdigest()
+    signature = kit[1].issue(
+        raw_sha256=digest, activity=ProducingActivity.FIRST_OBSERVED_EXTERNAL,
+        source_lineage="vehicle:a", task_lineage="turn:1",
+    )
+    with pytest.raises(MediaAdmissionError, match="ATTESTATION_INVALID"):
+        kit[2].ingest(
+            raw=raw, mime="image/png", activity=ProducingActivity.ORIGINAL_CAPTURE,
+            source_lineage="vehicle:a", task_lineage="turn:1", attestation=signature,
+        )
+    observed = ingest(kit, raw, ProducingActivity.FIRST_OBSERVED_EXTERNAL)
+    assert observed.asset.truth_eligibility is TruthEligibility.FIELD_SCOPED
+
+
+class MemoryCreativeRegistry:
+    def __init__(self):
+        self.refs = {}
+
+    def insert_immutable(self, ref):
+        return self.refs.setdefault(ref.creative_ref_id, ref)
+
+
+def test_manual_creative_admission_is_separate_and_never_promotes_truth(kit):
+    original = ingest(kit, photo()).asset
+    creative = ingest(kit, photo(shift=61), ProducingActivity.AI_EDIT,
+                      original.media_asset_id).asset
+    registry = MemoryCreativeRegistry()
+    first = add_as_creative_asset(
+        action=CreativeMediaAction.ADD_AS_CREATIVE_ASSET, asset=creative,
+        resolved_vehicle_instance_id="vehicle:a", channels=("FB", "8891"), repository=registry,
+    )
+    second = add_as_creative_asset(
+        action=CreativeMediaAction.ADD_AS_CREATIVE_ASSET, asset=creative,
+        resolved_vehicle_instance_id="vehicle:a", channels=("FB", "8891"), repository=registry,
+    )
+    assert first == second and len(registry.refs) == 1
+    assert first.target_column == "銷售素材Refs"
+    assert first.vehicle_instance_id == "vehicle:a"
+    assert creative.truth_eligibility is TruthEligibility.FORBIDDEN
+    with pytest.raises(MediaAdmissionError, match="CREATIVE_CANNOT_ENTER_ORIGINAL_MEDIA_REFS"):
+        original_media_ref(creative)
+
+    class Extractor:
+        def extract_verified(self, **kwargs):
+            raise AssertionError("creative must never reach extractor")
+
+    with pytest.raises(MediaAdmissionError, match="MEDIA_NOT_TRUTH_ELIGIBLE"):
+        extract_truth_fields(kit[0], Extractor(), creative)
+    assert ingest(kit, photo(shift=61), ProducingActivity.AI_EDIT,
+                  original.media_asset_id).exact_duplicate
+
+
+def test_object_readback_missing_or_hash_mismatch_fail_closed(kit):
+    asset = ingest(kit, photo()).asset
+    raw = kit[0].raw.pop(asset.media_asset_id)
+
+    class Extractor:
+        def extract_verified(self, **kwargs):
+            raise AssertionError("missing/tampered object must not reach extractor")
+
+    with pytest.raises(MediaAdmissionError, match="MEDIA_RAW_READBACK_INVALID"):
+        extract_truth_fields(kit[0], Extractor(), asset)
+    kit[0].raw[asset.media_asset_id] = b"tampered"
+    with pytest.raises(MediaAdmissionError, match="MEDIA_RAW_READBACK_INVALID"):
+        extract_truth_fields(kit[0], Extractor(), asset)
+    with pytest.raises(MediaAdmissionError, match="MEDIA_RAW_READBACK_INVALID"):
+        validate_asset_readback(asset, b"tampered")
+    validate_asset_readback(asset, raw)
+
+
+def creative_workbook():
+    source = workbook()
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source)) as old, zipfile.ZipFile(output, "w") as new:
+        for info in old.infolist():
+            data = old.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                root = ET.fromstring(data)
+                rows = root.find(q("sheetData")).findall(q("row"))
+                header = rows[0]
+                creative = ET.SubElement(header, q("c"), {"r": "E1", "t": "inlineStr"})
+                ET.SubElement(ET.SubElement(creative, q("is")), q("t")).text = "銷售素材Refs"
+                original = ET.SubElement(header, q("c"), {"r": "F1", "t": "inlineStr"})
+                ET.SubElement(ET.SubElement(original, q("is")), q("t")).text = "原始媒體Refs"
+                target = next(row for row in rows if row.get("r") == "13")
+                original_ref = ET.SubElement(target, q("c"), {"r": "F13", "t": "inlineStr"})
+                ET.SubElement(ET.SubElement(original_ref, q("is")), q("t")).text = "original:1"
+                data = ET.tostring(root)
+            new.writestr(info, data)
+    return output.getvalue()
+
+
+def test_creative_workbench_builder_changes_only_dedicated_cell(kit):
+    creative = ingest(kit, photo(shift=88), ProducingActivity.AI_GENERATE,
+                      lineage="8891:S4806251").asset
+    ref = add_as_creative_asset(
+        action=CreativeMediaAction.ADD_AS_CREATIVE_ASSET, asset=creative,
+        resolved_vehicle_instance_id="8891:S4806251", channels=("FB",),
+        repository=MemoryCreativeRegistry(),
+    )
+    before = creative_workbook()
+    builder = CreativeXlsxMutationBuilder()
+    after = builder.build(before, ref, ai_row=13)
+    builder.verify(before, after, ref, ai_row=13)
+    assert builder.build(after, ref, ai_row=13) == after
+    with zipfile.ZipFile(io.BytesIO(after)) as archive:
+        ai = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        cells = {cell.get("r"): cell for cell in ai.findall(f".//{q('c')}")}
+        assert "original:1" in ET.tostring(cells["F13"]).decode()
+        assert ref.creative_ref_id in ET.tostring(cells["E13"]).decode()
+    from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
+    from global_hybrid_v2.contracts import PersistenceDisposition
+
+    drive = Drive(before)
+    writer = DriveXlsxWorkbenchPort(
+        file_id=CANONICAL_WORKBENCH_FILE_ID, drive=drive, claims=Claims(),
+    )
+    completion = CreativeMediaCompletionHandler(writer=writer, builder=builder)
+    first = completion.consume(task_id="creative-test", ref=ref, ai_row=13)
+    assert first.state is PersistenceDisposition.WRITE_AND_READBACK_PASS
+    second = completion.consume(task_id="creative-test", ref=ref, ai_row=13)
+    assert second.state is PersistenceDisposition.NO_DELTA
+    assert drive.writes == 1
+
+
+def test_d1_metadata_then_object_fetch_revalidates_hash(monkeypatch, kit):
+    asset = ingest(kit, photo()).asset
+    metadata = {**asset.__dict__,
+                "provenance_class": asset.provenance_class.value,
+                "provenance_confidence": asset.provenance_confidence.value,
+                "producing_activity": asset.producing_activity.value,
+                "truth_eligibility": asset.truth_eligibility.value}
+    assert "raw_capture_base64" not in metadata
+    stored = kit[0].raw[asset.media_asset_id]
+    state = {"raw": stored, "missing": False, "paths": []}
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self.body
+
+    def fake_urlopen(request, timeout):
+        state["paths"].append(request.full_url)
+        if "/internal/media-asset/read?" in request.full_url:
+            return Response(json.dumps({"state": "HIT", "asset": metadata}).encode())
+        if "/internal/media-object/read?" in request.full_url:
+            if state["missing"]:
+                raise URLError("missing")
+            return Response(state["raw"])
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr("global_hybrid_v2.adapters.d1_media_assets.urlopen", fake_urlopen)
+    repo = D1MediaAssetRepository(
+        base_url="https://d1.example", read_secret="read", write_secret="write",
+    )
+    assert repo.by_id(asset.media_asset_id) == asset
+    assert len(state["paths"]) == 2
+    state["missing"] = True
+    with pytest.raises(MediaAdmissionError, match="MEDIA_OBJECT_MISSING"):
+        repo.by_id(asset.media_asset_id)
+    state["missing"] = False
+    state["raw"] = b"tampered"
+    with pytest.raises(MediaAdmissionError, match="MEDIA_RAW_READBACK_INVALID"):
+        repo.by_id(asset.media_asset_id)

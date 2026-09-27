@@ -36,6 +36,11 @@ const database = env => {
   }
   return env.DB;
 };
+const mediaBucket = env => {
+  if (!env.MEDIA_BUCKET || typeof env.MEDIA_BUCKET.get !== "function" ||
+      typeof env.MEDIA_BUCKET.put !== "function") throw new Error("MEDIA_OBJECT_STORE_REQUIRED");
+  return env.MEDIA_BUCKET;
+};
 
 const parsePayload = row => row ? JSON.parse(row.payload) : null;
 
@@ -44,10 +49,36 @@ const sha256Hex = async value => {
   return [...new Uint8Array(bytes)].map(item => item.toString(16).padStart(2, "0")).join("");
 };
 
-async function control(db, path, body) {
+async function control(db, path, body, env) {
+  if (path === "/internal/control/creative-media-ref") {
+    required(body, ["creative_ref_id", "media_asset_id", "vehicle_instance_id", "target_column"]);
+    if (body.target_column !== "\u92b7\u552e\u7d20\u6750Refs" || !Array.isArray(body.channels) ||
+        body.channels.length === 0 || body.channels.some(channel =>
+          !["8891", "FB", "Marketplace", "IG"].includes(channel)))
+      throw new Error("CREATIVE_REF_SCOPE_INVALID");
+    const expected = `creative:${await sha256Hex(`${body.vehicle_instance_id}\0${body.media_asset_id}`)}`;
+    if (body.creative_ref_id !== expected) throw new Error("CREATIVE_REF_ID_INVALID");
+    const asset = await db.prepare(
+      "SELECT truth_eligibility,source_lineage FROM media_asset WHERE media_asset_id=?",
+    ).bind(body.media_asset_id).first();
+    if (!asset || asset.truth_eligibility !== "FORBIDDEN" ||
+        asset.source_lineage !== body.vehicle_instance_id)
+      throw new Error("CREATIVE_TRUTH_LINEAGE_REQUIRED");
+    const existing = await db.prepare(
+      "SELECT * FROM creative_media_ref WHERE creative_ref_id=?",
+    ).bind(body.creative_ref_id).first();
+    if (existing) return {state: "IDEMPOTENT_SUCCESS", creative_ref_id: existing.creative_ref_id};
+    const channels = JSON.stringify([...new Set(body.channels)].sort());
+    await db.prepare(
+      "INSERT INTO creative_media_ref(creative_ref_id,media_asset_id,vehicle_instance_id,target_column,channels_json,admitted_at) VALUES(?,?,?,?,?,?)",
+    ).bind(body.creative_ref_id,body.media_asset_id,body.vehicle_instance_id,
+      body.target_column,channels,new Date().toISOString()).run();
+    return {state: "RECORDED", creative_ref_id: body.creative_ref_id};
+  }
   if (path === "/internal/control/media-asset") {
     required(body, ["media_asset_id", "raw_sha256", "normalized_pixel_hash", "perceptual_fingerprint",
-      "mime", "provenance_class", "producing_activity", "truth_eligibility", "first_seen_at",
+      "object_key", "mime", "provenance_class", "provenance_confidence", "earlier_source_status",
+      "producing_activity", "truth_eligibility", "first_seen_at",
       "source_lineage", "task_lineage", "raw_base64"]);
     if (!/^media:[0-9a-f]{64}$/.test(body.media_asset_id) ||
         body.media_asset_id !== `media:${body.raw_sha256}`) throw new Error("MEDIA_ID_INVALID");
@@ -57,6 +88,8 @@ async function control(db, path, body) {
     const rawHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", raw))]
       .map(item => item.toString(16).padStart(2, "0")).join("");
     if (rawHash !== body.raw_sha256) throw new Error("MEDIA_RAW_HASH_MISMATCH");
+    if (body.object_key !== `media/sha256/${rawHash}` ||
+        body.object_size !== raw.byteLength) throw new Error("MEDIA_OBJECT_IDENTITY_MISMATCH");
     const existing = await db.prepare("SELECT media_asset_id,source_lineage FROM media_asset WHERE raw_sha256=?")
       .bind(body.raw_sha256).first();
     if (existing) {
@@ -66,30 +99,57 @@ async function control(db, path, body) {
     const parentId = body.parent_asset_id || null;
     if (parentId === body.media_asset_id) throw new Error("MEDIA_LINEAGE_CYCLE");
     const parent = parentId ? await db.prepare(
-      "SELECT source_lineage,truth_eligibility,independent_evidence_id FROM media_asset WHERE media_asset_id=?",
+      "SELECT source_lineage,truth_eligibility,provenance_confidence,independent_evidence_id FROM media_asset WHERE media_asset_id=?",
     ).bind(parentId).first() : null;
     if (parentId && !parent) throw new Error("MEDIA_PARENT_MISSING");
     if (parent && parent.source_lineage !== body.source_lineage) throw new Error("MEDIA_PARENT_SCOPE_MISMATCH");
-    if (parent && parent.truth_eligibility === "TRUTH_FORBIDDEN" &&
-        body.truth_eligibility !== "TRUTH_FORBIDDEN") throw new Error("MEDIA_FORBIDDEN_LINEAGE_UPGRADE");
+    if (parent && parent.truth_eligibility === "FORBIDDEN" &&
+        body.truth_eligibility !== "FORBIDDEN") throw new Error("MEDIA_FORBIDDEN_LINEAGE_UPGRADE");
+    const rank = {FORBIDDEN: 0, TRUTH_UNRESOLVED: 1, LIMITED: 2, FIELD_SCOPED: 3, FULL: 4};
+    if (parent && rank[body.truth_eligibility] > rank[parent.truth_eligibility])
+      throw new Error("MEDIA_LINEAGE_TRUTH_UPGRADE");
+    const confidenceRank = {UNKNOWN: 0, PARTIAL: 1, VERIFIED: 2};
+    if (parent && confidenceRank[body.provenance_confidence] >
+        confidenceRank[parent.provenance_confidence]) throw new Error("MEDIA_LINEAGE_PROVENANCE_UPGRADE");
     if (parent && body.independent_evidence_id !== parent.independent_evidence_id)
       throw new Error("MEDIA_INDEPENDENT_EVIDENCE_ESCALATION");
     if (body.provenance_class === "ORIGINAL_EVIDENCE" &&
         (parent || body.producing_activity !== "ORIGINAL_CAPTURE" ||
-         body.truth_eligibility !== "TRUTH_ELIGIBLE" ||
+         body.truth_eligibility !== "FULL" || body.provenance_confidence !== "VERIFIED" ||
          body.independent_evidence_id !== body.media_asset_id))
       throw new Error("MEDIA_ORIGINAL_UPGRADE_FORBIDDEN");
+    if (body.provenance_class === "FIRST_OBSERVED_EXTERNAL" &&
+        (parent || body.producing_activity !== "FIRST_OBSERVED_EXTERNAL" ||
+         !["FIELD_SCOPED", "LIMITED"].includes(body.truth_eligibility) ||
+         body.provenance_confidence === "VERIFIED"))
+      throw new Error("MEDIA_FIRST_OBSERVED_ESCALATION");
     if (["AI_EDITED", "AI_GENERATED", "COMPOSITED"].includes(body.provenance_class) &&
-        body.truth_eligibility !== "TRUTH_FORBIDDEN") throw new Error("MEDIA_CREATIVE_TRUTH_FORBIDDEN");
-    if (["PROVENANCE_UNVERIFIED", "SIMILARITY_UNRESOLVED"].includes(body.provenance_class) &&
-        body.truth_eligibility === "TRUTH_ELIGIBLE") throw new Error("MEDIA_UNRESOLVED_TRUTH_FORBIDDEN");
+        body.truth_eligibility !== "FORBIDDEN") throw new Error("MEDIA_CREATIVE_TRUTH_FORBIDDEN");
+    if (body.provenance_class === "PROVENANCE_UNVERIFIED" &&
+        !(body.truth_eligibility === "LIMITED" && body.provenance_confidence === "UNKNOWN") &&
+        !(parent?.truth_eligibility === "FORBIDDEN" && body.truth_eligibility === "FORBIDDEN"))
+      throw new Error("MEDIA_UNVERIFIED_SCOPE_INVALID");
+    if (body.provenance_class === "SIMILARITY_UNRESOLVED" &&
+        ["FULL", "FIELD_SCOPED", "LIMITED"].includes(body.truth_eligibility))
+      throw new Error("MEDIA_UNRESOLVED_TRUTH_FORBIDDEN");
+    const bucket = mediaBucket(env);
+    const previous = await bucket.get(body.object_key);
+    if (previous) {
+      const stored = new Uint8Array(await previous.arrayBuffer());
+      const storedHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", stored))]
+        .map(item => item.toString(16).padStart(2, "0")).join("");
+      if (storedHash !== rawHash) throw new Error("MEDIA_OBJECT_HASH_MISMATCH");
+    } else {
+      await bucket.put(body.object_key, raw);
+    }
     try {
       await db.prepare(
-        "INSERT INTO media_asset(media_asset_id,raw_sha256,normalized_pixel_hash,perceptual_fingerprint,width,height,mime,provenance_class,parent_asset_id,producing_activity,truth_eligibility,first_seen_at,source_lineage,task_lineage,independent_evidence_id,raw_capture_base64) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-      ).bind(body.media_asset_id,body.raw_sha256,body.normalized_pixel_hash,
-        body.perceptual_fingerprint,body.width,body.height,body.mime,body.provenance_class,
-        parentId,body.producing_activity,body.truth_eligibility,body.first_seen_at,
-        body.source_lineage,body.task_lineage,body.independent_evidence_id || null,body.raw_base64).run();
+        "INSERT INTO media_asset(media_asset_id,raw_sha256,object_key,object_size,normalized_pixel_hash,perceptual_fingerprint,width,height,mime,provenance_class,provenance_confidence,earlier_source_status,parent_asset_id,producing_activity,truth_eligibility,first_seen_at,source_lineage,task_lineage,independent_evidence_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      ).bind(body.media_asset_id,body.raw_sha256,body.object_key,body.object_size,
+        body.normalized_pixel_hash,body.perceptual_fingerprint,body.width,body.height,body.mime,
+        body.provenance_class,body.provenance_confidence,body.earlier_source_status,parentId,
+        body.producing_activity,body.truth_eligibility,body.first_seen_at,body.source_lineage,
+        body.task_lineage,body.independent_evidence_id || null).run();
     } catch (error) {
       const raced = await db.prepare("SELECT media_asset_id,source_lineage FROM media_asset WHERE raw_sha256=?")
         .bind(body.raw_sha256).first();
@@ -310,8 +370,19 @@ export async function handleRequest(request, env) {
     "/internal/control/verified-revision",
     "/internal/control/snapshot-promote",
     "/internal/control/media-asset",
+    "/internal/control/creative-media-ref",
   ]);
   try {
+    if (url.pathname === "/internal/creative-media-ref/read") {
+      if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);
+      const id = url.searchParams.get("creative_ref_id");
+      if (!id) return json({error: "CREATIVE_REF_ID_REQUIRED"}, 400);
+      const row = await database(env).prepare(
+        "SELECT * FROM creative_media_ref WHERE creative_ref_id=?",
+      ).bind(id).first();
+      if (!row) return json({state: "MISS"});
+      return json({state: "HIT", ref: {...row, channels: JSON.parse(row.channels_json)}});
+    }
     if (url.pathname === "/internal/media-asset/read") {
       if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);
       const db = database(env);
@@ -322,8 +393,16 @@ export async function handleRequest(request, env) {
       const row = await db.prepare(`SELECT * FROM media_asset WHERE ${selection[0]}=?`)
         .bind(selection[1]).first();
       if (!row) return json({state: "MISS"});
-      const {raw_capture_base64: raw_base64, ...asset} = row;
-      return json({state: "HIT", asset, raw_base64});
+      return json({state: "HIT", asset: row});
+    }
+    if (url.pathname === "/internal/media-object/read") {
+      if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);
+      const key = url.searchParams.get("object_key");
+      if (!key || !/^media\/sha256\/[0-9a-f]{64}$/.test(key))
+        return json({error: "MEDIA_OBJECT_KEY_INVALID"}, 400);
+      const object = await mediaBucket(env).get(key);
+      if (!object) return json({state: "HOLD", blocker: "MEDIA_OBJECT_MISSING"}, 503);
+      return new Response(await object.arrayBuffer(), {headers: {"content-type": "application/octet-stream"}});
     }
     if (url.pathname === "/internal/media-asset/candidates") {
       if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);
@@ -339,7 +418,7 @@ export async function handleRequest(request, env) {
       if (!controlAuthorized(request, env)) return json({error: "CONTROL_AUTH_REQUIRED"}, 403);
       const body = await request.json();
       if (rejectInjection(body)) return json({error: "DIRECT_AUTHORITY_INJECTION"}, 400);
-      return json(await control(database(env), url.pathname, body));
+      return json(await control(database(env), url.pathname, body, env));
     }
     if (url.pathname === "/v1/vehicle-config/query" || url.pathname === "/v1/vehicle-config/readback") {
       if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);

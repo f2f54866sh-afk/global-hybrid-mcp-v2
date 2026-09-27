@@ -16,8 +16,8 @@ from global_hybrid_v2.media_admission import (
     MediaAdmissionError,
     MediaAdmissionGate,
     ProducingActivity,
-    TruthEligibility,
     canonical_image_mime,
+    require_truth_eligible,
 )
 
 
@@ -133,9 +133,8 @@ class ControlledSalesIngress:
         ))
         if task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING and intent != "sales_human":
             raise ValueError("matching company-commercial task requires Sales owner")
-        if (task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING and admitted is not None
-            and admitted.asset.truth_eligibility is not TruthEligibility.ELIGIBLE):
-            raise MediaAdmissionError("MEDIA_NOT_TRUTH_ELIGIBLE")
+        if task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING and admitted is not None:
+            require_truth_eligible((admitted.asset,))
         token = self.token_codec.issue(
             conversation_id=turn.conversation_id,
             turn_id=turn.turn_id,

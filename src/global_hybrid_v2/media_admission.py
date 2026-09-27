@@ -19,6 +19,7 @@ class MediaAdmissionError(ValueError):
 
 class ProvenanceClass(StrEnum):
     ORIGINAL_EVIDENCE = "ORIGINAL_EVIDENCE"
+    FIRST_OBSERVED_EXTERNAL = "FIRST_OBSERVED_EXTERNAL"
     EXACT_DUPLICATE = "EXACT_DUPLICATE"
     DERIVATIVE_RESIZE = "DERIVATIVE_RESIZE"
     DERIVATIVE_CROP = "DERIVATIVE_CROP"
@@ -31,13 +32,23 @@ class ProvenanceClass(StrEnum):
 
 
 class TruthEligibility(StrEnum):
-    ELIGIBLE = "TRUTH_ELIGIBLE"
-    FORBIDDEN = "TRUTH_FORBIDDEN"
+    FULL = "FULL"
+    ELIGIBLE = "FULL"  # Compatibility for already-admitted original captures.
+    FIELD_SCOPED = "FIELD_SCOPED"
+    LIMITED = "LIMITED"
+    FORBIDDEN = "FORBIDDEN"
     UNRESOLVED = "TRUTH_UNRESOLVED"
+
+
+class ProvenanceConfidence(StrEnum):
+    VERIFIED = "VERIFIED"
+    PARTIAL = "PARTIAL"
+    UNKNOWN = "UNKNOWN"
 
 
 class ProducingActivity(StrEnum):
     ORIGINAL_CAPTURE = "ORIGINAL_CAPTURE"
+    FIRST_OBSERVED_EXTERNAL = "FIRST_OBSERVED_EXTERNAL"
     RESIZE = "RESIZE"
     CROP = "CROP"
     TRANSCODE = "TRANSCODE"
@@ -51,12 +62,16 @@ class ProducingActivity(StrEnum):
 class MediaAsset:
     media_asset_id: str
     raw_sha256: str
+    object_key: str
+    object_size: int
     normalized_pixel_hash: str
     perceptual_fingerprint: str
     width: int
     height: int
     mime: str
     provenance_class: ProvenanceClass
+    provenance_confidence: ProvenanceConfidence
+    earlier_source_status: str
     parent_asset_id: str | None
     producing_activity: ProducingActivity
     truth_eligibility: TruthEligibility
@@ -75,7 +90,30 @@ class MediaAssetRepository(Protocol):
 
 
 class VerifiedMediaFieldExtractor(Protocol):
-    def extract_verified(self, *, raw: bytes, asset: MediaAsset) -> dict[str, str]: ...
+    def extract_verified(self, *, raw: bytes, asset: MediaAsset) -> dict[str, str | FieldSupport]: ...
+
+
+class FieldSupportScope(StrEnum):
+    VISIBLE_PRESENTATION = "VISIBLE_PRESENTATION"
+    VISIBLE_EQUIPMENT = "VISIBLE_EQUIPMENT"
+    IDENTITY_CRITICAL = "IDENTITY_CRITICAL"
+    HIDDEN_OR_UNOBSERVABLE = "HIDDEN_OR_UNOBSERVABLE"
+
+
+FIELD_SCOPED_ALLOWED = {
+    "證據/缺口摘要": FieldSupportScope.VISIBLE_PRESENTATION,
+    "車身型式_Canonical": FieldSupportScope.VISIBLE_PRESENTATION,
+    "實際配備狀態": FieldSupportScope.VISIBLE_EQUIPMENT,
+    "頭燈_Canonical": FieldSupportScope.VISIBLE_EQUIPMENT,
+}
+
+
+@dataclass(frozen=True)
+class FieldSupport:
+    value: str
+    scope: FieldSupportScope
+    visible: bool
+    vehicle_instance_id: str
 
 
 class TrustedMediaActivityIssuer:
@@ -168,7 +206,7 @@ def _fingerprints(image: Image.Image) -> tuple[str, str]:
 def validate_asset_readback(asset: MediaAsset, raw: bytes) -> None:
     if asset.media_asset_id != "media:" + asset.raw_sha256 or (
         hashlib.sha256(raw).hexdigest() != asset.raw_sha256
-    ):
+    ) or asset.object_key != f"media/sha256/{asset.raw_sha256}" or asset.object_size != len(raw):
         raise MediaAdmissionError("MEDIA_RAW_READBACK_INVALID")
     image = _image(raw)
     normalized, fingerprint = _fingerprints(image)
@@ -262,6 +300,7 @@ class MediaAdmissionGate:
         if activity in creative:
             provenance = creative[activity]
             eligibility = TruthEligibility.FORBIDDEN
+            confidence = ProvenanceConfidence.VERIFIED
         elif parent and parent.truth_eligibility is TruthEligibility.FORBIDDEN:
             provenance = {
                 ProducingActivity.CROP: ProvenanceClass.DERIVATIVE_CROP,
@@ -269,29 +308,43 @@ class MediaAdmissionGate:
                 ProducingActivity.TRANSCODE: ProvenanceClass.DERIVATIVE_TRANSCODE,
             }.get(activity, ProvenanceClass.PROVENANCE_UNVERIFIED)
             eligibility = TruthEligibility.FORBIDDEN
+            confidence = parent.provenance_confidence
         elif parent or visual_parent:
             if parent and visual_parent and parent.media_asset_id != visual_parent.media_asset_id:
                 raise MediaAdmissionError("MEDIA_PARENT_CONFLICT")
             parent = parent or visual_parent
             provenance = visual_relation or ProvenanceClass.SIMILARITY_UNRESOLVED
-            confirmed = visual_relation and parent.truth_eligibility is TruthEligibility.ELIGIBLE
-            eligibility = TruthEligibility.ELIGIBLE if confirmed else TruthEligibility.UNRESOLVED
+            confirmed = visual_relation and parent.truth_eligibility not in {
+                TruthEligibility.FORBIDDEN, TruthEligibility.UNRESOLVED,
+            }
+            eligibility = parent.truth_eligibility if confirmed else TruthEligibility.UNRESOLVED
+            confidence = parent.provenance_confidence
         elif similar_unresolved:
             provenance, eligibility = ProvenanceClass.SIMILARITY_UNRESOLVED, TruthEligibility.UNRESOLVED
+            confidence = ProvenanceConfidence.UNKNOWN
         elif activity is ProducingActivity.ORIGINAL_CAPTURE:
-            provenance, eligibility = ProvenanceClass.ORIGINAL_EVIDENCE, TruthEligibility.ELIGIBLE
+            provenance, eligibility = ProvenanceClass.ORIGINAL_EVIDENCE, TruthEligibility.FULL
+            confidence = ProvenanceConfidence.VERIFIED
+        elif activity is ProducingActivity.FIRST_OBSERVED_EXTERNAL:
+            provenance, eligibility = ProvenanceClass.FIRST_OBSERVED_EXTERNAL, TruthEligibility.FIELD_SCOPED
+            confidence = ProvenanceConfidence.PARTIAL
         else:
-            provenance, eligibility = ProvenanceClass.PROVENANCE_UNVERIFIED, TruthEligibility.UNRESOLVED
+            provenance, eligibility = ProvenanceClass.PROVENANCE_UNVERIFIED, TruthEligibility.LIMITED
+            confidence = ProvenanceConfidence.UNKNOWN
         if parent and parent.truth_eligibility is TruthEligibility.FORBIDDEN:
             eligibility = TruthEligibility.FORBIDDEN
         root = parent.independent_evidence_id if parent else (
-            asset_id if eligibility is TruthEligibility.ELIGIBLE else None
+            asset_id if eligibility in {TruthEligibility.FULL, TruthEligibility.FIELD_SCOPED,
+                                      TruthEligibility.LIMITED} else None
         )
         asset = MediaAsset(
             media_asset_id=asset_id, raw_sha256=raw_hash,
+            object_key=f"media/sha256/{raw_hash}", object_size=len(raw),
             normalized_pixel_hash=normalized, perceptual_fingerprint=fingerprint,
             width=image.width, height=image.height, mime=mime,
-            provenance_class=provenance, parent_asset_id=parent.media_asset_id if parent else None,
+            provenance_class=provenance, provenance_confidence=confidence,
+            earlier_source_status="UNAVAILABLE" if activity is ProducingActivity.FIRST_OBSERVED_EXTERNAL
+            else "UNKNOWN", parent_asset_id=parent.media_asset_id if parent else None,
             producing_activity=activity, truth_eligibility=eligibility,
             first_seen_at=datetime.now(UTC).isoformat(), source_lineage=source_lineage,
             task_lineage=task_lineage, independent_evidence_id=root,
@@ -305,7 +358,8 @@ class MediaAdmissionGate:
 
 
 def require_truth_eligible(assets: tuple[MediaAsset, ...]) -> tuple[MediaAsset, ...]:
-    if any(asset.truth_eligibility is not TruthEligibility.ELIGIBLE for asset in assets):
+    if any(asset.truth_eligibility in {TruthEligibility.FORBIDDEN, TruthEligibility.UNRESOLVED}
+           for asset in assets):
         raise MediaAdmissionError("MEDIA_NOT_TRUTH_ELIGIBLE")
     return assets
 
@@ -319,13 +373,28 @@ def independent_evidence_count(assets: tuple[MediaAsset, ...]) -> int:
 
 def extract_truth_fields(
     repository: MediaAssetRepository, extractor: VerifiedMediaFieldExtractor,
-    asset: MediaAsset,
+    asset: MediaAsset, *, resolved_vehicle_instance_id: str | None = None,
 ) -> MediaFieldDelta:
     require_truth_eligible((asset,))
     raw = repository.raw_for_analysis(asset.media_asset_id)
-    if raw is None or hashlib.sha256(raw).hexdigest() != asset.raw_sha256:
+    if raw is None:
         raise MediaAdmissionError("MEDIA_RAW_READBACK_INVALID")
+    validate_asset_readback(asset, raw)
     if asset.independent_evidence_id is None:
         raise MediaAdmissionError("MEDIA_EVIDENCE_LINEAGE_MISSING")
     fields = extractor.extract_verified(raw=raw, asset=asset)
+    if asset.truth_eligibility in {TruthEligibility.FIELD_SCOPED, TruthEligibility.LIMITED}:
+        if not resolved_vehicle_instance_id:
+            raise MediaAdmissionError("MEDIA_VEHICLE_IDENTITY_UNRESOLVED")
+        safe: dict[str, str] = {}
+        for name, support in fields.items():
+            if (not isinstance(support, FieldSupport) or not support.visible
+                or support.vehicle_instance_id != resolved_vehicle_instance_id
+                or FIELD_SCOPED_ALLOWED.get(name) is not support.scope
+                or support.scope not in {
+                    FieldSupportScope.VISIBLE_PRESENTATION, FieldSupportScope.VISIBLE_EQUIPMENT,
+                }):
+                raise MediaAdmissionError("MEDIA_FIELD_SCOPE_UNSUPPORTED")
+            safe[name] = support.value
+        return MediaFieldDelta(asset.media_asset_id, asset.independent_evidence_id, safe)
     return MediaFieldDelta(asset.media_asset_id, asset.independent_evidence_id, fields)

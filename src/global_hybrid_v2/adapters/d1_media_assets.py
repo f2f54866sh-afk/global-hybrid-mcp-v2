@@ -7,11 +7,13 @@ from dataclasses import asdict
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from global_hybrid_v2.creative_media import CreativeMediaRef
 from global_hybrid_v2.media_admission import (
     MediaAdmissionError,
     MediaAsset,
     ProducingActivity,
     ProvenanceClass,
+    ProvenanceConfidence,
     TruthEligibility,
     validate_asset_readback,
 )
@@ -59,8 +61,18 @@ class D1MediaAssetRepository:
             "provenance_class": ProvenanceClass(fields["provenance_class"]),
             "producing_activity": ProducingActivity(fields["producing_activity"]),
             "truth_eligibility": TruthEligibility(fields["truth_eligibility"]),
+            "provenance_confidence": ProvenanceConfidence(fields["provenance_confidence"]),
         })
-        raw = base64.b64decode(result["raw_base64"], validate=True)
+        request = Request(
+            self.base_url + "/internal/media-object/read?" + urlencode({"object_key": asset.object_key}),
+            headers={"Authorization": f"Bearer {self.read_secret}"},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                raw = response.read()
+        except Exception as exc:
+            raise MediaAdmissionError("MEDIA_OBJECT_MISSING") from exc
         validate_asset_readback(asset, raw)
         return asset, raw
 
@@ -92,3 +104,41 @@ class D1MediaAssetRepository:
         if readback is None or readback.raw_sha256 != asset.raw_sha256 or read_raw is None:
             raise MediaAdmissionError("D1_MEDIA_READBACK_MISMATCH")
         return readback
+
+
+class D1CreativeMediaRepository:
+    def __init__(self, *, base_url: str, read_secret: str, write_secret: str) -> None:
+        self.client = D1MediaAssetRepository(
+            base_url=base_url, read_secret=read_secret, write_secret=write_secret,
+        )
+
+    def insert_immutable(self, ref: CreativeMediaRef) -> CreativeMediaRef:
+        result = self.client._request(
+            "/internal/control/creative-media-ref", write=True,
+            body={
+                "creative_ref_id": ref.creative_ref_id,
+                "media_asset_id": ref.media_asset_id,
+                "vehicle_instance_id": ref.vehicle_instance_id,
+                "target_column": ref.target_column,
+                "channels": list(ref.channels),
+            },
+        )
+        if result.get("state") not in {"RECORDED", "IDEMPOTENT_SUCCESS"}:
+            raise MediaAdmissionError("D1_CREATIVE_WRITE_INVALID")
+        readback = self.client._request(
+            "/internal/creative-media-ref/read?" + urlencode({"creative_ref_id": ref.creative_ref_id}),
+        )
+        if readback.get("state") != "HIT":
+            raise MediaAdmissionError("D1_CREATIVE_READBACK_MISSING")
+        row = readback["ref"]
+        if (row["creative_ref_id"], row["media_asset_id"], row["vehicle_instance_id"],
+            row["target_column"], tuple(row["channels"])) != (
+            ref.creative_ref_id, ref.media_asset_id, ref.vehicle_instance_id,
+            ref.target_column, ref.channels,
+        ):
+            raise MediaAdmissionError("D1_CREATIVE_READBACK_MISMATCH")
+        return CreativeMediaRef(
+            creative_ref_id=ref.creative_ref_id, media_asset_id=ref.media_asset_id,
+            vehicle_instance_id=ref.vehicle_instance_id, target_column=ref.target_column,
+            channels=ref.channels, admitted_at=row["admitted_at"],
+        )
