@@ -19,6 +19,7 @@ from global_hybrid_v2.contracts import (
     DialogueBindingState,
     WorkbenchSyncIntent,
 )
+from global_hybrid_v2.ingress_admission import IngressTaskClass, IngressTurnBinding, sha256_task
 
 
 class TrustBoundaryError(ValueError):
@@ -40,10 +41,13 @@ class TrustedWorkbenchEvidenceReceipt(BaseModel):
     binding_state: EvidenceBindingState
     verified_delta: dict[str, Any]
     evidence_refs: tuple[str, ...] = ()
+    identity_sources: tuple[str, ...] = ()
     issued_at: datetime
     valid_until: datetime
     issuer: str = Field(min_length=1)
     signature: str = Field(min_length=64, max_length=64)
+    request_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evidence_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_window(self):
@@ -163,22 +167,26 @@ class TrustedDispatchCompiler:
         self,
         *,
         caller_task: CallerTask,
+        task_class: IngressTaskClass,
         task_scope: str,
         evidence_receipt: TrustedWorkbenchEvidenceReceipt | None,
         now: datetime | None = None,
     ) -> TrustedDispatchEnvelope:
         self.reject_privileged_caller_fields(caller_task)
         trusted = None
-        matching = False
-        if evidence_receipt is not None:
+        matching = task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING
+        if matching:
             if caller_task.intent != "sales_human":
                 raise TrustBoundaryError("WORKBENCH_OWNER_MISMATCH")
+            if evidence_receipt is None:
+                raise HostBindingCapabilityDebt("MATCHING_EVIDENCE_RECEIPT_MISSING")
             trusted = self.producer.compile(
                 receipt=evidence_receipt,
                 expected_task_scope=task_scope,
                 now=now,
             )
-            matching = True
+        elif evidence_receipt is not None:
+            raise TrustBoundaryError("NONMATCHING_EVIDENCE_RECEIPT_UNEXPECTED")
         return TrustedDispatchEnvelope(
             caller_task=caller_task,
             trusted_workbench_intent=trusted,
@@ -194,7 +202,7 @@ class HostCurrentStateResolver(Protocol):
 
 class EvidenceReceiptProvider(Protocol):
     def resolve(
-        self, *, task_scope: str, request_text: str,
+        self, *, task_scope: str, request_text: str, evidence_digest: str,
     ) -> TrustedWorkbenchEvidenceReceipt | None: ...
 
 
@@ -235,6 +243,7 @@ class TrustedHostTaskCompiler:
         self,
         *,
         caller_task: CallerTask,
+        task_class: IngressTaskClass,
         conversation_id: str,
         turn_id: str,
         now: datetime | None = None,
@@ -242,7 +251,7 @@ class TrustedHostTaskCompiler:
         self.dispatch_compiler.reject_privileged_caller_fields(caller_task)
         if self.host_state_resolver is None:
             raise HostBindingCapabilityDebt("HOST_CURRENT_STATE_RESOLVER_UNAVAILABLE")
-        if self.evidence_provider is None:
+        if task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING and self.evidence_provider is None:
             raise HostBindingCapabilityDebt("TRUSTED_EVIDENCE_PROVIDER_UNAVAILABLE")
         if not conversation_id.strip() or not turn_id.strip():
             raise TrustBoundaryError("HOST_TASK_SCOPE_REQUIRED")
@@ -253,12 +262,16 @@ class TrustedHostTaskCompiler:
             request_text=caller_task.request_text,
         )
         host_state = ResolvedHostState.model_validate(host_raw)
-        evidence_receipt = self.evidence_provider.resolve(
-            task_scope=task_scope,
-            request_text=caller_task.request_text,
+        evidence_receipt = (
+            self.evidence_provider.resolve(
+                task_scope=task_scope,
+                request_text=caller_task.request_text,
+            )
+            if task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING else None
         )
         trusted = self.dispatch_compiler.compile(
             caller_task=caller_task,
+            task_class=task_class,
             task_scope=task_scope,
             evidence_receipt=evidence_receipt,
             now=now,
@@ -266,6 +279,68 @@ class TrustedHostTaskCompiler:
         return ServerResolvedDispatch(
             caller_task=caller_task,
             task_scope=task_scope,
+            host_state=host_state,
+            trusted_workbench_intent=trusted.trusted_workbench_intent,
+            company_commercial_matching=trusted.company_commercial_matching,
+        )
+
+    def compile_admitted(
+        self,
+        *,
+        caller_task: CallerTask,
+        binding: IngressTurnBinding,
+        now: datetime | None = None,
+    ) -> ServerResolvedDispatch:
+        """Classify first; a matching turn can never become an ordinary dispatch."""
+        self.dispatch_compiler.reject_privileged_caller_fields(caller_task)
+        if (
+            binding.intent != caller_task.intent
+            or binding.request_digest != sha256_task(caller_task.request_text, caller_task.intent)
+        ):
+            raise TrustBoundaryError("INGRESS_REQUEST_DIGEST_MISMATCH")
+        if self.host_state_resolver is None:
+            raise HostBindingCapabilityDebt("HOST_CURRENT_STATE_RESOLVER_UNAVAILABLE")
+        host_raw = self.host_state_resolver.resolve(
+            conversation_id=binding.conversation_id,
+            turn_id=binding.turn_id,
+            request_text=caller_task.request_text,
+        )
+        host_state = ResolvedHostState.model_validate(host_raw)
+        receipt = None
+        if binding.task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING:
+            if self.evidence_provider is None:
+                raise HostBindingCapabilityDebt("TRUSTED_EVIDENCE_PROVIDER_UNAVAILABLE")
+            try:
+                receipt = self.evidence_provider.resolve(
+                    task_scope=binding.task_scope,
+                    request_text=caller_task.request_text,
+                    evidence_digest=binding.evidence_digest,
+                )
+            except Exception as exc:
+                raise HostBindingCapabilityDebt("TRUSTED_EVIDENCE_PROVIDER_FAILED") from exc
+            if receipt is None:
+                raise HostBindingCapabilityDebt("MATCHING_EVIDENCE_RECEIPT_MISSING")
+            if not {"CANONICAL_WORKBENCH", "RAW_EVIDENCE"}.issubset(receipt.identity_sources):
+                raise TrustBoundaryError("DURABLE_IDENTITY_PROVENANCE_MISSING")
+            if (
+                receipt.request_digest != binding.request_digest
+                or receipt.evidence_digest != binding.evidence_digest
+            ):
+                raise TrustBoundaryError("WORKBENCH_EVIDENCE_DIGEST_MISMATCH")
+        trusted = self.dispatch_compiler.compile(
+            caller_task=caller_task,
+            task_class=binding.task_class,
+            task_scope=binding.task_scope,
+            evidence_receipt=receipt,
+            now=now,
+        )
+        if trusted.company_commercial_matching != (
+            binding.task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING
+        ):
+            raise TrustBoundaryError("INGRESS_TASK_CLASS_MISMATCH")
+        return ServerResolvedDispatch(
+            caller_task=caller_task,
+            task_scope=binding.task_scope,
             host_state=host_state,
             trusted_workbench_intent=trusted.trusted_workbench_intent,
             company_commercial_matching=trusted.company_commercial_matching,

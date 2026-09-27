@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -7,10 +8,21 @@ import pytest
 from mcp import Client
 
 from global_hybrid_v2.adapters.drive_xlsx_workbench import DriveXlsxWorkbenchPort
-from global_hybrid_v2.adapters.mcp_server import create_mcp_server
+from global_hybrid_v2.adapters.mcp_server import create_mcp_server, dispatch_verified_host_task_from_headers
 from global_hybrid_v2.application import create_application
 from global_hybrid_v2.company_commercial_completion import CompanyCommercialCompletionHandler
-from global_hybrid_v2.contracts import DomainResult, Owner
+from global_hybrid_v2.contracts import (
+    DomainResult,
+    Owner,
+    PersistenceDisposition,
+    PersistenceReceipt,
+)
+from global_hybrid_v2.ingress_admission import (
+    IngressTaskClass,
+    IngressTurnTokenCodec,
+    InMemoryNonceClaimStore,
+    sha256_task,
+)
 from global_hybrid_v2.trusted_workbench_intent import (
     CANONICAL_WORKBENCH_FILE_ID,
     CallerTask,
@@ -64,6 +76,7 @@ def task(**overrides):
 def test_positive_server_receipt_compiles_canonical_intent():
     out = compiler().compile(
         caller_task=task(),
+        task_class=IngressTaskClass.COMPANY_COMMERCIAL_MATCHING,
         task_scope="conversation:c1:turn:7",
         evidence_receipt=receipt(),
         now=NOW,
@@ -86,6 +99,7 @@ def test_caller_cannot_self_author_completion_state(field, value, code):
     with pytest.raises(TrustBoundaryError, match=code):
         compiler().compile(
             caller_task=task(**{field: value}),
+            task_class=IngressTaskClass.ORDINARY,
             task_scope="conversation:c1:turn:7",
             evidence_receipt=None,
             now=NOW,
@@ -96,7 +110,8 @@ def test_forged_receipt_rejected():
     r = receipt().model_copy(update={"verified_delta": {"里程_Canonical": 1}})
     with pytest.raises(TrustBoundaryError, match="UNTRUSTED"):
         compiler().compile(
-            caller_task=task(), task_scope="conversation:c1:turn:7", evidence_receipt=r, now=NOW
+            caller_task=task(), task_class=IngressTaskClass.COMPANY_COMMERCIAL_MATCHING,
+            task_scope="conversation:c1:turn:7", evidence_receipt=r, now=NOW
         )
 
 
@@ -104,21 +119,24 @@ def test_stale_receipt_rejected():
     r = receipt(valid_until=NOW - timedelta(seconds=1))
     with pytest.raises(TrustBoundaryError, match="STALE"):
         compiler().compile(
-            caller_task=task(), task_scope="conversation:c1:turn:7", evidence_receipt=r, now=NOW
+            caller_task=task(), task_class=IngressTaskClass.COMPANY_COMMERCIAL_MATCHING,
+            task_scope="conversation:c1:turn:7", evidence_receipt=r, now=NOW
         )
 
 
 def test_cross_turn_receipt_replay_rejected():
     with pytest.raises(TrustBoundaryError, match="SCOPE_MISMATCH"):
         compiler().compile(
-            caller_task=task(), task_scope="conversation:c1:turn:8", evidence_receipt=receipt(), now=NOW
+            caller_task=task(), task_class=IngressTaskClass.COMPANY_COMMERCIAL_MATCHING,
+            task_scope="conversation:c1:turn:8", evidence_receipt=receipt(), now=NOW
         )
 
 
 def test_conflict_receipt_compiles_hold_intent_not_safe_write():
     r = receipt(binding_state=EvidenceBindingState.HOLD_CONFLICT, verified_delta={})
     out = compiler().compile(
-        caller_task=task(), task_scope="conversation:c1:turn:7", evidence_receipt=r, now=NOW
+        caller_task=task(), task_class=IngressTaskClass.COMPANY_COMMERCIAL_MATCHING,
+        task_scope="conversation:c1:turn:7", evidence_receipt=r, now=NOW
     )
     assert out.trusted_workbench_intent.safe_attribution is False
     assert out.trusted_workbench_intent.identity_conflict is True
@@ -126,7 +144,8 @@ def test_conflict_receipt_compiles_hold_intent_not_safe_write():
 
 def test_no_receipt_is_ordinary_nonmatching_dispatch():
     out = compiler().compile(
-        caller_task=task(), task_scope="conversation:c1:turn:7", evidence_receipt=None, now=NOW
+        caller_task=task(), task_class=IngressTaskClass.ORDINARY,
+        task_scope="conversation:c1:turn:7", evidence_receipt=None, now=NOW
     )
     assert out.company_commercial_matching is False
     assert out.trusted_workbench_intent is None
@@ -182,7 +201,7 @@ class EvidenceProvider:
         self.value = value
         self.calls = 0
 
-    def resolve(self, *, task_scope, request_text):
+    def resolve(self, *, task_scope, request_text, evidence_digest=None):
         self.calls += 1
         return self.value
 
@@ -193,7 +212,56 @@ class RecordingDispatcher:
 
     def dispatch(self, request, **kwargs):
         self.calls.append((request, kwargs))
-        return DomainResult(owner=Owner.GLOBAL, status="CALLED")
+        matching = kwargs.get("trusted_host_dispatch")
+        receipt = None
+        if matching is not None and matching.company_commercial_matching:
+            receipt = PersistenceReceipt(
+                state=PersistenceDisposition.NO_DELTA,
+                task_id="recording", file_id=CANONICAL_WORKBENCH_FILE_ID,
+            )
+        return DomainResult(owner=Owner.GLOBAL, status="CALLED", persistence_receipt=receipt)
+
+
+EVIDENCE_BYTES = b"controlled-photo-bytes"
+EVIDENCE_DIGEST = hashlib.sha256(EVIDENCE_BYTES).hexdigest()
+
+
+def ingress_codec():
+    return IngressTurnTokenCodec(
+        key=b"t" * 32, audience="rd021-test", server="global-hybrid-v2",
+        replay_store=InMemoryNonceClaimStore(),
+    )
+
+
+def signed_for(request_text, *, receipt_id="live-receipt", scope="conversation:c1:turn:7",
+               delta=None, issued_at=None, valid_until=None,
+               binding_state=EvidenceBindingState.SAFE_ATTRIBUTABLE,
+               identity_sources=("CANONICAL_WORKBENCH", "RAW_EVIDENCE")):
+    now = datetime.now(UTC)
+    return signer().sign({
+        "receipt_id": receipt_id, "task_scope": scope,
+        "vehicle_instance_id": "8891:S4806251", "ai_row": 13,
+        "binding_state": binding_state,
+        "verified_delta": {"里程_Canonical": 84550} if delta is None else delta,
+        "evidence_refs": ("fixture:photo",),
+        "identity_sources": identity_sources,
+        "request_digest": sha256_task(request_text, "sales_human"),
+        "evidence_digest": EVIDENCE_DIGEST,
+        "issued_at": issued_at or now - timedelta(seconds=10),
+        "valid_until": valid_until or now + timedelta(minutes=4),
+    })
+
+
+def call_verified(application, codec, task_payload):
+    token = codec.issue(
+        conversation_id="c1", turn_id="7",
+        task_class=IngressTaskClass.COMPANY_COMMERCIAL_MATCHING,
+        request_text=task_payload["request_text"], intent=task_payload["intent"],
+        evidence_digest=EVIDENCE_DIGEST,
+    )
+    return dispatch_verified_host_task_from_headers(
+        application, {"task": task_payload}, {"Authorization": f"Bearer {token}"},
+    )
 
 
 def call_mcp(application, name, payload):
@@ -230,26 +298,18 @@ def test_raw_host_dispatch_never_accepts_self_authored_workbench_state(field, va
 
 def test_verified_host_tool_without_compiler_fails_closed():
     dispatcher = RecordingDispatcher()
-    app = SimpleNamespace(dispatcher=dispatcher, trusted_host_task_compiler=None)
-    output = call_mcp(app, "dispatch_verified_host_task", {
-        "conversation_id": "c1", "turn_id": "7",
-        "task": {"request_text": "vehicle", "intent": "sales_human"},
-    })
+    codec = ingress_codec()
+    app = SimpleNamespace(
+        dispatcher=dispatcher, trusted_host_task_compiler=None, ingress_token_codec=codec,
+    )
+    output = call_verified(app, codec, {"request_text": "vehicle", "intent": "sales_human"})
     assert output["blocker"] == "TRUSTED_HOST_BINDING_UNAVAILABLE"
     assert not dispatcher.calls
 
 
 def test_verified_host_tool_resolves_trusted_receipt_before_dispatch():
     now = datetime.now(UTC)
-    signed = signer().sign({
-        "receipt_id": "live-receipt", "task_scope": "conversation:c1:turn:7",
-        "vehicle_instance_id": "8891:S4806251", "ai_row": 13,
-        "binding_state": EvidenceBindingState.SAFE_ATTRIBUTABLE,
-        "verified_delta": {"里程_Canonical": 84550},
-        "evidence_refs": ("fixture:photo",),
-        "issued_at": now - timedelta(seconds=10),
-        "valid_until": now + timedelta(minutes=4),
-    })
+    signed = signed_for("vehicle")
 
     class FreshHostResolver(HostResolver):
         def resolve(self, *, conversation_id, turn_id, request_text):
@@ -266,11 +326,11 @@ def test_verified_host_tool_resolves_trusted_receipt_before_dispatch():
     compiled = TrustedHostTaskCompiler(
         dispatch_compiler=compiler(), host_state_resolver=host, evidence_provider=evidence,
     )
-    app = SimpleNamespace(dispatcher=dispatcher, trusted_host_task_compiler=compiled)
-    output = call_mcp(app, "dispatch_verified_host_task", {
-        "conversation_id": "c1", "turn_id": "7",
-        "task": {"request_text": "vehicle", "intent": "sales_human"},
-    })
+    codec = ingress_codec()
+    app = SimpleNamespace(
+        dispatcher=dispatcher, trusted_host_task_compiler=compiled, ingress_token_codec=codec,
+    )
+    output = call_verified(app, codec, {"request_text": "vehicle", "intent": "sales_human"})
     assert output["status"] == "CALLED"
     assert host.calls == evidence.calls == len(dispatcher.calls) == 1
     request, kwargs = dispatcher.calls[0]
@@ -281,17 +341,17 @@ def test_verified_host_tool_resolves_trusted_receipt_before_dispatch():
 
 
 def test_forged_receipt_cannot_reach_dispatcher():
-    signed = receipt().model_copy(update={"verified_delta": {"里程_Canonical": 1}})
+    signed = signed_for("vehicle").model_copy(update={"verified_delta": {"里程_Canonical": 1}})
     dispatcher = RecordingDispatcher()
     compiled = TrustedHostTaskCompiler(
         dispatch_compiler=compiler(), host_state_resolver=HostResolver(),
         evidence_provider=EvidenceProvider(signed),
     )
-    app = SimpleNamespace(dispatcher=dispatcher, trusted_host_task_compiler=compiled)
-    output = call_mcp(app, "dispatch_verified_host_task", {
-        "conversation_id": "c1", "turn_id": "7",
-        "task": {"request_text": "vehicle", "intent": "sales_human"},
-    })
+    codec = ingress_codec()
+    app = SimpleNamespace(
+        dispatcher=dispatcher, trusted_host_task_compiler=compiled, ingress_token_codec=codec,
+    )
+    output = call_verified(app, codec, {"request_text": "vehicle", "intent": "sales_human"})
     assert output["blocker"] == "UNTRUSTED_WORKBENCH_EVIDENCE_RECEIPT"
     assert not dispatcher.calls
 
@@ -299,25 +359,22 @@ def test_forged_receipt_cannot_reach_dispatcher():
 @pytest.mark.parametrize("problem", ["stale", "wrong_turn"])
 def test_stale_or_wrong_turn_receipt_cannot_reach_dispatcher(problem):
     now = datetime.now(UTC)
-    fields = {
-        "receipt_id": "scope-receipt",
-        "task_scope": "conversation:c1:turn:8" if problem == "wrong_turn" else "conversation:c1:turn:7",
-        "vehicle_instance_id": "8891:S4806251", "ai_row": 13,
-        "binding_state": EvidenceBindingState.SAFE_ATTRIBUTABLE,
-        "verified_delta": {"里程_Canonical": 84550},
-        "issued_at": now - timedelta(minutes=3),
-        "valid_until": now - timedelta(minutes=1) if problem == "stale" else now + timedelta(minutes=1),
-    }
+    signed = signed_for(
+        "vehicle", receipt_id="scope-receipt",
+        scope="conversation:c1:turn:8" if problem == "wrong_turn" else "conversation:c1:turn:7",
+        issued_at=now - timedelta(minutes=3),
+        valid_until=now - timedelta(minutes=1) if problem == "stale" else now + timedelta(minutes=1),
+    )
     dispatcher = RecordingDispatcher()
     compiled = TrustedHostTaskCompiler(
         dispatch_compiler=compiler(), host_state_resolver=HostResolver(),
-        evidence_provider=EvidenceProvider(signer().sign(fields)),
+        evidence_provider=EvidenceProvider(signed),
     )
-    app = SimpleNamespace(dispatcher=dispatcher, trusted_host_task_compiler=compiled)
-    output = call_mcp(app, "dispatch_verified_host_task", {
-        "conversation_id": "c1", "turn_id": "7",
-        "task": {"request_text": "vehicle", "intent": "sales_human"},
-    })
+    codec = ingress_codec()
+    app = SimpleNamespace(
+        dispatcher=dispatcher, trusted_host_task_compiler=compiled, ingress_token_codec=codec,
+    )
+    output = call_verified(app, codec, {"request_text": "vehicle", "intent": "sales_human"})
     assert output["status"] == "NO_SERIALIZE / EXECUTION_FAIL"
     assert not dispatcher.calls
 
@@ -328,28 +385,37 @@ def test_verified_host_tool_rejects_privileged_caller_fields_before_provider_rea
     compiled = TrustedHostTaskCompiler(
         dispatch_compiler=compiler(), host_state_resolver=host, evidence_provider=evidence,
     )
-    app = SimpleNamespace(dispatcher=dispatcher, trusted_host_task_compiler=compiled)
-    output = call_mcp(app, "dispatch_verified_host_task", {
-        "conversation_id": "c1", "turn_id": "7",
-        "task": {"request_text": "vehicle", "intent": "sales_human",
-                 "workbench_sync_intent": {"verified_delta": {"里程_Canonical": 84550}}},
+    codec = ingress_codec()
+    app = SimpleNamespace(
+        dispatcher=dispatcher, trusted_host_task_compiler=compiled, ingress_token_codec=codec,
+    )
+    output = call_verified(app, codec, {
+        "request_text": "vehicle", "intent": "sales_human",
+        "workbench_sync_intent": {"verified_delta": {"里程_Canonical": 84550}},
     })
     assert output["blocker"] == "CALLER_WORKBENCH_INTENT_FORBIDDEN"
     assert host.calls == evidence.calls == len(dispatcher.calls) == 0
 
 
-@pytest.mark.parametrize("corrupt", [False, True])
-def test_verified_host_tool_reaches_exact_preimage_write_and_receipt(tmp_path, corrupt):
+@pytest.mark.parametrize(
+    "delta,corrupt,binding_state,expected_state,expected_writes",
+    [
+        ({"里程_Canonical": 84550}, False, EvidenceBindingState.SAFE_ATTRIBUTABLE,
+         "WRITE_AND_READBACK_PASS", 1),
+        ({}, False, EvidenceBindingState.SAFE_ATTRIBUTABLE, "NO_DELTA", 0),
+        ({"里程_Canonical": 84550}, True, EvidenceBindingState.SAFE_ATTRIBUTABLE,
+         "HOLD_CONFLICT", 1),
+        ({}, False, EvidenceBindingState.HOLD_CONFLICT, "HOLD_CONFLICT", 0),
+    ],
+)
+def test_verified_host_tool_reaches_exact_preimage_write_and_receipt(
+    tmp_path, delta, corrupt, binding_state, expected_state, expected_writes,
+):
     now = datetime.now(UTC)
-    signed = signer().sign({
-        "receipt_id": "e2e-receipt", "task_scope": "conversation:c1:turn:7",
-        "vehicle_instance_id": "8891:S4806251", "ai_row": 13,
-        "binding_state": EvidenceBindingState.SAFE_ATTRIBUTABLE,
-        "verified_delta": {"里程_Canonical": 84550},
-        "evidence_refs": ("fixture:photo",),
-        "issued_at": now - timedelta(seconds=10),
-        "valid_until": now + timedelta(minutes=4),
-    })
+    signed = signed_for(
+        "update this company vehicle", receipt_id="e2e-receipt",
+        delta=delta, binding_state=binding_state,
+    )
 
     class FreshHostResolver(HostResolver):
         def resolve(self, *, conversation_id, turn_id, request_text):
@@ -373,22 +439,23 @@ def test_verified_host_tool_reaches_exact_preimage_write_and_receipt(tmp_path, c
         dispatch_compiler=compiler(), host_state_resolver=FreshHostResolver(),
         evidence_provider=EvidenceProvider(signed),
     )
+    codec = ingress_codec()
     application = create_application(
         repo_root=_copy_authority_repo(tmp_path), settings=_test_settings(),
         company_commercial_completion_handler=completion,
         trusted_host_task_compiler=compiler_binding,
+        ingress_token_codec=codec,
     )
-    result = call_mcp(application, "dispatch_verified_host_task", {
-        "conversation_id": "c1", "turn_id": "7",
-        "task": {"request_text": "update this company vehicle", "intent": "sales_human"},
-    })
+    result = call_verified(
+        application, codec,
+        {"request_text": "update this company vehicle", "intent": "sales_human"},
+    )
     assert result["status"] == (
-        "NO_SERIALIZE / EXECUTION_FAIL" if corrupt else "COMPANY_COMMERCIAL_DELTA_VERIFIED"
+        "NO_SERIALIZE / EXECUTION_FAIL" if expected_state == "HOLD_CONFLICT"
+        else "COMPANY_COMMERCIAL_DELTA_VERIFIED"
     )
-    assert result["persistence_receipt"]["state"] == (
-        "HOLD_CONFLICT" if corrupt else "WRITE_AND_READBACK_PASS"
-    )
-    assert drive.writes == 1
+    assert result["persistence_receipt"]["state"] == expected_state
+    assert drive.writes == expected_writes
 
 
 def test_server_resolves_host_state_and_evidence_outside_caller_payload():
@@ -397,7 +464,10 @@ def test_server_resolves_host_state_and_evidence_outside_caller_payload():
     c = TrustedHostTaskCompiler(
         dispatch_compiler=compiler(), host_state_resolver=host, evidence_provider=evidence
     )
-    out = c.compile(caller_task=task(), conversation_id="c1", turn_id="7", now=NOW)
+    out = c.compile(
+        caller_task=task(), task_class=IngressTaskClass.COMPANY_COMMERCIAL_MATCHING,
+        conversation_id="c1", turn_id="7", now=NOW,
+    )
     assert out.task_scope == "conversation:c1:turn:7"
     assert out.host_state.source_ref == "HOST_CURRENT_STATE:rev-7"
     assert out.company_commercial_matching is True
@@ -409,7 +479,10 @@ def test_missing_host_resolver_is_capability_debt_not_model_fallback():
         dispatch_compiler=compiler(), host_state_resolver=None, evidence_provider=EvidenceProvider(None)
     )
     with pytest.raises(HostBindingCapabilityDebt, match="HOST_CURRENT_STATE_RESOLVER_UNAVAILABLE"):
-        c.compile(caller_task=task(), conversation_id="c1", turn_id="7", now=NOW)
+        c.compile(
+            caller_task=task(), task_class=IngressTaskClass.COMPANY_COMMERCIAL_MATCHING,
+            conversation_id="c1", turn_id="7", now=NOW,
+        )
 
 
 def test_missing_evidence_provider_is_capability_debt_not_caller_intent_fallback():
@@ -417,4 +490,7 @@ def test_missing_evidence_provider_is_capability_debt_not_caller_intent_fallback
         dispatch_compiler=compiler(), host_state_resolver=HostResolver(), evidence_provider=None
     )
     with pytest.raises(HostBindingCapabilityDebt, match="TRUSTED_EVIDENCE_PROVIDER_UNAVAILABLE"):
-        c.compile(caller_task=task(), conversation_id="c1", turn_id="7", now=NOW)
+        c.compile(
+            caller_task=task(), task_class=IngressTaskClass.COMPANY_COMMERCIAL_MATCHING,
+            conversation_id="c1", turn_id="7", now=NOW,
+        )

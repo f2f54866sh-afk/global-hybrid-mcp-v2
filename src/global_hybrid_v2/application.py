@@ -30,6 +30,7 @@ from global_hybrid_v2.google_auth import ServiceAccountAccessTokenProvider, Serv
 from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
 from global_hybrid_v2.governance.host_projection import HostCurrentStateVerifier, HostProjectionGate
+from global_hybrid_v2.ingress_admission import IngressTurnTokenCodec
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.research import (
     ResearchExecutor,
@@ -55,6 +56,7 @@ class Application:
     vehicle_configuration_provider: VehicleConfigurationProvider | None = None
     composition_fitness: FitnessReport | None = None
     trusted_host_task_compiler: TrustedHostTaskCompiler | None = None
+    ingress_token_codec: IngressTurnTokenCodec | None = None
 
 
 def create_application(
@@ -68,6 +70,7 @@ def create_application(
     vehicle_configuration_provider: VehicleConfigurationProvider | None = None,
     company_commercial_completion_handler: CompanyCommercialCompletionHandler | None = None,
     trusted_host_task_compiler: TrustedHostTaskCompiler | None = None,
+    ingress_token_codec: IngressTurnTokenCodec | None = None,
 ) -> Application:
     root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[2]
     runtime_settings = settings or Settings()
@@ -161,4 +164,5 @@ def create_application(
         vehicle_configuration_provider=effective_vehicle_configuration_provider,
         composition_fitness=composition_fitness,
         trusted_host_task_compiler=trusted_host_task_compiler,
+        ingress_token_codec=ingress_token_codec,
     )

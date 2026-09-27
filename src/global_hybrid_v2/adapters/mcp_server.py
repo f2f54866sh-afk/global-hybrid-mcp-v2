@@ -9,13 +9,16 @@ from collections.abc import Callable
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.context import Context
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from global_hybrid_v2.application import Application, create_application
-from global_hybrid_v2.contracts import TaskRequest
+from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
+from global_hybrid_v2.contracts import PersistenceDisposition, PersistenceReceipt, TaskRequest
 from global_hybrid_v2.domains.vehicle_configuration import VehicleConfigurationReadbackProvider
 from global_hybrid_v2.governance.authority import AUTHORITY_ACTIVATION_INVALID, AuthorityError
+from global_hybrid_v2.ingress_admission import IngressAdmissionError, IngressTaskClass, IngressTurnBinding
 from global_hybrid_v2.render_vehicle_control import RenderVehicleReconciliationEndpoint
 from global_hybrid_v2.trusted_workbench_intent import (
     CallerTask,
@@ -36,6 +39,84 @@ def _caller_workbench_authority_blocked(payload: dict) -> bool:
         payload.get(key) not in (None, False)
         for key in _FORBIDDEN_WORKBENCH_FIELDS
     )
+
+
+def _ingress_block(
+    blocker: str,
+    *,
+    binding: IngressTurnBinding | None = None,
+    state: PersistenceDisposition = PersistenceDisposition.PERSISTENCE_CAPABILITY_DEBT,
+) -> dict:
+    result = {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": blocker}
+    if binding is not None and binding.task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING:
+        receipt = PersistenceReceipt(
+            state=state,
+            task_id=f"ingress:{binding.nonce}",
+            file_id=CANONICAL_WORKBENCH_FILE_ID,
+            blocker=blocker,
+        )
+        result["persistence_receipt"] = receipt.model_dump(mode="json")
+    return result
+
+
+def dispatch_verified_host_task_from_headers(
+    application: Application,
+    payload: dict,
+    headers: dict[str, str] | None,
+) -> dict:
+    """Transport Authorization, never a model argument, owns turn identity and class."""
+    if not isinstance(payload, dict) or set(payload) != {"task"}:
+        return _ingress_block("HOST_TASK_PAYLOAD_INVALID")
+    try:
+        caller = CallerTask.model_validate(payload["task"])
+    except (ValueError, TypeError):
+        return _ingress_block("TRUSTED_HOST_INPUT_INVALID")
+    codec = getattr(application, "ingress_token_codec", None)
+    if codec is None:
+        return _ingress_block("INGRESS_ADMISSION_UNAVAILABLE")
+    matches = [value for key, value in (headers or {}).items() if key.lower() == "authorization"]
+    if len(matches) != 1:
+        return _ingress_block("INGRESS_AUTHORIZATION_MISSING")
+    try:
+        binding = codec.verify_authorization(
+            matches[0], request_text=caller.request_text, intent=caller.intent,
+        )
+    except IngressAdmissionError as exc:
+        return _ingress_block(str(exc))
+    compiler = getattr(application, "trusted_host_task_compiler", None)
+    if compiler is None:
+        return _ingress_block("TRUSTED_HOST_BINDING_UNAVAILABLE", binding=binding)
+    try:
+        compiled = compiler.compile_admitted(caller_task=caller, binding=binding)
+        request = TaskRequest.model_validate({
+            "request_text": caller.request_text, "intent": caller.intent,
+        })
+    except HostBindingCapabilityDebt as exc:
+        return _ingress_block(str(exc), binding=binding)
+    except TrustBoundaryError as exc:
+        return _ingress_block(
+            str(exc), binding=binding, state=PersistenceDisposition.HOLD_CONFLICT,
+        )
+    except (ValueError, TypeError):
+        return _ingress_block("TRUSTED_HOST_INPUT_INVALID", binding=binding)
+    except Exception:
+        return _ingress_block("TRUSTED_HOST_PROVIDER_FAILURE", binding=binding)
+    try:
+        result = application.dispatcher.dispatch(request, trusted_host_dispatch=compiled)
+    except Exception:
+        return _ingress_block("TRUSTED_HOST_DISPATCH_FAILURE", binding=binding)
+    if binding.task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING:
+        if result.persistence_receipt is None:
+            return _ingress_block("PERSISTENCE_TERMINAL_RECEIPT_MISSING", binding=binding)
+        if result.persistence_receipt.state not in {
+            PersistenceDisposition.WRITE_AND_READBACK_PASS,
+            PersistenceDisposition.NO_DELTA,
+        } and result.status != "NO_SERIALIZE / EXECUTION_FAIL":
+            return _ingress_block(
+                "PERSISTENCE_TERMINAL_NOT_ELIGIBLE", binding=binding,
+                state=result.persistence_receipt.state,
+            )
+    return result.model_dump(mode="json")
 
 
 def _decoded_sha256(value: Any, *, expected_length: int) -> str:
@@ -209,32 +290,9 @@ def create_mcp_server(
         return result.model_dump(mode="json")
 
     @server.tool()
-    def dispatch_verified_host_task(payload: dict) -> dict:
+    def dispatch_verified_host_task(payload: dict, ctx: Context) -> dict:
         """Resolve Host identity and signed vehicle evidence inside the server boundary."""
-        if not isinstance(payload, dict) or set(payload) != {"conversation_id", "turn_id", "task"}:
-            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": "HOST_TASK_PAYLOAD_INVALID"}
-        compiler = application.trusted_host_task_compiler
-        if compiler is None:
-            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": "TRUSTED_HOST_BINDING_UNAVAILABLE"}
-        try:
-            caller = CallerTask.model_validate(payload["task"])
-            compiled = compiler.compile(
-                caller_task=caller,
-                conversation_id=payload["conversation_id"],
-                turn_id=payload["turn_id"],
-            )
-            request = TaskRequest.model_validate({
-                "request_text": caller.request_text,
-                "intent": caller.intent,
-            })
-        except (TrustBoundaryError, HostBindingCapabilityDebt) as exc:
-            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": str(exc)}
-        except (ValueError, TypeError):
-            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": "TRUSTED_HOST_INPUT_INVALID"}
-        except Exception:
-            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": "TRUSTED_HOST_PROVIDER_FAILURE"}
-        result = application.dispatcher.dispatch(request, trusted_host_dispatch=compiled)
-        return result.model_dump(mode="json")
+        return dispatch_verified_host_task_from_headers(application, payload, dict(ctx.headers or {}))
 
     return server
 
