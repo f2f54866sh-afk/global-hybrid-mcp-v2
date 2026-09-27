@@ -5,7 +5,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from global_hybrid_v2.company_commercial_completion import (
     CANONICAL_WORKBENCH_FILE_ID,
-    CompanyCommercialCompletionHandler,
+    CompanyCommercialCompletionPort,
 )
 from global_hybrid_v2.contracts import (
     AuthoritySnapshot,
@@ -129,7 +129,7 @@ class Dispatcher:
         runtime_branch: str | None = None,
         runtime_state_store: RuntimeStateStore | None = None,
         transition_controller: TransitionController | None = None,
-        company_commercial_completion_handler: CompanyCommercialCompletionHandler | None = None,
+        company_commercial_completion_handler: CompanyCommercialCompletionPort | None = None,
     ):
         self.authority = authority
         self.domains = domains

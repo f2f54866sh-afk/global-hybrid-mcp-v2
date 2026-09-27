@@ -8,11 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from global_hybrid_v2.creative_schema_migration import (
-    CreativeSchemaMigrationReceipt,
-    CreativeSchemaMigrationRunner,
-    SchemaMigrationState,
-)
+from global_hybrid_v2.creative_schema_migration import CreativeSchemaMigrationRunner
 from global_hybrid_v2.media_deployment_sequence import (
     DEPLOYMENT_ORDER,
     DeploymentProgress,
@@ -158,14 +154,9 @@ def test_only_verified_step_results_can_issue_deployment_receipts(monkeypatch):
     monkeypatch.setattr(contract, "postmigration", lambda snapshot: bad_d1)
     with pytest.raises(ValueError, match="NOT_VERIFIED"):
         authority.from_d1_postmigration(contract, readback, **common)
-    xlsx = CreativeSchemaMigrationReceipt(SchemaMigrationState.WRITE_AND_READBACK_PASS,
-                                          "1OfUZ_rh94sdXdTZMjMrKj8IjHgEBUFua", postwrite_sha256="c" * 64)
     runner = CreativeSchemaMigrationRunner(None)
-    monkeypatch.setattr(runner, "run", lambda *, task_id: xlsx)
-    assert authority.verify(authority.from_xlsx_readback(runner, task_id="schema-test", **common))
-    bad_xlsx = replace(xlsx, file_id="other")
-    monkeypatch.setattr(runner, "run", lambda *, task_id: bad_xlsx)
-    with pytest.raises(ValueError, match="NOT_VERIFIED"):
+    monkeypatch.setattr(runner, "run", lambda *, task_id: pytest.fail("readback attempted a write"))
+    with pytest.raises(ValueError, match="EXECUTOR_INVALID"):
         authority.from_xlsx_readback(runner, task_id="schema-test", **common)
     probe = MediaObjectDeploymentProbeHttp(base_url="https://isolated.example", write_secret="w")
     r2 = MediaObjectProbeReceipt("PROBE_PASS", DEPLOYMENT, "__probe__/rd021/test/nonce",

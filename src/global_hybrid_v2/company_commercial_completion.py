@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Protocol
 
 from global_hybrid_v2.adapters.drive_xlsx_workbench import (
     DriveXlsxWorkbenchPort,
@@ -22,6 +23,10 @@ from global_hybrid_v2.workbench_mutation import (
 )
 
 CANONICAL_WORKBENCH_FILE_ID = "1OfUZ_rh94sdXdTZMjMrKj8IjHgEBUFua"
+
+
+class CompanyCommercialCompletionPort(Protocol):
+    def consume(self, *, task_id: str, intent: WorkbenchSyncIntent) -> PersistenceReceipt: ...
 
 
 class CompanyCommercialCompletionHandler:

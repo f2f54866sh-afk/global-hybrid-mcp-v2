@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -34,6 +36,8 @@ class Settings(BaseSettings):
     media_activity_signing_key_ref: str | None = None
     ingress_turn_signing_key_ref: str | None = None
     expected_control_plane_schema_revision: str | None = None
+    canonical_vehicle_store_mode: Literal["xlsx_legacy", "postgres"] = "xlsx_legacy"
+    canonical_postgres_dsn: SecretStr | None = None
 
     def require_media_deployment_bindings(self) -> None:
         required = (

@@ -8,14 +8,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from global_hybrid_v2.canonical_projection import ProjectionEvent, XlsxProjectionVerifier
 from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
-from global_hybrid_v2.creative_schema_migration import CreativeSchemaMigrationRunner, SchemaMigrationState
 from global_hybrid_v2.media_object_probe import MediaObjectDeploymentProbeHttp
 from global_hybrid_v2.media_schema_contract import (
     D1MediaMigrationContract,
     D1MediaSchemaReadbackHttp,
     D1MigrationState,
 )
+from global_hybrid_v2.transactional_vehicle_store import CanonicalReadback
 
 
 class DeploymentStep(StrEnum):
@@ -37,7 +38,7 @@ PASS_STATE = {
     **{step: "READBACK_PASS" for step in DEPLOYMENT_ORDER},
     DeploymentStep.R2_BINDING_READY: "PROBE_PASS",
     DeploymentStep.D1_SCHEMA_READBACK: "APPLIED_READBACK_PASS",
-    DeploymentStep.XLSX_FRESH_READBACK: "WRITE_AND_READBACK_PASS",
+    DeploymentStep.XLSX_FRESH_READBACK: "PROJECTION_READBACK_PASS",
 }
 
 
@@ -116,20 +117,21 @@ class DeploymentReceiptAuthority:
             previous_step_receipt_digest=previous_step_receipt_digest,
         )
 
-    def from_xlsx_readback(self, runner: CreativeSchemaMigrationRunner, *, task_id: str,
-                           deployment_id: str,
+    def from_xlsx_readback(self, verifier: XlsxProjectionVerifier, *,
+                           event: ProjectionEvent | None = None,
+                           state: CanonicalReadback | None = None,
+                           task_id: str | None = None, deployment_id: str,
                            target: str, source_revision: str, expected_preimage: str,
                            previous_step_receipt_digest: str) -> DeploymentReceipt:
-        if type(runner) is not CreativeSchemaMigrationRunner:
+        if type(verifier) is not XlsxProjectionVerifier or event is None or state is None:
             raise ValueError("XLSX_READBACK_EXECUTOR_INVALID")
-        result = runner.run(task_id=task_id)
-        if (result.state is not SchemaMigrationState.WRITE_AND_READBACK_PASS
-            or not result.postwrite_sha256 or result.file_id != CANONICAL_WORKBENCH_FILE_ID):
+        if verifier.file_id != CANONICAL_WORKBENCH_FILE_ID:
             raise ValueError("XLSX_READBACK_RECEIPT_NOT_VERIFIED")
+        digest = verifier.verify(event, state)
         return self._seal(
             deployment_id=deployment_id, step=DeploymentStep.XLSX_FRESH_READBACK,
             target=target, source_revision=source_revision, expected_preimage=expected_preimage,
-            result_state=result.state.value, readback_evidence_digest=result.postwrite_sha256,
+            result_state="PROJECTION_READBACK_PASS", readback_evidence_digest=digest,
             previous_step_receipt_digest=previous_step_receipt_digest,
         )
 
