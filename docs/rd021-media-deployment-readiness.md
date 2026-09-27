@@ -25,3 +25,11 @@ The XLSX schema rollback candidate removes only the newly appended `銷售素材
 ## Remaining integration debt
 
 Production D1's actual prior revision, live canonical workbook topology, R2 binding, and credential references require independent preflight. Runtime media provider and controlled Host binding must be wired and tested in a later authorized stage. These repository tests do not establish live deployment or verified repair.
+
+## A.2.2 durable journal boundary
+
+The candidate journal uses only `__deployment__/rd021/<deployment_id>/`. Its receipt objects are immutable, signed `DeploymentReceipt` JSON, named by ordinal, step, and receipt digest. The Worker uses R2 conditional PUT for absence and ETag compare-and-swap for `head.json`; every write is followed by GET byte and ETag readback. On load it lists the complete receipt prefix, checks every signature, ordinal, predecessor digest, scope, object name, head pointer, and ACTIVE/HOLD/COMPLETE state. A gap, orphan, collision, or competing head update stops with a journal HOLD. This namespace is rejected by the media-object read route and cannot satisfy the `media_asset` canonical object-key admission rule.
+
+Bootstrap accepts server-signed current-state and R2-probe receipts in memory, anchors both in R2, writes and reads back the ACTIVE head, then reloads the full chain. `require_d1_admissible` admits only the exact next D1 migration step after that readback. No production D1 migration executor is added here.
+
+Issuer inventory remains explicit. `R2_BINDING_READY` has the disposable PUT/GET/DELETE probe; `D1_SCHEMA_READBACK` has the D1 schema verifier; `XLSX_FRESH_READBACK` has the exact Drive postwrite verifier. `CANONICAL_XLSX_SCHEMA_MIGRATION` has a real bounded migration runner, but no separate signed step issuer. `CURRENT_STATE_PREFLIGHT`, `D1_MIGRATION`, `RUNTIME_BINDINGS`, `STAGING_MEDIA_READBACK`, `STAGING_CREATIVE_REF_READBACK`, `MATCHING_END_TO_END`, and `PRODUCTION_BEHAVIOR_OBSERVATION` have no trusted step issuer yet. They remain capability debt and cannot be completed by prose, booleans, caller-supplied digests, or model assertions. This branch does not execute live migration, staging writes, or production observation.

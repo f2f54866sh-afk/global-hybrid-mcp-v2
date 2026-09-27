@@ -43,6 +43,56 @@ const mediaBucket = env => {
   return env.MEDIA_BUCKET;
 };
 
+const journalKey = key => typeof key === "string" &&
+  /^__deployment__\/rd021\/[A-Za-z0-9_-]{8,64}\/(?:head\.json|receipts\/[0-9]{2}-[A-Z0-9_]+-[0-9a-f]{64}\.json)$/.test(key);
+
+async function journalControl(body, env) {
+  const bucket = mediaBucket(env);
+  if (typeof bucket.list !== "function") throw new Error("DEPLOYMENT_JOURNAL_LIST_REQUIRED");
+  const prefix = `__deployment__/rd021/${body.deployment_id}/`;
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(body.deployment_id || ""))
+    throw new Error("DEPLOYMENT_JOURNAL_SCOPE_INVALID");
+  if (body.operation === "LIST") {
+    let cursor;
+    const keys = [];
+    do {
+      const page = await bucket.list({prefix: `${prefix}receipts/`, cursor, limit: 1000});
+      keys.push(...page.objects.map(item => item.key));
+      if (keys.length > 10000) throw new Error("DEPLOYMENT_JOURNAL_TOO_LARGE");
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return {state: "LIST", keys};
+  }
+  const key = body.key;
+  if (!journalKey(key) || !key.startsWith(prefix))
+    throw new Error("DEPLOYMENT_JOURNAL_KEY_INVALID");
+  if (body.operation === "GET") {
+    const found = await bucket.get(key);
+    return found ? {state: "HIT", key, etag: found.etag,
+      raw_base64: btoa(String.fromCharCode(...new Uint8Array(await found.arrayBuffer())))} :
+      {state: "MISS", key};
+  }
+  if (body.operation !== "PUT_IMMUTABLE" && body.operation !== "CAS_HEAD")
+    throw new Error("DEPLOYMENT_JOURNAL_OPERATION_INVALID");
+  if (typeof body.raw_base64 !== "string") throw new Error("DEPLOYMENT_JOURNAL_BYTES_REQUIRED");
+  const raw = Uint8Array.from(atob(body.raw_base64), char => char.charCodeAt(0));
+  if (!raw.length || raw.length > 65536) throw new Error("DEPLOYMENT_JOURNAL_BYTES_INVALID");
+  if (body.operation === "PUT_IMMUTABLE" && !key.includes("/receipts/"))
+    throw new Error("DEPLOYMENT_JOURNAL_RECEIPT_KEY_REQUIRED");
+  if (body.operation === "CAS_HEAD" && !key.endsWith("/head.json"))
+    throw new Error("DEPLOYMENT_JOURNAL_HEAD_KEY_REQUIRED");
+  const onlyIf = body.expected_etag ? {etagMatches: body.expected_etag} :
+    new Headers({"If-None-Match": "*"});
+  const wrote = await bucket.put(key, raw, {onlyIf});
+  if (!wrote) return {state: "CAS_CONFLICT", key};
+  const found = await bucket.get(key);
+  if (!found) throw new Error("DEPLOYMENT_JOURNAL_READBACK_MISSING");
+  const bytes = new Uint8Array(await found.arrayBuffer());
+  if (bytes.length !== raw.length || bytes.some((value, index) => value !== raw[index]))
+    throw new Error("DEPLOYMENT_JOURNAL_READBACK_MISMATCH");
+  return {state: "PUT_READBACK_PASS", key, etag: found.etag};
+}
+
 const parsePayload = row => row ? JSON.parse(row.payload) : null;
 
 const sha256Hex = async value => {
@@ -411,6 +461,10 @@ export async function handleRequest(request, env) {
     "/internal/control/creative-media-ref",
   ]);
   try {
+    if (url.pathname === "/internal/control/deployment-journal") {
+      if (!controlAuthorized(request, env)) return json({error: "CONTROL_AUTH_REQUIRED"}, 403);
+      return json(await journalControl(await request.json(), env));
+    }
     if (url.pathname === "/internal/media-schema/readback") {
       if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);
       const db = database(env);

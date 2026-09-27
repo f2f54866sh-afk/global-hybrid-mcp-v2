@@ -4,6 +4,8 @@ import {handleRequest} from "../../infra/vehicle_knowledge/worker.js";
 
 const assets = new Map();
 const objects = new Map();
+const etags = new Map();
+let objectVersion = 0;
 const creativeRefs = new Map();
 const db = {
   prepare(sql) {
@@ -47,10 +49,23 @@ const env = {
   MEDIA_BUCKET: {
     async get(key) {
       const bytes = objects.get(key);
-      return bytes ? {arrayBuffer: async () => Uint8Array.from(bytes).buffer} : null;
+      return bytes ? {etag: etags.get(key), arrayBuffer: async () => Uint8Array.from(bytes).buffer} : null;
     },
-    async put(key, bytes) { objects.set(key, Uint8Array.from(bytes)); },
-    async delete(key) { objects.delete(key); },
+    async put(key, bytes, options) {
+      const condition = options?.onlyIf;
+      if (condition instanceof Headers && condition.get("If-None-Match") === "*" && objects.has(key))
+        return null;
+      if (condition?.etagMatches && etags.get(key) !== condition.etagMatches) return null;
+      objects.set(key, Uint8Array.from(bytes));
+      const etag = `etag-${++objectVersion}`;
+      etags.set(key, etag);
+      return {etag};
+    },
+    async delete(key) { objects.delete(key); etags.delete(key); },
+    async list({prefix}) {
+      return {objects: [...objects.keys()].filter(key => key.startsWith(prefix)).map(key => ({key})),
+        truncated: false};
+    },
   },
 };
 const request = (path, secret, body) => handleRequest(new Request(`https://worker.test${path}`, {
@@ -91,6 +106,38 @@ probeResponse = await request("/internal/control/media-object-probe", "write", p
 assert.equal((await probeResponse.json()).blocker, "HOLD_PROBE_CLEANUP_FAILED");
 objects.delete(probe.expected_object_key);
 env.MEDIA_BUCKET.delete = async key => { objects.delete(key); };
+const journalEndpoint = "/internal/control/deployment-journal";
+const journalId = "isolated001";
+const journalKey = `__deployment__/rd021/${journalId}/receipts/00-CURRENT_STATE_PREFLIGHT-${"a".repeat(64)}.json`;
+const journalRaw = Buffer.from('{"receipt":"signed-test-fixture"}');
+const journalBase = {deployment_id: journalId, key: journalKey};
+let journalResponse = await request(journalEndpoint, "write", {...journalBase,
+  operation: "PUT_IMMUTABLE", raw_base64: journalRaw.toString("base64")});
+let journalResult = await journalResponse.json();
+assert.equal(journalResult.state, "PUT_READBACK_PASS");
+const journalEtag = journalResult.etag;
+journalResponse = await request(journalEndpoint, "write", {...journalBase,
+  operation: "PUT_IMMUTABLE", raw_base64: journalRaw.toString("base64")});
+assert.equal((await journalResponse.json()).state, "CAS_CONFLICT");
+journalResponse = await request(journalEndpoint, "write", {...journalBase, operation: "GET"});
+journalResult = await journalResponse.json();
+assert.equal(journalResult.etag, journalEtag);
+assert.deepEqual(Buffer.from(journalResult.raw_base64, "base64"), journalRaw);
+journalResponse = await request(journalEndpoint, "write", {deployment_id: journalId, operation: "LIST"});
+assert.deepEqual((await journalResponse.json()).keys, [journalKey]);
+const headKey = `__deployment__/rd021/${journalId}/head.json`;
+journalResponse = await request(journalEndpoint, "write", {deployment_id: journalId,
+  operation: "CAS_HEAD", key: headKey, raw_base64: Buffer.from("head-1").toString("base64")});
+journalResult = await journalResponse.json();
+assert.equal(journalResult.state, "PUT_READBACK_PASS");
+journalResponse = await request(journalEndpoint, "write", {deployment_id: journalId,
+  operation: "CAS_HEAD", key: headKey, expected_etag: "stale",
+  raw_base64: Buffer.from("head-2").toString("base64")});
+assert.equal((await journalResponse.json()).state, "CAS_CONFLICT");
+assert.equal(assets.size, 0);
+const journalMediaResponse = await request(
+  `/internal/media-object/read?object_key=${encodeURIComponent(journalKey)}`, "read");
+assert.equal((await journalMediaResponse.json()).error, "MEDIA_OBJECT_KEY_INVALID");
 delete env.MEDIA_BUCKET.delete;
 probeResponse = await request("/internal/control/media-object-probe", "write", probe);
 assert.equal((await probeResponse.json()).blocker, "MEDIA_OBJECT_STORE_REQUIRED");
