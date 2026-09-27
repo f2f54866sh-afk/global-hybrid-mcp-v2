@@ -24,6 +24,36 @@ class Intent(StrEnum):
     EXECUTION = "execution"
 
 
+class PersistenceDisposition(StrEnum):
+    WRITE_AND_READBACK_PASS = "WRITE_AND_READBACK_PASS"
+    NO_DELTA = "NO_DELTA"
+    PERSISTENCE_CAPABILITY_DEBT = "PERSISTENCE_CAPABILITY_DEBT"
+    HOLD_CONFLICT = "HOLD_CONFLICT"
+
+
+class WorkbenchSyncIntent(BaseModel):
+    """Controlled-runtime request for one already-resolved company vehicle row."""
+
+    target_file_id: str = Field(min_length=1)
+    vehicle_instance_id: str = Field(min_length=1)
+    ai_row: int = Field(ge=2)
+    safe_attribution: bool
+    identity_conflict: bool
+    verified_delta: dict[str, Any]
+    evidence_refs: tuple[str, ...] = ()
+
+
+class PersistenceReceipt(BaseModel):
+    state: PersistenceDisposition
+    task_id: str = Field(min_length=1)
+    file_id: str | None = None
+    preimage_version: str | None = None
+    preimage_sha256: str | None = None
+    postwrite_version: str | None = None
+    postwrite_sha256: str | None = None
+    blocker: str | None = None
+
+
 class EffectType(StrEnum):
     READ_ONLY = "read_only"
     MODEL_INFERENCE = "model_inference"
@@ -377,6 +407,8 @@ class VehicleConfigurationQuery(BaseModel):
 
 class TaskRequest(BaseModel):
     vehicle_configuration_query: VehicleConfigurationQuery | None = None
+    workbench_sync_intent: WorkbenchSyncIntent | None = None
+    company_commercial_matching: bool = False
     request_text: str = Field(min_length=1)
     intent: Intent
     effects: list[EffectType] = Field(default_factory=lambda: [EffectType.READ_ONLY])
@@ -503,6 +535,8 @@ class LibraryAccessRequest(BaseModel):
 
 class TaskContract(BaseModel):
     vehicle_configuration_query: VehicleConfigurationQuery | None = None
+    workbench_sync_intent: WorkbenchSyncIntent | None = None
+    company_commercial_matching: bool = False
     required_projections: list[str] = Field(default_factory=list)
     task_id: str = Field(default_factory=lambda: str(uuid4()))
     task_trace_id: str = Field(default_factory=lambda: str(uuid4()))
@@ -636,6 +670,7 @@ class RetrievalFalseNegativeEvidence(BaseModel):
 class DomainResult(BaseModel):
     owner: Owner
     status: str
+    persistence_receipt: PersistenceReceipt | None = None
     output: Any = None
     evidence: dict[str, Any] = Field(default_factory=dict)
     output_classifications: set[OutputClassification] = Field(default_factory=set)

@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from global_hybrid_v2.adapters.drive_xlsx_workbench import (
+    DriveXlsxWorkbenchPort,
+    GoogleDriveRestTransport,
+    WorkbenchClaimHttpTransport,
+)
 from global_hybrid_v2.adapters.file_vehicle_configuration import (
     configured_vehicle_configuration_provider,
 )
@@ -11,12 +16,17 @@ from global_hybrid_v2.adapters.http_vehicle_configuration import (
     UrlLibVehicleProviderTransport,
 )
 from global_hybrid_v2.adapters.openai_research import configured_research_port
+from global_hybrid_v2.company_commercial_completion import (
+    CANONICAL_WORKBENCH_FILE_ID,
+    CompanyCommercialCompletionHandler,
+)
 from global_hybrid_v2.contracts import Owner
 from global_hybrid_v2.domains.base import DomainPort
 from global_hybrid_v2.domains.library_projection import LibraryProjectionDomain
 from global_hybrid_v2.domains.sales_human import SalesHumanDomain
 from global_hybrid_v2.domains.stubs import NotConfiguredDomain
 from global_hybrid_v2.domains.vehicle_configuration import VehicleConfigurationProvider
+from global_hybrid_v2.google_auth import ServiceAccountAccessTokenProvider, ServiceAccountIdentity
 from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
 from global_hybrid_v2.governance.host_projection import HostCurrentStateVerifier, HostProjectionGate
@@ -29,6 +39,7 @@ from global_hybrid_v2.runtime.deployment import RuntimeIdentity, read_runtime_id
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
 from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.settings import Settings
+from global_hybrid_v2.workbench_mutation import XlsxWorkbenchMutationBuilder
 
 
 @dataclass(frozen=True)
@@ -53,6 +64,7 @@ def create_application(
     runtime_identity: RuntimeIdentity | None = None,
     host_current_state_verifier: HostCurrentStateVerifier | None = None,
     vehicle_configuration_provider: VehicleConfigurationProvider | None = None,
+    company_commercial_completion_handler: CompanyCommercialCompletionHandler | None = None,
 ) -> Application:
     root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[2]
     runtime_settings = settings or Settings()
@@ -105,6 +117,26 @@ def create_application(
             check.blocker or check.name for check in composition_fitness.checks if not check.passed
         )
         raise RuntimeError(f"runtime composition fitness failed: {blockers}")
+    completion_handler = company_commercial_completion_handler
+    if completion_handler is None:
+        credential = runtime_settings.google_service_account_json
+        claim_secret = runtime_settings.vehicle_control_http_write_secret
+        claim_url = runtime_settings.vehicle_control_http_base_url
+        if credential is not None and claim_secret is not None and claim_url:
+            identity = ServiceAccountIdentity.from_json(credential.get_secret_value())
+            tokens = ServiceAccountAccessTokenProvider(
+                identity, scopes=("https://www.googleapis.com/auth/drive.file",),
+            )
+            completion_handler = CompanyCommercialCompletionHandler(
+                writer=DriveXlsxWorkbenchPort(
+                    file_id=CANONICAL_WORKBENCH_FILE_ID,
+                    drive=GoogleDriveRestTransport(tokens),
+                    claims=WorkbenchClaimHttpTransport(
+                        base_url=claim_url, write_secret=claim_secret.get_secret_value(),
+                    ),
+                ),
+                builder=XlsxWorkbenchMutationBuilder(),
+            )
     dispatcher = Dispatcher(
         authority=authority,
         domains=domains,
@@ -113,6 +145,7 @@ def create_application(
         runtime_commit=effective_runtime_identity.git_commit,
         runtime_branch=effective_runtime_identity.git_branch,
         host_projection_gate=HostProjectionGate(verifier=host_current_state_verifier),
+        company_commercial_completion_handler=completion_handler,
     )
     return Application(
         repo_root=root,

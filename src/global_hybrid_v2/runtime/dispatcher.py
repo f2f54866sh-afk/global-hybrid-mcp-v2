@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from global_hybrid_v2.company_commercial_completion import (
+    CANONICAL_WORKBENCH_FILE_ID,
+    CompanyCommercialCompletionHandler,
+)
 from global_hybrid_v2.contracts import (
     AuthoritySnapshot,
     DomainResult,
@@ -11,6 +15,8 @@ from global_hybrid_v2.contracts import (
     LibraryAccessRequest,
     OutputClassification,
     Owner,
+    PersistenceDisposition,
+    PersistenceReceipt,
     ResearchAdmissionReceipt,
     ResearchEvidenceSource,
     ResearchExecutionReceipt,
@@ -121,6 +127,7 @@ class Dispatcher:
         runtime_branch: str | None = None,
         runtime_state_store: RuntimeStateStore | None = None,
         transition_controller: TransitionController | None = None,
+        company_commercial_completion_handler: CompanyCommercialCompletionHandler | None = None,
     ):
         self.authority = authority
         self.domains = domains
@@ -139,6 +146,7 @@ class Dispatcher:
         self.runtime_branch = runtime_branch
         self.runtime_state_store = runtime_state_store
         self.transition_controller = transition_controller or TransitionController()
+        self.company_commercial_completion_handler = company_commercial_completion_handler
         self.research_executor = research_executor or ResearchExecutor(UnavailableResearchPort())
         self.egress = egress or ResponseEgressValidator(
             research_available=(self.research_executor.availability is ResearchProviderAvailability.CALLABLE)
@@ -391,6 +399,8 @@ class Dispatcher:
             action_id=action_id,
             idempotency_key=idempotency_key,
             vehicle_configuration_query=request.vehicle_configuration_query,
+            workbench_sync_intent=request.workbench_sync_intent,
+            company_commercial_matching=request.company_commercial_matching,
         )
 
         if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
@@ -682,7 +692,8 @@ class Dispatcher:
                     "status": domain_result.status,
                 },
             )
-        result = self._validate_egress(contract, domain_result)
+        completion_receipt = self._complete_company_commercial(contract)
+        result = self._validate_egress(contract, domain_result, completion_receipt)
         if resume_receipt is not None:
             result = result.model_copy(
                 update={
@@ -1139,7 +1150,38 @@ class Dispatcher:
         )
         return result
 
-    def _validate_egress(self, contract: TaskContract, result: DomainResult) -> DomainResult:
+    def _complete_company_commercial(self, contract: TaskContract) -> PersistenceReceipt | None:
+        intent = contract.workbench_sync_intent
+        if intent is None:
+            return None
+        if contract.owner is not Owner.SALES_HUMAN:
+            return PersistenceReceipt(
+                state=PersistenceDisposition.HOLD_CONFLICT,
+                task_id=contract.task_id,
+                file_id=CANONICAL_WORKBENCH_FILE_ID,
+                blocker="COMPANY_COMMERCIAL_OWNER_MISMATCH",
+            )
+        if self.company_commercial_completion_handler is None:
+            return PersistenceReceipt(
+                state=PersistenceDisposition.PERSISTENCE_CAPABILITY_DEBT,
+                task_id=contract.task_id,
+                file_id=CANONICAL_WORKBENCH_FILE_ID,
+                blocker="COMPANY_COMMERCIAL_COMPLETION_HANDLER_UNAVAILABLE",
+            )
+        return self.company_commercial_completion_handler.consume(task_id=contract.task_id, intent=intent)
+
+    def _validate_egress(
+        self,
+        contract: TaskContract,
+        result: DomainResult,
+        trusted_persistence_receipt: PersistenceReceipt | None = None,
+    ) -> DomainResult:
+        if contract.company_commercial_matching or contract.workbench_sync_intent is not None:
+            result = self.egress.validate_company_commercial_persistence(
+                result, task_id=contract.task_id, trusted_receipt=trusted_persistence_receipt,
+            )
+            if result.status == "NO_SERIALIZE / EXECUTION_FAIL":
+                return result
         terminal = (
             result.turn_contract,
             result.research_evidence_packet,
@@ -1468,7 +1510,8 @@ class Dispatcher:
                     ],
                 }
             )
-            resumed = self._validate_egress(contract, resumed_raw)
+            resumed_receipt = self._complete_company_commercial(contract)
+            resumed = self._validate_egress(contract, resumed_raw, resumed_receipt)
             if resumed.status != RUN_REQUIRED_RESEARCH:
                 return self._close_research_loop(contract, resumed)
 

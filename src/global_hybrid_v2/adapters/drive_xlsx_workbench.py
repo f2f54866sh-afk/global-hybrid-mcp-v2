@@ -204,12 +204,34 @@ class DriveXlsxWorkbenchPort:
         self.claims = claims
 
     def write(self, *, task_id: str, intent_sha256: str, new_bytes: bytes) -> WorkbenchWriteReceipt:
+        """Compatibility path for the isolated qualification command."""
+        return self.mutate(
+            task_id=task_id,
+            intent_sha256=intent_sha256,
+            build_new_bytes=lambda _preimage: new_bytes,
+        )
+
+    def mutate(
+        self,
+        *,
+        task_id: str,
+        intent_sha256: str,
+        build_new_bytes: Callable[[bytes], bytes],
+        verify_mutation: Callable[[bytes, bytes], None] | None = None,
+    ) -> WorkbenchWriteReceipt:
+        """Build against this transaction's exact preimage, then claim and read back."""
         meta = self.drive.metadata(self.file_id)
         pre_version = str(meta.get("version") or "")
         if not pre_version:
             raise WorkbenchCapabilityDebt("DRIVE_VERSION_UNAVAILABLE")
         pre_bytes = self.drive.download(self.file_id)
         pre_sha = sha256_hex(pre_bytes)
+        new_bytes = build_new_bytes(pre_bytes)
+        if not isinstance(new_bytes, (bytes, bytearray)):
+            raise WorkbenchCapabilityDebt("WORKBENCH_MUTATION_BUILDER_INVALID_OUTPUT")
+        new_bytes = bytes(new_bytes)
+        if verify_mutation is not None:
+            verify_mutation(pre_bytes, new_bytes)
         if pre_bytes == new_bytes:
             return WorkbenchWriteReceipt("NO_DELTA", self.file_id, pre_version, pre_sha)
 
@@ -227,13 +249,25 @@ class DriveXlsxWorkbenchPort:
             }
         )
         if claim.get("state") == "IDEMPOTENT_SUCCESS":
+            claimed_post_sha = claim.get("postwrite_sha256")
+            claimed_post_version = str(claim.get("postwrite_version") or "")
+            current_meta = self.drive.metadata(self.file_id)
+            current_bytes = self.drive.download(self.file_id)
+            if (
+                not claimed_post_version
+                or not isinstance(claimed_post_sha, str)
+                or str(current_meta.get("version") or "") != claimed_post_version
+                or sha256_hex(current_bytes) != claimed_post_sha
+                or claimed_post_sha != sha256_hex(new_bytes)
+            ):
+                raise WorkbenchConflict("HOLD_IDEMPOTENT_READBACK_MISMATCH")
             return WorkbenchWriteReceipt(
                 "WRITE_AND_READBACK_PASS",
                 self.file_id,
                 pre_version,
                 pre_sha,
-                str(claim.get("postwrite_version") or "") or None,
-                claim.get("postwrite_sha256"),
+                claimed_post_version,
+                claimed_post_sha,
                 claim_id,
             )
         if claim.get("state") != "CLAIMED":

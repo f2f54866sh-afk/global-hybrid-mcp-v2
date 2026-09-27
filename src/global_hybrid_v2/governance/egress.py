@@ -9,6 +9,8 @@ from global_hybrid_v2.contracts import (
     DomainResult,
     FailureLocus,
     OutputClassification,
+    PersistenceDisposition,
+    PersistenceReceipt,
     RC01StopCondition,
     ResearchAdmissionReceipt,
     ResearchAdmissionStatus,
@@ -41,6 +43,36 @@ RETRIEVAL_FALSE_NEGATIVE = "RETRIEVAL_FALSE_NEGATIVE"
 
 
 class ResponseEgressValidator:
+    @staticmethod
+    def validate_company_commercial_persistence(
+        result: DomainResult,
+        *,
+        task_id: str,
+        trusted_receipt: PersistenceReceipt | None,
+    ) -> DomainResult:
+        """Only the dispatcher-supplied terminal may authorize normal serialization."""
+        from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
+
+        if (
+            trusted_receipt is None
+            or trusted_receipt.task_id != task_id
+            or trusted_receipt.file_id != CANONICAL_WORKBENCH_FILE_ID
+        ):
+            blocker = "PERSISTENCE_TERMINAL_RECEIPT_MISSING"
+        elif trusted_receipt.state not in {
+            PersistenceDisposition.WRITE_AND_READBACK_PASS,
+            PersistenceDisposition.NO_DELTA,
+        }:
+            blocker = trusted_receipt.blocker or trusted_receipt.state.value
+        else:
+            return result.model_copy(update={"persistence_receipt": trusted_receipt})
+        return result.model_copy(update={
+            "status": "NO_SERIALIZE / EXECUTION_FAIL",
+            "output": {"state": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": blocker},
+            "persistence_receipt": trusted_receipt,
+            "evidence": {**result.evidence, "egress_decision": "BLOCK", "blocker": blocker},
+        })
+
     REPAIR_MARKERS = (
         "REPAIR_DIRECTION",
         "SHOULD_CHANGE",
