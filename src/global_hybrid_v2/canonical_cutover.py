@@ -70,6 +70,8 @@ def compile_import(preimage: bytes, *, file_id: str) -> ImportManifest:
         seen.add(vehicle_id)
         fields.setdefault("原始媒體Refs", "")
         fields.setdefault(CREATIVE_REFS_COLUMN, "")
+        if fields[CREATIVE_REFS_COLUMN].strip():
+            raise CanonicalConflict("HOLD_MIGRATION_CREATIVE_LINKAGE_REQUIRED")
         vehicles.append(ImportVehicle(vehicle_id, number, fields))
     topology = {
         "entries": [(name, hashlib.sha256(book.entries[name]).hexdigest())

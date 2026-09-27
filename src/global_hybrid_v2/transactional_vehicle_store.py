@@ -125,6 +125,31 @@ class CanonicalReadback:
 
 
 @dataclass(frozen=True)
+class CreativeProjectionRef:
+    creative_ref_id: str
+    media_asset_id: str
+    channels: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class VehicleProjectionState:
+    vehicle_instance_id: str
+    canonical_revision: int
+    source_snapshot: dict[str, Any]
+    verified_state: dict[str, Any]
+    original_media_refs: tuple[str, ...]
+    creative_media_refs: tuple[CreativeProjectionRef, ...]
+    original_media_cell: str
+
+    @property
+    def current_state(self) -> dict[str, Any]:
+        fields = {**self.source_snapshot, **self.verified_state}
+        fields["原始媒體Refs"] = self.original_media_cell
+        fields["銷售素材Refs"] = _canonical([ref.creative_ref_id for ref in self.creative_media_refs])
+        return fields
+
+
+@dataclass(frozen=True)
 class CreativeAdmission:
     admission_id: str
     vehicle_instance_id: str
@@ -155,6 +180,7 @@ class CreativeAdmission:
 
 class VehicleStatePort(Protocol):
     def read_vehicle(self, vehicle_instance_id: str) -> CanonicalReadback | None: ...
+    def read_projection_state(self, vehicle_instance_id: str) -> VehicleProjectionState | None: ...
 
 
 class VehicleMutationPort(VehicleStatePort, Protocol):
@@ -233,6 +259,63 @@ class TransactionalVehicleStore(VehicleMutationPort):
                                      _load_json(row[1]), _load_json(row[2]), _load_json(row[3]))
         finally:
             connection.close()
+
+    def read_projection_state(self, vehicle_instance_id: str) -> VehicleProjectionState | None:
+        connection = self._open()
+        try:
+            return self._projection_state(_Sql(connection, self.dialect), vehicle_instance_id)
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _projection_state(db: _Sql, vehicle_instance_id: str) -> VehicleProjectionState | None:
+        row = db.execute(
+            "SELECT revision, source_snapshot, verified_state FROM vehicle_record "
+            "WHERE vehicle_instance_id = ?", (vehicle_instance_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        revision = int(row[0])
+        source, verified = _load_json(row[1]), _load_json(row[2])
+        if str(source.get("銷售素材Refs", "")).strip():
+            raise CanonicalConflict("HOLD_IMPORTED_CREATIVE_LINKAGE_UNRESOLVED")
+        links = db.execute(
+            "SELECT media_asset_id, usage_class, truth_eligibility, creative_classification, "
+            "channels FROM vehicle_media_link WHERE vehicle_instance_id = ?",
+            (vehicle_instance_id,),
+        ).fetchall()
+        baseline = verified.get("原始媒體Refs", source.get("原始媒體Refs", ""))
+        baseline_text = str(baseline)
+        original_refs = _parse_media_refs(baseline_text)
+        added_original: list[str] = []
+        creative: dict[str, CreativeProjectionRef] = {}
+        for media_id, usage, truth, classification, channels_raw in links:
+            if usage == "CREATIVE":
+                if truth != "FORBIDDEN" or classification != "CREATIVE":
+                    raise CanonicalConflict("HOLD_CREATIVE_MEDIA_LINK_INVALID")
+                channels = _load_list(channels_raw)
+                if not channels or not all(isinstance(ch, str) and ch for ch in channels):
+                    raise CanonicalConflict("HOLD_CREATIVE_CHANNELS_INVALID")
+                ref_digest = hashlib.sha256(f"{vehicle_instance_id}\0{media_id}".encode()).hexdigest()
+                creative[media_id] = CreativeProjectionRef(
+                    f"creative:{ref_digest}", media_id, tuple(sorted(set(channels))),
+                )
+            elif usage in {"ORIGINAL_EVIDENCE", "EVIDENCE"}:
+                if truth == "FORBIDDEN" or classification == "CREATIVE":
+                    raise CanonicalConflict("HOLD_ORIGINAL_MEDIA_LINK_INVALID")
+                added_original.append(media_id)
+        merged_original = tuple(sorted(set(original_refs) | set(added_original)))
+        original_cell = (_canonical(merged_original) if added_original else baseline_text)
+        after = db.execute(
+            "SELECT revision FROM vehicle_record WHERE vehicle_instance_id = ?",
+            (vehicle_instance_id,),
+        ).fetchone()
+        if after is None or int(after[0]) != revision:
+            raise CanonicalConflict("HOLD_PROJECTION_SOURCE_DRIFT")
+        return VehicleProjectionState(
+            vehicle_instance_id, revision, source, verified, merged_original,
+            tuple(sorted(creative.values(), key=lambda item: item.creative_ref_id)), original_cell,
+        )
 
     def commit_verified(self, mutation: CanonicalMutation) -> PersistenceReceipt:
         mutation.validate()
@@ -494,6 +577,20 @@ def _load_list(value: Any) -> list[str]:
     return json.loads(value) if isinstance(value, str) else list(value)
 
 
+def _parse_media_refs(value: str) -> tuple[str, ...]:
+    if not value:
+        return ()
+    if value.startswith("["):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise CanonicalConflict("HOLD_ORIGINAL_MEDIA_REFS_INVALID") from exc
+        if not isinstance(parsed, list) or any(not isinstance(ref, str) for ref in parsed):
+            raise CanonicalConflict("HOLD_ORIGINAL_MEDIA_REFS_INVALID")
+        return tuple(sorted(set(parsed)))
+    return (value,)
+
+
 def sqlite_contract_schema(connection: sqlite3.Connection) -> None:
     """SQLite contract fixture only; never a production fallback or binding."""
     connection.executescript("""
@@ -518,8 +615,14 @@ def sqlite_contract_schema(connection: sqlite3.Connection) -> None:
             verified_delta TEXT, evidence_refs TEXT, request_id TEXT, task_id TEXT,
             terminal_disposition TEXT, committed_at TEXT);
         CREATE TABLE projection_outbox (event_id TEXT PRIMARY KEY, vehicle_instance_id TEXT,
-            canonical_revision INTEGER, state TEXT NOT NULL, attempts INTEGER DEFAULT 0,
-            last_error TEXT, projected_sha256 TEXT);
+            canonical_revision INTEGER, state TEXT NOT NULL CHECK (state IN
+            ('PROJECTION_PENDING','PROJECTION_FAILED','PROJECTED',
+             'SUPERSEDED_BY_LATER_REVISION','HOLD_CONFLICT')),
+            attempts INTEGER DEFAULT 0, last_error TEXT, projected_sha256 TEXT,
+            satisfied_by_revision INTEGER, updated_at TEXT);
+        CREATE TABLE vehicle_projection_cursor (vehicle_instance_id TEXT PRIMARY KEY,
+            projected_revision INTEGER NOT NULL, projected_row_digest TEXT NOT NULL,
+            projected_sha256 TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE vehicle_media_link (vehicle_instance_id TEXT, media_asset_id TEXT,
             usage_class TEXT, truth_eligibility TEXT, provenance_class TEXT,
             provenance_confidence TEXT, independent_evidence_root TEXT, creative_classification TEXT,

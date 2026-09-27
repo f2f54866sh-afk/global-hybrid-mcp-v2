@@ -16,7 +16,7 @@ from global_hybrid_v2.media_schema_contract import (
     D1MediaSchemaReadbackHttp,
     D1MigrationState,
 )
-from global_hybrid_v2.transactional_vehicle_store import CanonicalReadback
+from global_hybrid_v2.transactional_vehicle_store import VehicleProjectionState
 
 
 class DeploymentStep(StrEnum):
@@ -119,7 +119,7 @@ class DeploymentReceiptAuthority:
 
     def from_xlsx_readback(self, verifier: XlsxProjectionVerifier, *,
                            event: ProjectionEvent | None = None,
-                           state: CanonicalReadback | None = None,
+                           state: VehicleProjectionState | None = None,
                            task_id: str | None = None, deployment_id: str,
                            target: str, source_revision: str, expected_preimage: str,
                            previous_step_receipt_digest: str) -> DeploymentReceipt:

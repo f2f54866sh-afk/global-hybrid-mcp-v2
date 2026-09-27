@@ -1,6 +1,6 @@
 # RD-021 Stage C: transactional canonical store candidate
 
-This branch is based on `4de483103084026d636fcd60b74a9146f067d031`. It does not bind or create a database, write the canonical Drive file, deploy a service, or perform a production cutover. PostgreSQL is the candidate substrate; the SQLite schema is solely a local transaction-contract fixture.
+The Stage C core began from `4de483103084026d636fcd60b74a9146f067d031`; the projection convergence candidate is based on `b5e53462194a4e63d7a4b3378bb08a64382c5f83`. It does not bind or create a database, write the canonical Drive file, deploy a service, or perform a production cutover. PostgreSQL is the candidate substrate; the SQLite schema is solely a local transaction-contract fixture.
 
 ## Authority and transaction
 
@@ -22,7 +22,13 @@ The future live cutover sequence is fixed:
 4. Declare DB canonical once, then enable the DB completion writer.
 5. Make XLSX a projection-only output. Add `CANONICAL_REVISION` as a bounded projection schema change, then enable the outbox worker and controlled completion path.
 
-There is no period in which both stores accept canonical truth writes. The projection builder modifies only the uniquely resolved row and preserves unrelated workbook entries and rows. `XlsxProjectionVerifier` has only metadata/download methods: it checks a fresh stable metadata version, parsed identity, projected revision and fields, and never invokes a migration runner or PATCH. Projection failure leaves the canonical transaction committed and records `PROJECTION_FAILED`; retry uses the same unique event ID. A live projection sink, its exclusive writer binding and concurrency policy are still capability debt.
+There is no period in which both stores accept canonical truth writes. The projection builder modifies only the uniquely resolved row and preserves unrelated workbook entries and rows. `XlsxProjectionVerifier` has only metadata/download methods: it checks a fresh stable metadata version, parsed identity, projected revision and fields, and never invokes a migration runner or PATCH.
+
+The chosen replay model is **LATEST_STATE_MONOTONIC_PROJECTION**. An outbox event is a lower-bound demand to project its vehicle at least through that canonical revision, not an immutable historical XLSX image. The worker locks that vehicle's canonical row, reads the latest `VehicleProjectionState`, observes the current XLSX revision, and uses a sink whose `replace_if_preimage` operation must atomically bind replacement to the exact observed version and bytes. Older events coalesce to the latest canonical revision. A successful fresh readback terminalizes that revision's event as `PROJECTED` and earlier pending/failed events as `SUPERSEDED_BY_LATER_REVISION`. A durable per-vehicle projection cursor records the last verified revision and row digest. Lower revisions and external edits at the cursor revision hold instead of overwriting. Projection failure leaves the canonical transaction committed for retry.
+
+`VehicleProjectionState` materializes source baseline, verified overlay, original/evidence media refs, creative media refs, and current canonical revision. Creative refs come only from the vehicle's canonical `vehicle_media_link` rows with `usage_class=CREATIVE`, `truth_eligibility=FORBIDDEN`, and `creative_classification=CREATIVE`; they are sorted, deduplicated and serialized as stable `creative:<digest>` identities. The XLSX `銷售素材Refs` cell is derived from those links on every projection, while `原始媒體Refs` remains the imported evidence baseline. Creative admission does not alter verified state or independent truth evidence count. An imported source with nonempty creative refs but no resolvable link holds rather than silently discarding or treating the source text as canonical.
+
+The repository includes a SQLite-backed transaction fixture and an atomic fake XLSX sink that exercises concurrency and stale-preimage rejection. It does **not** provide or certify an atomic conditional-update primitive for the live Drive XLSX file. A live projection sink and exclusive writer binding remain capability debt; read-then-PATCH is not sufficient.
 
 Before the first DB canonical mutation, the candidate cutover state may be marked rolled back and the frozen XLSX preimage may be restored by a separately admitted operator. Once any DB mutation exists, rollback to old XLSX is blocked with `ROLLBACK_BLOCKED_NEW_CANONICAL_WRITES_PRESENT`; recovery requires a new controlled reverse migration.
 

@@ -34,6 +34,7 @@ from global_hybrid_v2.transactional_vehicle_store import (
     _digest,
     sqlite_contract_schema,
 )
+from tests._rd021_projection_fixture import AtomicProjectionFixture
 from tests.test_rd021_completion_fence import q
 from tests.test_rd021_creative_schema_migration import edit_sheet
 from tests.test_rd021_media_admission import creative_workbook
@@ -262,51 +263,16 @@ def test_duplicate_identity_import_holds(candidate):
 def test_projection_failure_keeps_canonical_commit_and_retry_is_idempotent(candidate):
     store, path, raw, _ = candidate
     store.commit_verified(mutation())
-    state = store.read_vehicle("8891:S4806251")
-    assert state.revision == 1
-
-    def projected_sheet(root):
-        rows = root.find(q("sheetData")).findall(q("row"))
-        header = rows[0]
-        from global_hybrid_v2.workbench_mutation import _cell, _set_cell
-
-        _set_cell(_cell(header, 7, create=True), "實際配備狀態")
-        _set_cell(_cell(header, 8, create=True), "CANONICAL_REVISION")
-        row = next(item for item in rows if item.get("r") == "13")
-        _set_cell(_cell(row, 7, create=True), "sport")
-        _set_cell(_cell(row, 8, create=True), "1")
-
-    payload = edit_sheet(raw, projected_sheet)
-
-    class ReadOnlyDrive:
-        def metadata(self, file_id):
-            assert file_id == CANONICAL_WORKBENCH_FILE_ID
-            return {"version": "fixture:1"}
-
-        def download(self, file_id):
-            return payload
-
-        def replace(self, *args):
-            raise AssertionError("readback must never write")
-
-    class Sink:
-        fail = True
-        calls = 0
-
-        def project(self, event, state):
-            self.calls += 1
-            if self.fail:
-                raise OSError("projection unavailable")
-
-    sink = Sink()
-    verifier = XlsxProjectionVerifier(ReadOnlyDrive())
+    sink = AtomicProjectionFixture(raw)
+    sink.fail_writes = True
+    verifier = XlsxProjectionVerifier(sink)
     worker = ProjectionOutboxWorker(store, sink, verifier)
     assert worker.run("m1") == "PROJECTION_FAILED"
     assert store.read_vehicle("8891:S4806251").revision == 1
-    sink.fail = False
+    sink.fail_writes = False
     assert worker.run("m1") == "PROJECTED"
     assert worker.run("m1") == "PROJECTED"
-    assert sink.calls == 2
+    assert sink.write_calls == 2
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT attempts FROM projection_outbox").fetchone()[0] == 2
 
@@ -327,24 +293,18 @@ def test_projection_verifier_rejects_missing_revision_without_writing(candidate)
 
     with pytest.raises(CanonicalConflict, match="PROJECTION_SCHEMA_MISSING"):
         XlsxProjectionVerifier(ReadOnlyDrive()).verify(
-            ProjectionEvent("m1", "8891:S4806251", 1), store.read_vehicle("8891:S4806251")
+            ProjectionEvent("m1", "8891:S4806251", 1),
+            store.read_projection_state("8891:S4806251"),
         )
 
 
 def test_projection_builder_changes_only_resolved_row(candidate):
     store, _, raw, _ = candidate
     store.commit_verified(mutation())
-    from global_hybrid_v2.workbench_mutation import _cell, _set_cell
-
-    def add_projection_columns(root):
-        header = root.find(q("sheetData")).findall(q("row"))[0]
-        _set_cell(_cell(header, 7, create=True), "實際配備狀態")
-        _set_cell(_cell(header, 8, create=True), "CANONICAL_REVISION")
-
-    preimage = edit_sheet(raw, add_projection_columns)
+    sink = AtomicProjectionFixture(raw)
     event = ProjectionEvent("m1", "8891:S4806251", 1)
-    state = store.read_vehicle("8891:S4806251")
-    output = DeterministicXlsxProjectionBuilder().build(preimage, event, state)
+    state = store.read_projection_state("8891:S4806251")
+    output = DeterministicXlsxProjectionBuilder().build(sink.payload, event, state)
 
     class ReadOnlyDrive:
         def metadata(self, file_id):
