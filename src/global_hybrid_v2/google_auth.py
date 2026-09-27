@@ -70,7 +70,7 @@ class ServiceAccountIdentity:
 
 
 class ServiceAccountAccessTokenProvider:
-    scope = "https://www.googleapis.com/auth/spreadsheets"
+    default_scopes = ("https://www.googleapis.com/auth/spreadsheets",)
 
     def __init__(
         self,
@@ -79,11 +79,15 @@ class ServiceAccountAccessTokenProvider:
         exchange: GoogleTokenExchange | None = None,
         clock: Callable[[], float] = time.time,
         refresh_margin_seconds: int = 60,
+        scopes: tuple[str, ...] | None = None,
     ):
         self.identity = identity
         self.exchange = exchange or GoogleOAuthTokenExchange()
         self.clock = clock
         self.refresh_margin_seconds = refresh_margin_seconds
+        self.scopes = self.default_scopes if scopes is None else scopes
+        if not self.scopes or any(not scope.strip() for scope in self.scopes):
+            raise GoogleAuthUnavailable("Google OAuth scopes must be explicit and non-blank")
         self._token: str | None = None
         self._expires_at = 0.0
 
@@ -110,7 +114,7 @@ class ServiceAccountAccessTokenProvider:
         header = {"alg": "RS256", "kid": self.identity.private_key_id, "typ": "JWT"}
         claim = {
             "iss": self.identity.client_email,
-            "scope": self.scope,
+            "scope": " ".join(self.scopes),
             "aud": "https://oauth2.googleapis.com/token",
             "iat": issued_at,
             "exp": issued_at + 3600,

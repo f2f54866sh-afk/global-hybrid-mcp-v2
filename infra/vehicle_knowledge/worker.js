@@ -45,6 +45,42 @@ const sha256Hex = async value => {
 };
 
 async function control(db, path, body) {
+  if (path === "/internal/control/workbench-write-claim") {
+    required(body, ["claim_id", "file_id", "preimage_version", "preimage_sha256", "intent_sha256", "task_id"]);
+    const existing = await db.prepare(
+      "SELECT claim_id,intent_sha256,state,postwrite_version,postwrite_sha256,result_state FROM workbench_write_claim WHERE file_id=? AND preimage_version=?",
+    ).bind(body.file_id, body.preimage_version).first();
+    if (existing) {
+      if (existing.claim_id !== body.claim_id || existing.intent_sha256 !== body.intent_sha256) {
+        return {state: "HOLD_CONFLICT", blocker: "WORKBENCH_PREIMAGE_ALREADY_CLAIMED"};
+      }
+      return {state: existing.state === "COMPLETED" ? "IDEMPOTENT_SUCCESS" : existing.state,
+        claim_id: existing.claim_id, postwrite_version: existing.postwrite_version,
+        postwrite_sha256: existing.postwrite_sha256, result_state: existing.result_state};
+    }
+    await db.prepare(
+      "INSERT INTO workbench_write_claim(claim_id,file_id,preimage_version,preimage_sha256,intent_sha256,task_id,state,claimed_at) VALUES(?,?,?,?,?,?,'CLAIMED',?)",
+    ).bind(body.claim_id,body.file_id,body.preimage_version,body.preimage_sha256,body.intent_sha256,body.task_id,new Date().toISOString()).run();
+    return {state: "CLAIMED", claim_id: body.claim_id};
+  }
+  if (path === "/internal/control/workbench-write-complete") {
+    required(body, ["claim_id", "postwrite_version", "postwrite_sha256", "result_state"]);
+    const row = await db.prepare("SELECT state FROM workbench_write_claim WHERE claim_id=?").bind(body.claim_id).first();
+    if (!row) throw new Error("WORKBENCH_WRITE_CLAIM_MISSING");
+    if (row.state === "COMPLETED") return {state: "IDEMPOTENT_SUCCESS", claim_id: body.claim_id};
+    if (row.state !== "CLAIMED") throw new Error("WORKBENCH_WRITE_CLAIM_NOT_OPEN");
+    await db.prepare(
+      "UPDATE workbench_write_claim SET state='COMPLETED',completed_at=?,postwrite_version=?,postwrite_sha256=?,result_state=? WHERE claim_id=? AND state='CLAIMED'",
+    ).bind(new Date().toISOString(),body.postwrite_version,body.postwrite_sha256,body.result_state,body.claim_id).run();
+    return {state: "COMPLETED", claim_id: body.claim_id};
+  }
+  if (path === "/internal/control/workbench-write-fail") {
+    required(body, ["claim_id", "blocker"]);
+    await db.prepare(
+      "UPDATE workbench_write_claim SET state='FAILED',completed_at=?,blocker=? WHERE claim_id=? AND state='CLAIMED'",
+    ).bind(new Date().toISOString(),body.blocker,body.claim_id).run();
+    return {state: "FAILED", claim_id: body.claim_id, blocker: body.blocker};
+  }
   if (path === "/internal/control/inventory-observation") {
     required(body, ["observation_id", "source_revision", "observed_at"]);
     const rows = Array.isArray(body.rows) ? body.rows : [];
@@ -210,6 +246,9 @@ async function read(db, path, params) {
 export async function handleRequest(request, env) {
   const url = new URL(request.url);
   const controlPaths = new Set([
+    "/internal/control/workbench-write-claim",
+    "/internal/control/workbench-write-complete",
+    "/internal/control/workbench-write-fail",
     "/internal/control/inventory-observation",
     "/internal/control/coverage-work",
     "/internal/control/verified-revision",

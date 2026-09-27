@@ -12,3 +12,19 @@ CREATE TABLE vehicle_snapshot_build(id TEXT PRIMARY KEY, builder_version TEXT NO
 CREATE TABLE vehicle_snapshot_promotion(id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL, promoted_at TEXT NOT NULL);
 CREATE TABLE vehicle_snapshot_active(singleton INTEGER PRIMARY KEY CHECK(singleton=1), snapshot_id TEXT NOT NULL, promotion_id TEXT NOT NULL);
 CREATE TABLE vehicle_reconciliation_run(run_id TEXT PRIMARY KEY, scheduled_at TEXT NOT NULL, body_digest TEXT NOT NULL, state TEXT NOT NULL, claimed_at TEXT NOT NULL, completed_at TEXT NULL, result_state TEXT NULL);
+CREATE TABLE workbench_write_claim(
+  claim_id TEXT PRIMARY KEY,
+  file_id TEXT NOT NULL,
+  preimage_version TEXT NOT NULL,
+  preimage_sha256 TEXT NOT NULL,
+  intent_sha256 TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('CLAIMED','COMPLETED','FAILED')),
+  claimed_at TEXT NOT NULL,
+  completed_at TEXT NULL,
+  postwrite_version TEXT NULL,
+  postwrite_sha256 TEXT NULL,
+  result_state TEXT NULL,
+  blocker TEXT NULL,
+  UNIQUE(file_id, preimage_version)
+);
