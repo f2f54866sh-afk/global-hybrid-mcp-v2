@@ -36,6 +36,7 @@ from tests.rd021_postgres_qualification import (
     introspect_schema,
     reset_and_migrate,
 )
+from tests.test_rd021_completion_fence import q
 from tests.test_rd021_media_admission import creative_workbook
 
 VEHICLE = "8891:S4806251"
@@ -190,8 +191,10 @@ def test_stale_cas_and_idempotency(imported):
     first = mutation()
     receipt = admitted(store, admission, first)
     assert store.commit_verified(first) == receipt
+    collision = mutation(value="other")
+    admission.add(VEHICLE, collision.evidence[0])
     with pytest.raises(CanonicalConflict, match="HOLD_IDEMPOTENCY_COLLISION"):
-        store.commit_verified(replace(first, verified_delta={"實際配備狀態": "other"}))
+        store.commit_verified(collision)
     stale = mutation(mid="stale", value="other")
     admission.add(VEHICLE, stale.evidence[0])
     with pytest.raises(CanonicalConflict, match="STALE_CANONICAL_REVISION"):
@@ -233,10 +236,12 @@ def test_first_observed_and_server_admission_mismatch(imported):
     trusted = mutation()
     admission.add(VEHICLE, trusted.evidence[0])
     for altered in (replace(trusted.evidence[0], independent_evidence_root="caller:root"),
-                    replace(trusted.evidence[0], value_digest="caller:value"),
                     replace(trusted.evidence[0], evidence_asset_id="caller:asset")):
         with pytest.raises(CanonicalConflict, match="EVIDENCE_READBACK_MISMATCH"):
             store.commit_verified(replace(trusted, evidence=(altered,)))
+    changed = mutation(value="caller:value")
+    with pytest.raises(CanonicalConflict, match="EVIDENCE_READBACK_MISMATCH"):
+        store.commit_verified(changed)
     assert counts(dsn) == (0, 0, 0)
     assert admitted(store, admission, trusted).state is PersistenceDisposition.WRITE_AND_READBACK_PASS
     second = mutation(mid="m2", revision=1, value="sport plus", asset="media:resize")
@@ -368,7 +373,13 @@ def test_durable_hold_blocks_later_projection(imported):
     worker = ProjectionOutboxWorker(store, sink, XlsxProjectionVerifier(sink))
     assert worker.run("m1") == "PROJECTED"
     admitted(store, admission, mutation(mid="m2", revision=1, value="sport plus", asset="media:2"))
-    sink.external_edit("實際配備狀態", "external")
+    def tamper(root):
+        row = next(item for item in root.find(q("sheetData")).findall(q("row"))
+                   if item.get("r") == "13")
+        cell = next(item for item in row.findall(q("c")) if item.get("r") == "E13")
+        cell.find(f"{q('is')}/{q('t')}").text = "external"
+
+    sink.external_edit(tamper)
     assert worker.run("m2") == "HOLD_CONFLICT"
     admitted(store, admission, mutation(mid="m3", revision=2, value="sport max", asset="media:3"))
     assert worker.run("m3") == "HOLD_CONFLICT"
