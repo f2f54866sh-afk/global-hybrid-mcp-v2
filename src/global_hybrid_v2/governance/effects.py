@@ -33,8 +33,16 @@ OWNER_EFFECTS: dict[Owner, set[EffectType]] = {
 
 
 class EffectGate:
-    def decide(self, owner: Owner, effects: list[EffectType]) -> EffectDecision:
+    def decide(
+        self,
+        owner: Owner,
+        effects: list[EffectType],
+        *,
+        trusted_workbench_completion: bool = False,
+    ) -> EffectDecision:
         allowed = OWNER_EFFECTS[owner]
+        if owner is Owner.SALES_HUMAN and trusted_workbench_completion:
+            allowed = allowed | {EffectType.EXTERNAL_WRITE}
         denied = tuple(effect for effect in effects if effect not in allowed)
         return EffectDecision(
             owner=owner,
@@ -43,8 +51,16 @@ class EffectGate:
             allowed=not denied,
         )
 
-    def authorize(self, owner: Owner, effects: list[EffectType]) -> EffectDecision:
-        decision = self.decide(owner, effects)
+    def authorize(
+        self,
+        owner: Owner,
+        effects: list[EffectType],
+        *,
+        trusted_workbench_completion: bool = False,
+    ) -> EffectDecision:
+        decision = self.decide(
+            owner, effects, trusted_workbench_completion=trusted_workbench_completion,
+        )
         if not decision.allowed:
             names = ", ".join(effect.value for effect in decision.denied)
             raise EffectAuthorizationError(f"{owner.value} cannot perform effects: {names}")

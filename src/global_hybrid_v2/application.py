@@ -39,6 +39,7 @@ from global_hybrid_v2.runtime.deployment import RuntimeIdentity, read_runtime_id
 from global_hybrid_v2.runtime.dispatcher import Dispatcher
 from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.settings import Settings
+from global_hybrid_v2.trusted_workbench_intent import TrustedHostTaskCompiler
 from global_hybrid_v2.workbench_mutation import XlsxWorkbenchMutationBuilder
 
 
@@ -53,6 +54,7 @@ class Application:
     dispatcher: Dispatcher
     vehicle_configuration_provider: VehicleConfigurationProvider | None = None
     composition_fitness: FitnessReport | None = None
+    trusted_host_task_compiler: TrustedHostTaskCompiler | None = None
 
 
 def create_application(
@@ -65,6 +67,7 @@ def create_application(
     host_current_state_verifier: HostCurrentStateVerifier | None = None,
     vehicle_configuration_provider: VehicleConfigurationProvider | None = None,
     company_commercial_completion_handler: CompanyCommercialCompletionHandler | None = None,
+    trusted_host_task_compiler: TrustedHostTaskCompiler | None = None,
 ) -> Application:
     root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[2]
     runtime_settings = settings or Settings()
@@ -157,4 +160,5 @@ def create_application(
         dispatcher=dispatcher,
         vehicle_configuration_provider=effective_vehicle_configuration_provider,
         composition_fitness=composition_fitness,
+        trusted_host_task_compiler=trusted_host_task_compiler,
     )

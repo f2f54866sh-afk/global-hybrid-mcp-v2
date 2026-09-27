@@ -20,6 +20,23 @@ class SalesHumanDomain:
         if contract.owner is not Owner.SALES_HUMAN:
             raise ValueError("SalesHumanDomain received another owner's task")
 
+        if contract.workbench_sync_intent is not None:
+            if not contract.workbench_sync_intent.trusted_evidence_receipt_id:
+                return DomainResult(
+                    owner=self.owner,
+                    status="TRUSTED_EVIDENCE_LINEAGE_MISSING",
+                )
+            return DomainResult(
+                owner=self.owner,
+                status="COMPANY_COMMERCIAL_DELTA_VERIFIED",
+                output={"vehicle_instance_id": contract.workbench_sync_intent.vehicle_instance_id},
+                evidence={
+                    "trusted_evidence_receipt_id": (
+                        contract.workbench_sync_intent.trusted_evidence_receipt_id
+                    ),
+                },
+            )
+
         media_task = SalesMediaDomain.supports(contract.request_text)
         vehicle_task = contract.vehicle_configuration_query is not None
         if media_task and vehicle_task:

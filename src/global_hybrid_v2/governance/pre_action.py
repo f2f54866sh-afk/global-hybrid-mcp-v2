@@ -33,9 +33,22 @@ class PreActionConstraintGate:
         context: list[ContextItem],
         current_binding: CurrentPreActionBinding | None = None,
         proposed_owner: str | None = None,
+        trusted_workbench_completion: bool = False,
     ) -> PreActionDecision:
         if not self.MUTATIONS & set(effects):
             return PreActionDecision(allowed=True)
+        if trusted_workbench_completion:
+            allowed = (
+                proposed_owner == "SALES_HUMAN"
+                and target_system == "GOOGLE_DRIVE_XLSX_WORKBENCH"
+                and action_class == "COMPANY_COMMERCIAL_WORKBENCH_SYNC"
+                and set(effects) == {EffectType.EXTERNAL_WRITE}
+                and current_binding is None
+            )
+            return PreActionDecision(
+                allowed=allowed,
+                blocker=None if allowed else "TRUSTED_WORKBENCH_ACTION_MISMATCH",
+            )
         if not target_system or not action_class:
             return PreActionDecision(allowed=False, blocker="PRE_ACTION_TARGET_OR_CLASS_UNRESOLVED")
         matched = False

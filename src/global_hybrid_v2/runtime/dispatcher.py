@@ -25,6 +25,7 @@ from global_hybrid_v2.contracts import (
     ResearchRequest,
     TaskContract,
     TaskRequest,
+    WorkbenchSyncIntent,
 )
 from global_hybrid_v2.domains.base import DomainPort, LibraryProjectionPort
 from global_hybrid_v2.domains.sales_media import SalesMediaDomain
@@ -54,6 +55,7 @@ from global_hybrid_v2.runtime.state import RuntimeStateError, RuntimeStateStore,
 from global_hybrid_v2.runtime.trace import TraceBus
 from global_hybrid_v2.runtime.transition import TransitionController
 from global_hybrid_v2.task_evidence import TaskEvidencePlanner, TrustedTaskSemantics
+from global_hybrid_v2.trusted_workbench_intent import ServerResolvedDispatch
 
 MAX_RESEARCH_ATTEMPTS = 2
 PRE_RESEARCH_EGRESS_SUPPRESSION = "PRE_RESEARCH_EGRESS_SUPPRESSION"
@@ -158,7 +160,65 @@ class Dispatcher:
         *,
         require_host_projection: bool = False,
         trusted_task_semantics: TrustedTaskSemantics | None = None,
+        trusted_host_dispatch: ServerResolvedDispatch | None = None,
     ):
+        if request.workbench_sync_intent is not None or request.company_commercial_matching:
+            return DomainResult(
+                owner=Owner.GLOBAL,
+                status="NO_SERIALIZE / EXECUTION_FAIL",
+                evidence={"egress_decision": "BLOCK", "blocker": "CALLER_WORKBENCH_AUTHORITY_FORBIDDEN"},
+            )
+        trusted_workbench_intent: WorkbenchSyncIntent | None = None
+        if trusted_host_dispatch is not None:
+            if (
+                request.current_identity_projection is not None
+                or request.dialogue_binding_state is not None
+                or request.request_text != trusted_host_dispatch.caller_task.request_text
+                or request.intent.value != trusted_host_dispatch.caller_task.intent
+                or not trusted_host_dispatch.task_scope
+            ):
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="NO_SERIALIZE / EXECUTION_FAIL",
+                    evidence={"egress_decision": "BLOCK", "blocker": "TRUSTED_HOST_DISPATCH_MISMATCH"},
+                )
+            trusted_workbench_intent = trusted_host_dispatch.trusted_workbench_intent
+            if bool(trusted_workbench_intent) != trusted_host_dispatch.company_commercial_matching:
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="NO_SERIALIZE / EXECUTION_FAIL",
+                    evidence={"egress_decision": "BLOCK", "blocker": "TRUSTED_MATCH_INTENT_MISMATCH"},
+                )
+            if (
+                trusted_workbench_intent is not None
+                and not trusted_workbench_intent.trusted_evidence_receipt_id
+            ):
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="NO_SERIALIZE / EXECUTION_FAIL",
+                    evidence={"egress_decision": "BLOCK", "blocker": "TRUSTED_EVIDENCE_LINEAGE_MISSING"},
+                )
+            if (
+                trusted_workbench_intent is not None
+                and trusted_host_dispatch.host_state.dialogue_binding_state.resolved_referent_id
+                != trusted_workbench_intent.vehicle_instance_id
+            ):
+                return DomainResult(
+                    owner=Owner.GLOBAL,
+                    status="NO_SERIALIZE / EXECUTION_FAIL",
+                    evidence={"egress_decision": "BLOCK", "blocker": "HOST_VEHICLE_IDENTITY_MISMATCH"},
+                )
+            request = request.model_copy(update={
+                "current_identity_projection": trusted_host_dispatch.host_state.current_identity_projection,
+                "dialogue_binding_state": trusted_host_dispatch.host_state.dialogue_binding_state,
+                "effects": ([EffectType.EXTERNAL_WRITE] if trusted_workbench_intent is not None
+                            else request.effects),
+                "target_system": ("GOOGLE_DRIVE_XLSX_WORKBENCH" if trusted_workbench_intent is not None
+                                  else request.target_system),
+                "action_class": ("COMPANY_COMMERCIAL_WORKBENCH_SYNC" if trusted_workbench_intent is not None
+                                 else request.action_class),
+            })
+            require_host_projection = True
         evidence_plan = None
         if trusted_task_semantics is not None:
             evidence_plan = TaskEvidencePlanner().plan(trusted_task_semantics)
@@ -259,6 +319,10 @@ class Dispatcher:
         host_projection = self.host_projection_gate.admit(
             request,
             required=require_host_projection,
+            server_resolved_projection=(
+                trusted_host_dispatch.host_state.current_identity_projection
+                if trusted_host_dispatch is not None else None
+            ),
         )
         self.trace.emit(
             task_id=task_id,
@@ -349,7 +413,11 @@ class Dispatcher:
             resume_receipt = resume.receipt
 
         owner = self.router.route(request.intent)
-        sales_media_task = owner is Owner.SALES_HUMAN and SalesMediaDomain.supports(request.request_text)
+        sales_media_task = (
+            owner is Owner.SALES_HUMAN
+            and trusted_workbench_intent is None
+            and SalesMediaDomain.supports(request.request_text)
+        )
         sales_vehicle_configuration_task = (
             owner is Owner.SALES_HUMAN and request.vehicle_configuration_query is not None
         )
@@ -399,8 +467,9 @@ class Dispatcher:
             action_id=action_id,
             idempotency_key=idempotency_key,
             vehicle_configuration_query=request.vehicle_configuration_query,
-            workbench_sync_intent=request.workbench_sync_intent,
-            company_commercial_matching=request.company_commercial_matching,
+            workbench_sync_intent=trusted_workbench_intent,
+            company_commercial_matching=trusted_host_dispatch.company_commercial_matching
+            if trusted_host_dispatch is not None else False,
         )
 
         if runtime_state is not None and transition is not None and self.runtime_state_store is not None:
@@ -482,7 +551,15 @@ class Dispatcher:
         )
 
         try:
-            effect_decision = self.effect_gate.authorize(owner, request.effects)
+            effect_decision = self.effect_gate.authorize(
+                owner,
+                request.effects,
+                trusted_workbench_completion=(
+                    owner is Owner.SALES_HUMAN
+                    and trusted_host_dispatch is not None
+                    and trusted_workbench_intent is not None
+                ),
+            )
         except Exception as exc:
             self.trace.emit(
                 task_id=contract.task_id,
@@ -530,6 +607,11 @@ class Dispatcher:
                 else None
             ),
             proposed_owner=owner.value,
+            trusted_workbench_completion=(
+                owner is Owner.SALES_HUMAN
+                and trusted_host_dispatch is not None
+                and trusted_workbench_intent is not None
+            ),
         )
         self.trace.emit(
             task_id=contract.task_id,

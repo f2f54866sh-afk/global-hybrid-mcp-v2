@@ -17,9 +17,25 @@ from global_hybrid_v2.contracts import TaskRequest
 from global_hybrid_v2.domains.vehicle_configuration import VehicleConfigurationReadbackProvider
 from global_hybrid_v2.governance.authority import AUTHORITY_ACTIVATION_INVALID, AuthorityError
 from global_hybrid_v2.render_vehicle_control import RenderVehicleReconciliationEndpoint
+from global_hybrid_v2.trusted_workbench_intent import (
+    CallerTask,
+    HostBindingCapabilityDebt,
+    TrustBoundaryError,
+)
 from global_hybrid_v2.vehicle_reconciliation import configured_vehicle_reconciliation
 
 logger = logging.getLogger(__name__)
+_FORBIDDEN_WORKBENCH_FIELDS = frozenset({
+    "persistence_receipt", "verified_delta", "workbench_sync_intent",
+    "company_commercial_matching",
+})
+
+
+def _caller_workbench_authority_blocked(payload: dict) -> bool:
+    return any(
+        payload.get(key) not in (None, False)
+        for key in _FORBIDDEN_WORKBENCH_FIELDS
+    )
 
 
 def _decoded_sha256(value: Any, *, expected_length: int) -> str:
@@ -171,6 +187,11 @@ def create_mcp_server(
     @server.tool()
     def dispatch_task(payload: dict) -> dict:
         """Dispatch a live Host task through mandatory current-state admission."""
+        if _caller_workbench_authority_blocked(payload):
+            return {
+                "status": "NO_SERIALIZE / EXECUTION_FAIL",
+                "blocker": "CALLER_WORKBENCH_AUTHORITY_FORBIDDEN",
+            }
         request = TaskRequest.model_validate(payload)
         result = application.dispatcher.dispatch(request, require_host_projection=True)
         return result.model_dump(mode="json")
@@ -178,8 +199,41 @@ def create_mcp_server(
     @server.tool()
     def dispatch_host_task(payload: dict) -> dict:
         """Compatibility name for the same mandatory live Host dispatch path."""
+        if _caller_workbench_authority_blocked(payload):
+            return {
+                "status": "NO_SERIALIZE / EXECUTION_FAIL",
+                "blocker": "CALLER_WORKBENCH_AUTHORITY_FORBIDDEN",
+            }
         request = TaskRequest.model_validate(payload)
         result = application.dispatcher.dispatch(request, require_host_projection=True)
+        return result.model_dump(mode="json")
+
+    @server.tool()
+    def dispatch_verified_host_task(payload: dict) -> dict:
+        """Resolve Host identity and signed vehicle evidence inside the server boundary."""
+        if not isinstance(payload, dict) or set(payload) != {"conversation_id", "turn_id", "task"}:
+            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": "HOST_TASK_PAYLOAD_INVALID"}
+        compiler = application.trusted_host_task_compiler
+        if compiler is None:
+            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": "TRUSTED_HOST_BINDING_UNAVAILABLE"}
+        try:
+            caller = CallerTask.model_validate(payload["task"])
+            compiled = compiler.compile(
+                caller_task=caller,
+                conversation_id=payload["conversation_id"],
+                turn_id=payload["turn_id"],
+            )
+            request = TaskRequest.model_validate({
+                "request_text": caller.request_text,
+                "intent": caller.intent,
+            })
+        except (TrustBoundaryError, HostBindingCapabilityDebt) as exc:
+            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": str(exc)}
+        except (ValueError, TypeError):
+            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": "TRUSTED_HOST_INPUT_INVALID"}
+        except Exception:
+            return {"status": "NO_SERIALIZE / EXECUTION_FAIL", "blocker": "TRUSTED_HOST_PROVIDER_FAILURE"}
+        result = application.dispatcher.dispatch(request, trusted_host_dispatch=compiled)
         return result.model_dump(mode="json")
 
     return server

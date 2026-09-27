@@ -62,7 +62,13 @@ class HostProjectionGate:
         self._now = now or (lambda: datetime.now(UTC))
         self._verifier = verifier or UnavailableHostCurrentStateVerifier()
 
-    def admit(self, request: TaskRequest, *, required: bool) -> HostProjectionAdmission:
+    def admit(
+        self,
+        request: TaskRequest,
+        *,
+        required: bool,
+        server_resolved_projection: CurrentIdentityProjection | None = None,
+    ) -> HostProjectionAdmission:
         identity = request.current_identity_projection
         dialogue = request.dialogue_binding_state
         if identity is None and dialogue is None:
@@ -81,7 +87,18 @@ class HostProjectionGate:
             return HostProjectionAdmission(False, HOST_STATE_MAPPING_MISMATCH)
         if dialogue.requested_identity_alias not in identity.identities:
             return HostProjectionAdmission(False, HOST_STATE_MAPPING_MISMATCH)
-        verification = self._verifier.verify(identity)
+        if (
+            server_resolved_projection is not None
+            and identity.identities[dialogue.requested_identity_alias] != dialogue.resolved_referent_id
+        ):
+            return HostProjectionAdmission(False, HOST_STATE_MAPPING_MISMATCH)
+        if server_resolved_projection is not None:
+            verification = HostCurrentStateVerification(
+                verified=identity == server_resolved_projection,
+                blocker=CURRENT_IDENTITY_CURRENTNESS_UNPROVEN,
+            )
+        else:
+            verification = self._verifier.verify(identity)
         if not verification.verified:
             return HostProjectionAdmission(
                 False,

@@ -41,6 +41,7 @@ class WorkbenchSyncIntent(BaseModel):
     identity_conflict: bool
     verified_delta: dict[str, Any]
     evidence_refs: tuple[str, ...] = ()
+    trusted_evidence_receipt_id: str | None = Field(default=None, min_length=1, frozen=True)
 
 
 class PersistenceReceipt(BaseModel):
