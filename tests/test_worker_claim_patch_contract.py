@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -19,4 +18,7 @@ def test_workbench_claim_schema_and_worker_control_paths_are_bounded():
         assert path in worker
 
     assert "WORKBENCH_PREIMAGE_ALREADY_CLAIMED" in worker
-    assert 'if (!controlAuthorized(request, env)) return json({error: "CONTROL_AUTH_REQUIRED"}, 403);' in worker
+    control_auth_line = (
+        'if (!controlAuthorized(request, env)) return json({error: "CONTROL_AUTH_REQUIRED"}, 403);'
+    )
+    assert control_auth_line in worker

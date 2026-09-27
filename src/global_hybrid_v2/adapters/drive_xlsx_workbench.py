@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 
 class WorkbenchCapabilityDebt(RuntimeError): ...
