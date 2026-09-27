@@ -45,6 +45,62 @@ const sha256Hex = async value => {
 };
 
 async function control(db, path, body) {
+  if (path === "/internal/control/media-asset") {
+    required(body, ["media_asset_id", "raw_sha256", "normalized_pixel_hash", "perceptual_fingerprint",
+      "mime", "provenance_class", "producing_activity", "truth_eligibility", "first_seen_at",
+      "source_lineage", "task_lineage", "raw_base64"]);
+    if (!/^media:[0-9a-f]{64}$/.test(body.media_asset_id) ||
+        body.media_asset_id !== `media:${body.raw_sha256}`) throw new Error("MEDIA_ID_INVALID");
+    if (!Number.isInteger(body.width) || body.width < 1 ||
+        !Number.isInteger(body.height) || body.height < 1) throw new Error("MEDIA_DIMENSIONS_INVALID");
+    const raw = Uint8Array.from(atob(body.raw_base64), char => char.charCodeAt(0));
+    const rawHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", raw))]
+      .map(item => item.toString(16).padStart(2, "0")).join("");
+    if (rawHash !== body.raw_sha256) throw new Error("MEDIA_RAW_HASH_MISMATCH");
+    const existing = await db.prepare("SELECT media_asset_id,source_lineage FROM media_asset WHERE raw_sha256=?")
+      .bind(body.raw_sha256).first();
+    if (existing) {
+      if (existing.source_lineage !== body.source_lineage) throw new Error("MEDIA_SOURCE_LINEAGE_CONFLICT");
+      return {state: "EXACT_DUPLICATE", media_asset_id: existing.media_asset_id};
+    }
+    const parentId = body.parent_asset_id || null;
+    if (parentId === body.media_asset_id) throw new Error("MEDIA_LINEAGE_CYCLE");
+    const parent = parentId ? await db.prepare(
+      "SELECT source_lineage,truth_eligibility,independent_evidence_id FROM media_asset WHERE media_asset_id=?",
+    ).bind(parentId).first() : null;
+    if (parentId && !parent) throw new Error("MEDIA_PARENT_MISSING");
+    if (parent && parent.source_lineage !== body.source_lineage) throw new Error("MEDIA_PARENT_SCOPE_MISMATCH");
+    if (parent && parent.truth_eligibility === "TRUTH_FORBIDDEN" &&
+        body.truth_eligibility !== "TRUTH_FORBIDDEN") throw new Error("MEDIA_FORBIDDEN_LINEAGE_UPGRADE");
+    if (parent && body.independent_evidence_id !== parent.independent_evidence_id)
+      throw new Error("MEDIA_INDEPENDENT_EVIDENCE_ESCALATION");
+    if (body.provenance_class === "ORIGINAL_EVIDENCE" &&
+        (parent || body.producing_activity !== "ORIGINAL_CAPTURE" ||
+         body.truth_eligibility !== "TRUTH_ELIGIBLE" ||
+         body.independent_evidence_id !== body.media_asset_id))
+      throw new Error("MEDIA_ORIGINAL_UPGRADE_FORBIDDEN");
+    if (["AI_EDITED", "AI_GENERATED", "COMPOSITED"].includes(body.provenance_class) &&
+        body.truth_eligibility !== "TRUTH_FORBIDDEN") throw new Error("MEDIA_CREATIVE_TRUTH_FORBIDDEN");
+    if (["PROVENANCE_UNVERIFIED", "SIMILARITY_UNRESOLVED"].includes(body.provenance_class) &&
+        body.truth_eligibility === "TRUTH_ELIGIBLE") throw new Error("MEDIA_UNRESOLVED_TRUTH_FORBIDDEN");
+    try {
+      await db.prepare(
+        "INSERT INTO media_asset(media_asset_id,raw_sha256,normalized_pixel_hash,perceptual_fingerprint,width,height,mime,provenance_class,parent_asset_id,producing_activity,truth_eligibility,first_seen_at,source_lineage,task_lineage,independent_evidence_id,raw_capture_base64) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      ).bind(body.media_asset_id,body.raw_sha256,body.normalized_pixel_hash,
+        body.perceptual_fingerprint,body.width,body.height,body.mime,body.provenance_class,
+        parentId,body.producing_activity,body.truth_eligibility,body.first_seen_at,
+        body.source_lineage,body.task_lineage,body.independent_evidence_id || null,body.raw_base64).run();
+    } catch (error) {
+      const raced = await db.prepare("SELECT media_asset_id,source_lineage FROM media_asset WHERE raw_sha256=?")
+        .bind(body.raw_sha256).first();
+      if (raced) {
+        if (raced.source_lineage !== body.source_lineage) throw new Error("MEDIA_SOURCE_LINEAGE_CONFLICT");
+        return {state: "EXACT_DUPLICATE", media_asset_id: raced.media_asset_id};
+      }
+      throw error;
+    }
+    return {state: "RECORDED", media_asset_id: body.media_asset_id};
+  }
   if (path === "/internal/control/workbench-write-claim") {
     required(body, ["claim_id", "file_id", "preimage_version", "preimage_sha256", "intent_sha256", "task_id"]);
     const existing = await db.prepare(
@@ -253,8 +309,32 @@ export async function handleRequest(request, env) {
     "/internal/control/coverage-work",
     "/internal/control/verified-revision",
     "/internal/control/snapshot-promote",
+    "/internal/control/media-asset",
   ]);
   try {
+    if (url.pathname === "/internal/media-asset/read") {
+      if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);
+      const db = database(env);
+      const selection = url.searchParams.get("raw_sha256") ?
+        ["raw_sha256", url.searchParams.get("raw_sha256")] :
+        ["media_asset_id", url.searchParams.get("media_asset_id")];
+      if (!selection[1]) return json({error: "MEDIA_LOOKUP_REQUIRED"}, 400);
+      const row = await db.prepare(`SELECT * FROM media_asset WHERE ${selection[0]}=?`)
+        .bind(selection[1]).first();
+      if (!row) return json({state: "MISS"});
+      const {raw_capture_base64: raw_base64, ...asset} = row;
+      return json({state: "HIT", asset, raw_base64});
+    }
+    if (url.pathname === "/internal/media-asset/candidates") {
+      if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);
+      const lineage = url.searchParams.get("source_lineage");
+      if (!lineage) return json({error: "MEDIA_SCOPE_REQUIRED"}, 400);
+      const rows = await database(env).prepare(
+        "SELECT media_asset_id FROM media_asset WHERE source_lineage=? ORDER BY first_seen_at LIMIT 101",
+      ).bind(lineage).all();
+      return json({state: "HIT", media_asset_ids: rows.results.map(row => row.media_asset_id),
+        truncated: rows.results.length > 100});
+    }
     if (controlPaths.has(url.pathname)) {
       if (!controlAuthorized(request, env)) return json({error: "CONTROL_AUTH_REQUIRED"}, 403);
       const body = await request.json();

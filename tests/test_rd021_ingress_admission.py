@@ -80,7 +80,7 @@ def dispatch_with(codec, provider, *, task_class=IngressTaskClass.COMPANY_COMMER
     return result, dispatcher
 
 
-def test_controlled_ingress_classifies_before_model_and_sends_raw_media_inputs():
+def test_controlled_ingress_classifies_before_model_and_requires_media_gate():
     codec = ingress_codec()
     classifier = Classifier(IngressTaskClass.COMPANY_COMMERCIAL_MATCHING)
     ingress = ControlledSalesIngress(
@@ -89,15 +89,19 @@ def test_controlled_ingress_classifies_before_model_and_sends_raw_media_inputs()
     )
     evidence = b"original-photo-bytes"
     image = {"type": "input_image", "image_url": "data:image/jpeg;base64,YQ=="}
+    with pytest.raises(ValueError, match="MEDIA_ADMISSION_REQUIRED"):
+        ingress.plan(
+            turn=ServerTurnContext("c1", "7"), request_text="update this vehicle",
+            intent="sales_human", raw_evidence=evidence, media_inputs=(image,),
+        )
     plan = ingress.plan(
         turn=ServerTurnContext("c1", "7"), request_text="update this vehicle",
-        intent="sales_human", raw_evidence=evidence, media_inputs=(image,),
+        intent="sales_human", raw_evidence=evidence,
     )
     assert classifier.calls == 1
     assert plan.responses_request["tool_choice"] == "required"
     tool = plan.responses_request["tools"][0]
     assert tool["allowed_tools"] == ["dispatch_verified_host_task"]
-    assert plan.responses_request["input"][0]["content"][1] == image
     binding = codec.verify_authorization(
         f"Bearer {tool['authorization']}",
         request_text="update this vehicle", intent="sales_human",

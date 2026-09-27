@@ -63,6 +63,7 @@ class IngressTurnBinding(BaseModel):
     intent: str = Field(min_length=1)
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    media_asset_id: str | None = Field(default=None, pattern=r"^media:[0-9a-f]{64}$")
     issued_at: datetime
     valid_until: datetime
     audience: str = Field(min_length=1)
@@ -111,6 +112,7 @@ class IngressTurnTokenCodec:
         request_text: str,
         intent: str,
         evidence_digest: str,
+        media_asset_id: str | None = None,
         now: datetime | None = None,
     ) -> str:
         current = now or datetime.now(UTC)
@@ -121,6 +123,7 @@ class IngressTurnTokenCodec:
             intent=intent,
             request_digest=sha256_task(request_text, intent),
             evidence_digest=evidence_digest,
+            media_asset_id=media_asset_id,
             issued_at=current,
             valid_until=current + timedelta(minutes=5),
             audience=self.audience,

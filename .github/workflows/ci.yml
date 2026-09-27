@@ -30,5 +30,11 @@ jobs:
       - name: MCP runtime integration
         run: pytest -q tests/test_mcp_server.py
 
+      - name: Worker JS syntax and contracts
+        run: |
+          node --check infra/vehicle_knowledge/worker.js
+          node tests/fixtures/eng007_worker_execution.mjs
+          node tests/fixtures/rd021_media_worker.mjs
+
       - name: Core import
         run: python -c "from openai import OpenAI; from global_hybrid_v2.application import create_application; from global_hybrid_v2.adapters.mcp_server import mcp; print('import-ok')"

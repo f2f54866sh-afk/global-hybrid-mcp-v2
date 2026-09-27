@@ -1,6 +1,7 @@
 """Build a controlled Responses request with one required MCP action."""
 from __future__ import annotations
 
+import base64
 import hashlib
 from dataclasses import dataclass
 from typing import Any
@@ -10,6 +11,13 @@ from global_hybrid_v2.ingress_admission import (
     IngressTaskClass,
     IngressTurnTokenCodec,
     ServerTaskClassifier,
+)
+from global_hybrid_v2.media_admission import (
+    MediaAdmissionError,
+    MediaAdmissionGate,
+    ProducingActivity,
+    TruthEligibility,
+    canonical_image_mime,
 )
 
 
@@ -79,10 +87,12 @@ class ControlledSalesIngress:
         classifier: ServerTaskClassifier | None,
         token_codec: IngressTurnTokenCodec,
         responses_adapter: ForcedHostDispatchAdapter,
+        media_gate: MediaAdmissionGate | None = None,
     ) -> None:
         self.classifier = classifier
         self.token_codec = token_codec
         self.responses_adapter = responses_adapter
+        self.media_gate = media_gate
 
     def plan(
         self,
@@ -92,15 +102,40 @@ class ControlledSalesIngress:
         intent: str,
         raw_evidence: bytes,
         media_inputs: tuple[dict[str, Any], ...] = (),
+        media_activity: ProducingActivity | None = None,
+        media_attestation: str | None = None,
+        media_source_lineage: str | None = None,
+        media_parent_asset_id: str | None = None,
     ) -> ForcedDispatchPlan:
         if self.classifier is None:
             raise RuntimeError("SERVER_TASK_CLASSIFIER_UNAVAILABLE")
+        if media_inputs:
+            if (len(media_inputs) != 1 or self.media_gate is None or media_activity is None
+                or media_attestation is None or media_source_lineage is None):
+                raise MediaAdmissionError("MEDIA_ADMISSION_REQUIRED")
+            # The model receives bytes built from the exact admitted preimage, never caller media URLs.
+            mime = canonical_image_mime(raw_evidence)
+            admitted = self.media_gate.ingest(
+                raw=raw_evidence, mime=mime, activity=media_activity,
+                source_lineage=media_source_lineage,
+                task_lineage=f"conversation:{turn.conversation_id}:turn:{turn.turn_id}",
+                attestation=media_attestation, parent_asset_id=media_parent_asset_id,
+            )
+            media_inputs = ({
+                "type": "input_image",
+                "image_url": f"data:{mime};base64," + base64.b64encode(raw_evidence).decode(),
+            },)
+        else:
+            admitted = None
         evidence_digest = hashlib.sha256(raw_evidence).hexdigest()
         task_class = IngressTaskClass(self.classifier.classify(
             request_text=request_text, evidence_digest=evidence_digest,
         ))
         if task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING and intent != "sales_human":
             raise ValueError("matching company-commercial task requires Sales owner")
+        if (task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING and admitted is not None
+            and admitted.asset.truth_eligibility is not TruthEligibility.ELIGIBLE):
+            raise MediaAdmissionError("MEDIA_NOT_TRUTH_ELIGIBLE")
         token = self.token_codec.issue(
             conversation_id=turn.conversation_id,
             turn_id=turn.turn_id,
@@ -108,6 +143,7 @@ class ControlledSalesIngress:
             request_text=request_text,
             intent=intent,
             evidence_digest=evidence_digest,
+            media_asset_id=admitted.asset.media_asset_id if admitted else None,
         )
         return self.responses_adapter.plan(
             user_input=request_text,

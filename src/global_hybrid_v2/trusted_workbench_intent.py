@@ -20,6 +20,11 @@ from global_hybrid_v2.contracts import (
     WorkbenchSyncIntent,
 )
 from global_hybrid_v2.ingress_admission import IngressTaskClass, IngressTurnBinding, sha256_task
+from global_hybrid_v2.media_admission import (
+    MediaAdmissionError,
+    MediaAssetRepository,
+    require_truth_eligible,
+)
 
 
 class TrustBoundaryError(ValueError):
@@ -234,10 +239,12 @@ class TrustedHostTaskCompiler:
         dispatch_compiler: TrustedDispatchCompiler,
         host_state_resolver: HostCurrentStateResolver | None,
         evidence_provider: EvidenceReceiptProvider | None,
+        media_repository: MediaAssetRepository | None = None,
     ) -> None:
         self.dispatch_compiler = dispatch_compiler
         self.host_state_resolver = host_state_resolver
         self.evidence_provider = evidence_provider
+        self.media_repository = media_repository
 
     def compile(
         self,
@@ -308,6 +315,16 @@ class TrustedHostTaskCompiler:
         host_state = ResolvedHostState.model_validate(host_raw)
         receipt = None
         if binding.task_class is IngressTaskClass.COMPANY_COMMERCIAL_MATCHING:
+            if binding.media_asset_id is not None:
+                if self.media_repository is None:
+                    raise HostBindingCapabilityDebt("MEDIA_REGISTRY_UNAVAILABLE")
+                try:
+                    asset = self.media_repository.by_id(binding.media_asset_id)
+                    if asset is None or asset.raw_sha256 != binding.evidence_digest:
+                        raise MediaAdmissionError("MEDIA_BINDING_READBACK_MISMATCH")
+                    require_truth_eligible((asset,))
+                except MediaAdmissionError as exc:
+                    raise TrustBoundaryError(str(exc)) from exc
             if self.evidence_provider is None:
                 raise HostBindingCapabilityDebt("TRUSTED_EVIDENCE_PROVIDER_UNAVAILABLE")
             try:
@@ -320,6 +337,17 @@ class TrustedHostTaskCompiler:
                 raise HostBindingCapabilityDebt("TRUSTED_EVIDENCE_PROVIDER_FAILED") from exc
             if receipt is None:
                 raise HostBindingCapabilityDebt("MATCHING_EVIDENCE_RECEIPT_MISSING")
+            media_refs = tuple(ref for ref in receipt.evidence_refs if ref.startswith("media:"))
+            if media_refs:
+                if self.media_repository is None:
+                    raise HostBindingCapabilityDebt("MEDIA_REGISTRY_UNAVAILABLE")
+                try:
+                    assets = tuple(self.media_repository.by_id(ref) for ref in media_refs)
+                    if any(asset is None for asset in assets):
+                        raise MediaAdmissionError("MEDIA_EVIDENCE_REF_MISSING")
+                    require_truth_eligible(assets)
+                except MediaAdmissionError as exc:
+                    raise TrustBoundaryError(str(exc)) from exc
             if not {"CANONICAL_WORKBENCH", "RAW_EVIDENCE"}.issubset(receipt.identity_sources):
                 raise TrustBoundaryError("DURABLE_IDENTITY_PROVENANCE_MISSING")
             if (
