@@ -50,6 +50,7 @@ const env = {
       return bytes ? {arrayBuffer: async () => Uint8Array.from(bytes).buffer} : null;
     },
     async put(key, bytes) { objects.set(key, Uint8Array.from(bytes)); },
+    async delete(key) { objects.delete(key); },
   },
 };
 const request = (path, secret, body) => handleRequest(new Request(`https://worker.test${path}`, {
@@ -73,14 +74,27 @@ const original = {
 const probeRaw = Buffer.from("rd021-isolated-probe");
 const probeHash = createHash("sha256").update(probeRaw).digest("hex");
 const probe = {raw_base64: probeRaw.toString("base64"), expected_sha256: probeHash,
-  expected_object_key: `media/sha256/${probeHash}`};
+  deployment_id: "isolated001", nonce: "0".repeat(32),
+  expected_object_key: `__probe__/rd021/isolated001/${"0".repeat(32)}`};
 let probeResponse = await request("/internal/control/media-object-probe", "write", probe);
-assert.equal((await probeResponse.json()).state, "PUT_GET_READBACK_PASS");
+assert.equal((await probeResponse.json()).state, "PROBE_PASS");
+assert.equal(objects.has(probe.expected_object_key), false);
+assert.equal(assets.size, 0);
+probeResponse = await request("/internal/control/media-object-probe", "write",
+  {...probe, expected_object_key: `media/sha256/${probeHash}`});
+assert.equal((await probeResponse.json()).blocker, "MEDIA_PROBE_OBJECT_IDENTITY_MISMATCH");
+assert.equal(objects.size, 0);
 probeResponse = await request("/internal/control/media-object-probe", "write", probe);
-assert.equal((await probeResponse.json()).state, "IDEMPOTENT_READBACK_PASS");
-objects.set(probe.expected_object_key, Uint8Array.from(Buffer.from("tampered")));
+assert.equal((await probeResponse.json()).state, "PROBE_PASS");
+env.MEDIA_BUCKET.delete = async () => { throw new Error("DELETE_FAILED"); };
 probeResponse = await request("/internal/control/media-object-probe", "write", probe);
-assert.equal((await probeResponse.json()).blocker, "MEDIA_PROBE_OBJECT_READBACK_MISMATCH");
+assert.equal((await probeResponse.json()).blocker, "HOLD_PROBE_CLEANUP_FAILED");
+objects.delete(probe.expected_object_key);
+env.MEDIA_BUCKET.delete = async key => { objects.delete(key); };
+delete env.MEDIA_BUCKET.delete;
+probeResponse = await request("/internal/control/media-object-probe", "write", probe);
+assert.equal((await probeResponse.json()).blocker, "MEDIA_OBJECT_STORE_REQUIRED");
+env.MEDIA_BUCKET.delete = async key => { objects.delete(key); };
 assert.equal((await request("/internal/control/media-asset", "wrong", original)).status, 403);
 let response = await request("/internal/control/media-asset", "write", original);
 assert.equal((await response.json()).state, "RECORDED");

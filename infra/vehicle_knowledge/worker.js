@@ -38,7 +38,8 @@ const database = env => {
 };
 const mediaBucket = env => {
   if (!env.MEDIA_BUCKET || typeof env.MEDIA_BUCKET.get !== "function" ||
-      typeof env.MEDIA_BUCKET.put !== "function") throw new Error("MEDIA_OBJECT_STORE_REQUIRED");
+      typeof env.MEDIA_BUCKET.put !== "function" ||
+      typeof env.MEDIA_BUCKET.delete !== "function") throw new Error("MEDIA_OBJECT_STORE_REQUIRED");
   return env.MEDIA_BUCKET;
 };
 
@@ -51,26 +52,40 @@ const sha256Hex = async value => {
 
 async function control(db, path, body, env) {
   if (path === "/internal/control/media-object-probe") {
-    required(body, ["raw_base64", "expected_sha256", "expected_object_key"]);
+    required(body, ["raw_base64", "expected_sha256", "expected_object_key",
+      "deployment_id", "nonce"]);
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(body.deployment_id) ||
+        !/^[0-9a-f]{32}$/.test(body.nonce)) throw new Error("MEDIA_PROBE_SCOPE_INVALID");
     const raw = Uint8Array.from(atob(body.raw_base64), char => char.charCodeAt(0));
     const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", raw))]
       .map(item => item.toString(16).padStart(2, "0")).join("");
-    const key = `media/sha256/${digest}`;
+    const key = `__probe__/rd021/${body.deployment_id}/${body.nonce}`;
     if (!raw.length || digest !== body.expected_sha256 || key !== body.expected_object_key)
       throw new Error("MEDIA_PROBE_OBJECT_IDENTITY_MISMATCH");
     const bucket = mediaBucket(env);
     const existing = await bucket.get(key);
-    if (!existing) await bucket.put(key, raw);
-    const readback = await bucket.get(key);
-    if (!readback) throw new Error("MEDIA_PROBE_OBJECT_MISSING");
-    const found = new Uint8Array(await readback.arrayBuffer());
-    const foundHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", found))]
-      .map(item => item.toString(16).padStart(2, "0")).join("");
-    if (foundHash !== digest || found.byteLength !== raw.byteLength ||
-        found.some((value, index) => value !== raw[index]))
-      throw new Error("MEDIA_PROBE_OBJECT_READBACK_MISMATCH");
-    return {state: existing ? "IDEMPOTENT_READBACK_PASS" : "PUT_GET_READBACK_PASS",
-      object_key: key, raw_sha256: digest, object_size: raw.byteLength};
+    if (existing) throw new Error("MEDIA_PROBE_NONCE_REUSED");
+    await bucket.put(key, raw);
+    let verified = false;
+    try {
+      const readback = await bucket.get(key);
+      if (!readback) throw new Error("MEDIA_PROBE_OBJECT_MISSING");
+      const found = new Uint8Array(await readback.arrayBuffer());
+      const foundHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", found))]
+        .map(item => item.toString(16).padStart(2, "0")).join("");
+      verified = foundHash === digest && found.byteLength === raw.byteLength &&
+        !found.some((value, index) => value !== raw[index]);
+    } finally {
+      try {
+        await bucket.delete(key);
+        if (await bucket.get(key)) throw new Error("HOLD_PROBE_CLEANUP_FAILED");
+      } catch (_) { throw new Error("HOLD_PROBE_CLEANUP_FAILED"); }
+    }
+    if (!verified) throw new Error("MEDIA_PROBE_OBJECT_READBACK_MISMATCH");
+    const cleanupDigest = await sha256Hex(`${key}:NOT_FOUND`);
+    return {state: "PROBE_PASS", object_key: key, raw_sha256: digest,
+      object_size: raw.byteLength, cleanup_state: "NOT_FOUND",
+      cleanup_readback_digest: cleanupDigest};
   }
   if (path === "/internal/control/creative-media-ref") {
     required(body, ["creative_ref_id", "media_asset_id", "vehicle_instance_id", "target_column"]);
