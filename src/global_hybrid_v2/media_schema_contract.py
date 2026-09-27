@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 MIGRATION_VERSION = "0002_media_asset"
 DEFAULT_PREVIOUS_VERSION = "0001_vehicle_knowledge"
-EXPECTED_MIGRATION_SHA256 = "d12069b5afd6076eb31fee37888d247f79c7afa8908bd964d93e4527afaa78c4"
+EXPECTED_MIGRATION_SHA256 = "9a078d1b1c02b5abc35640db966f4ca58872c2b3f146629f3a58ddab57505dff"
 TARGET_OBJECTS = frozenset({"media_asset", "creative_media_ref", "media_asset_source_lineage_idx"})
 EXPECTED_COLUMNS = {
     "media_asset": frozenset({
@@ -104,7 +104,8 @@ class D1MediaMigrationContract:
         self.expected_from = expected_from
 
     def _sql(self) -> str:
-        raw = self.migration_file.read_bytes()
+        # Git checkouts may convert line endings; pin the canonical LF SQL text.
+        raw = self.migration_file.read_bytes().replace(b"\r\n", b"\n")
         if hashlib.sha256(raw).hexdigest() != EXPECTED_MIGRATION_SHA256:
             raise ValueError("D1_MIGRATION_FINGERPRINT_MISMATCH")
         return raw.decode("utf-8")
