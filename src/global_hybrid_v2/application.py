@@ -74,6 +74,8 @@ def create_application(
 ) -> Application:
     root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[2]
     runtime_settings = settings or Settings()
+    if runtime_settings.media_enabled:
+        runtime_settings.require_media_deployment_bindings()
     effective_runtime_identity = runtime_identity or read_runtime_identity()
     registry_path = Path(runtime_settings.authority_registry)
     if not registry_path.is_absolute():

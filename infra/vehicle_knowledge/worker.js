@@ -50,6 +50,28 @@ const sha256Hex = async value => {
 };
 
 async function control(db, path, body, env) {
+  if (path === "/internal/control/media-object-probe") {
+    required(body, ["raw_base64", "expected_sha256", "expected_object_key"]);
+    const raw = Uint8Array.from(atob(body.raw_base64), char => char.charCodeAt(0));
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", raw))]
+      .map(item => item.toString(16).padStart(2, "0")).join("");
+    const key = `media/sha256/${digest}`;
+    if (!raw.length || digest !== body.expected_sha256 || key !== body.expected_object_key)
+      throw new Error("MEDIA_PROBE_OBJECT_IDENTITY_MISMATCH");
+    const bucket = mediaBucket(env);
+    const existing = await bucket.get(key);
+    if (!existing) await bucket.put(key, raw);
+    const readback = await bucket.get(key);
+    if (!readback) throw new Error("MEDIA_PROBE_OBJECT_MISSING");
+    const found = new Uint8Array(await readback.arrayBuffer());
+    const foundHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", found))]
+      .map(item => item.toString(16).padStart(2, "0")).join("");
+    if (foundHash !== digest || found.byteLength !== raw.byteLength ||
+        found.some((value, index) => value !== raw[index]))
+      throw new Error("MEDIA_PROBE_OBJECT_READBACK_MISMATCH");
+    return {state: existing ? "IDEMPOTENT_READBACK_PASS" : "PUT_GET_READBACK_PASS",
+      object_key: key, raw_sha256: digest, object_size: raw.byteLength};
+  }
   if (path === "/internal/control/creative-media-ref") {
     required(body, ["creative_ref_id", "media_asset_id", "vehicle_instance_id", "target_column"]);
     if (body.target_column !== "\u92b7\u552e\u7d20\u6750Refs" || !Array.isArray(body.channels) ||
@@ -370,9 +392,28 @@ export async function handleRequest(request, env) {
     "/internal/control/verified-revision",
     "/internal/control/snapshot-promote",
     "/internal/control/media-asset",
+    "/internal/control/media-object-probe",
     "/internal/control/creative-media-ref",
   ]);
   try {
+    if (url.pathname === "/internal/media-schema/readback") {
+      if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);
+      const db = database(env);
+      const versions = await db.prepare("SELECT version FROM schema_migrations ORDER BY version").all();
+      const entries = await db.prepare(
+        "SELECT name,sql FROM sqlite_master WHERE name IN ('media_asset','creative_media_ref','media_asset_source_lineage_idx')",
+      ).all();
+      const objects = Object.fromEntries(entries.results.map(row => [row.name, row.sql]));
+      const columns = {};
+      for (const name of ["media_asset", "creative_media_ref"]) {
+        if (objects[name]) {
+          const result = await db.prepare(`PRAGMA table_info(${name})`).all();
+          columns[name] = result.results.map(row => row.name);
+        }
+      }
+      return json({state: "READBACK", revisions: versions.results.map(row => row.version),
+        objects, columns});
+    }
     if (url.pathname === "/internal/creative-media-ref/read") {
       if (!readAuthorized(request, env)) return json({error: "RUNTIME_READ_AUTH_REQUIRED"}, 403);
       const id = url.searchParams.get("creative_ref_id");

@@ -26,6 +26,7 @@ from global_hybrid_v2.workbench_mutation import (
     AI_SHEET,
     _cell,
     _cell_value,
+    _column,
     _header,
     _row,
     _rows,
@@ -91,7 +92,28 @@ def original_media_ref(asset: MediaAsset) -> str:
 class CreativeXlsxMutationBuilder:
     """Only an existing resolved row's dedicated sales-material reference cell may change."""
 
+    def preflight(self, preimage: bytes, ref: CreativeMediaRef, *, ai_row: int) -> None:
+        book = _Workbook.parse(preimage)
+        ai = book.root(AI_SHEET)
+        header = _header(ai, book.shared)
+        names: dict[str, list[int]] = {}
+        for cell in _rows(ai)[0].findall("{*}c"):
+            names.setdefault(_cell_value(cell, book.shared), []).append(_column(cell.get("r") or ""))
+        if any(len(names.get(name, [])) != 1 for name in (
+            "VEHICLE_INSTANCE_ID", CREATIVE_REFS_COLUMN, "原始媒體Refs",
+        )):
+            raise WorkbenchConflict("HOLD_CREATIVE_SCHEMA_READBACK_FAILED")
+        if names[CREATIVE_REFS_COLUMN][0] != max(header.values()):
+            raise WorkbenchConflict("HOLD_CREATIVE_HEADER_POSITION_CONFLICT")
+        identity_col = names["VEHICLE_INSTANCE_ID"][0]
+        matches = [candidate for candidate in _rows(ai)[1:]
+                   if (cell := _cell(candidate, identity_col)) is not None
+                   and _cell_value(cell, book.shared) == ref.vehicle_instance_id]
+        if len(matches) != 1 or matches[0] is not _row(ai, ai_row):
+            raise WorkbenchConflict("HOLD_CREATIVE_VEHICLE_IDENTITY_AMBIGUOUS")
+
     def build(self, preimage: bytes, ref: CreativeMediaRef, *, ai_row: int) -> bytes:
+        self.preflight(preimage, ref, ai_row=ai_row)
         book = _Workbook.parse(preimage)
         ai = book.root(AI_SHEET)
         header = _header(ai, book.shared)

@@ -70,6 +70,17 @@ const original = {
   source_lineage: "vehicle:a", task_lineage: "turn:1",
   independent_evidence_id: `media:${hash}`, raw_base64: raw.toString("base64"),
 };
+const probeRaw = Buffer.from("rd021-isolated-probe");
+const probeHash = createHash("sha256").update(probeRaw).digest("hex");
+const probe = {raw_base64: probeRaw.toString("base64"), expected_sha256: probeHash,
+  expected_object_key: `media/sha256/${probeHash}`};
+let probeResponse = await request("/internal/control/media-object-probe", "write", probe);
+assert.equal((await probeResponse.json()).state, "PUT_GET_READBACK_PASS");
+probeResponse = await request("/internal/control/media-object-probe", "write", probe);
+assert.equal((await probeResponse.json()).state, "IDEMPOTENT_READBACK_PASS");
+objects.set(probe.expected_object_key, Uint8Array.from(Buffer.from("tampered")));
+probeResponse = await request("/internal/control/media-object-probe", "write", probe);
+assert.equal((await probeResponse.json()).blocker, "MEDIA_PROBE_OBJECT_READBACK_MISMATCH");
 assert.equal((await request("/internal/control/media-asset", "wrong", original)).status, 403);
 let response = await request("/internal/control/media-asset", "write", original);
 assert.equal((await response.json()).state, "RECORDED");

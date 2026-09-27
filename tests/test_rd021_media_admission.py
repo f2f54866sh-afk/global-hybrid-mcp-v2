@@ -496,12 +496,12 @@ def creative_workbook():
                 root = ET.fromstring(data)
                 rows = root.find(q("sheetData")).findall(q("row"))
                 header = rows[0]
-                creative = ET.SubElement(header, q("c"), {"r": "E1", "t": "inlineStr"})
-                ET.SubElement(ET.SubElement(creative, q("is")), q("t")).text = "銷售素材Refs"
-                original = ET.SubElement(header, q("c"), {"r": "F1", "t": "inlineStr"})
+                original = ET.SubElement(header, q("c"), {"r": "E1", "t": "inlineStr"})
                 ET.SubElement(ET.SubElement(original, q("is")), q("t")).text = "原始媒體Refs"
+                creative = ET.SubElement(header, q("c"), {"r": "F1", "t": "inlineStr"})
+                ET.SubElement(ET.SubElement(creative, q("is")), q("t")).text = "銷售素材Refs"
                 target = next(row for row in rows if row.get("r") == "13")
-                original_ref = ET.SubElement(target, q("c"), {"r": "F13", "t": "inlineStr"})
+                original_ref = ET.SubElement(target, q("c"), {"r": "E13", "t": "inlineStr"})
                 ET.SubElement(ET.SubElement(original_ref, q("is")), q("t")).text = "original:1"
                 data = ET.tostring(root)
             new.writestr(info, data)
@@ -524,8 +524,8 @@ def test_creative_workbench_builder_changes_only_dedicated_cell(kit):
     with zipfile.ZipFile(io.BytesIO(after)) as archive:
         ai = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
         cells = {cell.get("r"): cell for cell in ai.findall(f".//{q('c')}")}
-        assert "original:1" in ET.tostring(cells["F13"]).decode()
-        assert ref.creative_ref_id in ET.tostring(cells["E13"]).decode()
+        assert "original:1" in ET.tostring(cells["E13"]).decode()
+        assert ref.creative_ref_id in ET.tostring(cells["F13"]).decode()
     from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
     from global_hybrid_v2.contracts import PersistenceDisposition
 
