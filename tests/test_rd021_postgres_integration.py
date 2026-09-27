@@ -37,6 +37,7 @@ from tests.rd021_postgres_qualification import (
     reset_and_migrate,
 )
 from tests.test_rd021_completion_fence import q
+from tests.test_rd021_creative_schema_migration import edit_sheet
 from tests.test_rd021_media_admission import creative_workbook
 
 VEHICLE = "8891:S4806251"
@@ -159,6 +160,43 @@ def test_import_negative_cases_are_atomic(pg):
         verify_import(store, manifest)
 
 
+def test_import_rejects_changed_cell_duplicate_identity_and_creative_baseline(pg):
+    dsn, store, _ = pg
+    raw = creative_workbook()
+    manifest = compile_import(raw, file_id=CANONICAL_WORKBENCH_FILE_ID)
+
+    def changed(root):
+        row = next(item for item in root.find(q("sheetData")).findall(q("row"))
+                   if item.get("r") == "13")
+        cell = next(item for item in row.findall(q("c")) if item.get("r") == "B13")
+        cell.find(f"{q('is')}/{q('t')}").text = "changed"
+
+    with pytest.raises(CanonicalConflict, match="MIGRATION_MISMATCH"):
+        import_fixed_preimage(store, edit_sheet(raw, changed), manifest)
+    with pytest.raises(CanonicalConflict, match="MIGRATION_MISMATCH"):
+        import_fixed_preimage(store, raw, replace(manifest, state_digest="0" * 64))
+
+    def duplicate(root):
+        row = next(item for item in root.find(q("sheetData")).findall(q("row"))
+                   if item.get("r") == "11")
+        cell = next(item for item in row.findall(q("c")) if item.get("r") == "A11")
+        cell.find(f"{q('is')}/{q('t')}").text = VEHICLE
+
+    with pytest.raises(CanonicalConflict, match="IDENTITY_DUPLICATE"):
+        compile_import(edit_sheet(raw, duplicate), file_id=CANONICAL_WORKBENCH_FILE_ID)
+
+    def unresolved_creative(root):
+        row = next(item for item in root.find(q("sheetData")).findall(q("row"))
+                   if item.get("r") == "13")
+        from global_hybrid_v2.workbench_mutation import _cell, _set_cell
+
+        _set_cell(_cell(row, 6, create=True), "creative:unresolved")
+
+    with pytest.raises(CanonicalConflict, match="CREATIVE_LINKAGE_REQUIRED"):
+        compile_import(edit_sheet(raw, unresolved_creative), file_id=CANONICAL_WORKBENCH_FILE_ID)
+    assert query(dsn, "SELECT count(*) FROM vehicle_record")[0][0] == 0
+
+
 def test_transaction_commit_and_fresh_durability(imported):
     dsn, store, admission, _, _ = imported
     receipt = admitted(store, admission, mutation())
@@ -251,6 +289,15 @@ def test_first_observed_and_server_admission_mismatch(imported):
     store.commit_verified(second)
     assert store.independent_evidence_count(VEHICLE) == 1
     assert all(e.truth_eligibility == "LIMITED" for e in store.field_evidence(VEHICLE, "實際配備狀態"))
+
+
+def test_field_scoped_visible_evidence_admits_only_supported_field(imported):
+    dsn, store, admission, _, _ = imported
+    item = mutation(truth="FIELD_SCOPED")
+    admitted(store, admission, item)
+    assert store.read_vehicle(VEHICLE).verified_state == {"實際配備狀態": "sport"}
+    assert store.field_evidence(VEHICLE, "實際配備狀態")[0].support_scope == ("實際配備狀態",)
+    assert counts(dsn) == (1, 1, 1)
 
 
 def test_limited_identity_field_and_creative_truth_are_forbidden(imported):
@@ -395,3 +442,14 @@ def test_cutover_rollback_boundary(imported):
     with pytest.raises(CanonicalConflict, match="ROLLBACK_BLOCKED"):
         mark_prewrite_rollback(store)
     assert query(dsn, "SELECT state FROM canonical_cutover")[0][0] == "DB_CANONICAL"
+
+
+def test_prewrite_cutover_can_roll_back_but_cannot_write_afterward(imported):
+    dsn, store, admission, _, _ = imported
+    mark_prewrite_rollback(store)
+    assert query(dsn, "SELECT state FROM canonical_cutover")[0][0] == "ROLLED_BACK"
+    item = mutation()
+    admission.add(VEHICLE, item.evidence[0])
+    with pytest.raises(CanonicalConflict, match="HOLD_DB_NOT_CANONICAL"):
+        store.commit_verified(item)
+    assert counts(dsn) == (0, 0, 0)

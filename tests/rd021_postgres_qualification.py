@@ -24,7 +24,10 @@ class PostgresTestTargetBlocked(RuntimeError):
 def guarded_dsn(value: str | None = None) -> str:
     """Reject every target except the job-local, disposable RD-021 test DB."""
     value = os.environ.get("RD021_TEST_POSTGRES_DSN") if value is None else value
-    if not value:
+    if (not value or os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("CI") != "true"
+        or os.environ.get("RD021_REQUIRE_POSTGRES") != "1"
+        or os.environ.get("PGHOSTADDR") or os.environ.get("PGSERVICE")):
         raise PostgresTestTargetBlocked("TEST_BLOCKED / POSTGRES_TEST_TARGET_NOT_EPHEMERAL")
     try:
         parts = conninfo_to_dict(value)
@@ -36,6 +39,7 @@ def guarded_dsn(value: str | None = None) -> str:
         or parts.get("dbname") != "rd021_test"
         or parts.get("port") != "5432"
         or parts.get("user") != "postgres"
+        or parts.get("password") != "postgres"
         or set(parts) - {"host", "dbname", "port", "user", "password"}):
         raise PostgresTestTargetBlocked("TEST_BLOCKED / POSTGRES_TEST_TARGET_NOT_EPHEMERAL")
     return value
