@@ -10,6 +10,7 @@ from threading import Barrier
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
 from global_hybrid_v2.canonical_cutover import (
     compile_import,
@@ -22,6 +23,12 @@ from global_hybrid_v2.canonical_cutover import (
 from global_hybrid_v2.canonical_projection import ProjectionOutboxWorker, XlsxProjectionVerifier
 from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
 from global_hybrid_v2.contracts import PersistenceDisposition
+from global_hybrid_v2.inventory_identity import (
+    AuthoritativeInventoryResolver,
+    BindingState,
+    SqlInventoryBindingStore,
+    read_current_snapshot,
+)
 from global_hybrid_v2.transactional_vehicle_store import (
     CanonicalConflict,
     CanonicalMutation,
@@ -39,10 +46,37 @@ from tests.rd021_postgres_qualification import (
 )
 from tests.test_rd021_completion_fence import q
 from tests.test_rd021_creative_schema_migration import edit_sheet
+from tests.test_rd021_inventory_identity import TURN, EvidenceFixture, SourceFixture, evidence
 from tests.test_rd021_media_admission import creative_workbook
 from tests.test_rd021_source_observation import observation_workbook
 
 VEHICLE = "8891:S4806251"
+
+
+def test_inventory_identity_admission_reuses_observation_table_on_real_postgres(pg):
+    dsn, _, _ = pg
+    with psycopg.connect(dsn) as connection:
+        connection.execute(
+            "INSERT INTO vehicle_record (vehicle_instance_id, revision, durable_identity, "
+            "source_snapshot, verified_state, source_row) "
+            "VALUES (%s, 0, %s, '{}', '{}', 2)",
+            ("vehicle-1", Jsonb({"VIN/車身號碼": "VIN-1"})),
+        )
+    binding = SqlInventoryBindingStore(lambda: psycopg.connect(dsn), dialect="postgres")
+    snapshot = read_current_snapshot(SourceFixture())
+    candidate = AuthoritativeInventoryResolver(binding, EvidenceFixture()).resolve(TURN, snapshot)
+    assert candidate.binding_state is BindingState.INSTANCE_CANDIDATE
+    assert candidate.vehicle_instance_id is None
+    resolver = AuthoritativeInventoryResolver(binding, EvidenceFixture((evidence(),)))
+    bound = resolver.resolve(TURN, snapshot)
+    assert bound.binding_state is BindingState.INSTANCE_BOUND
+    assert resolver.resolve(TURN, snapshot).vehicle_instance_id == "vehicle-1"
+    with psycopg.connect(dsn) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM vehicle_record").fetchone() == (1,)
+        assert connection.execute(
+            "SELECT binding_state, vehicle_instance_id FROM vehicle_source_observation "
+            "WHERE source_observation_id = %s", (bound.source_observation_id,),
+        ).fetchone() == ("INSTANCE_BOUND", "vehicle-1")
 
 
 def full_observation_contract():

@@ -132,14 +132,15 @@ def compile_import(preimage: bytes, *, file_id: str) -> ImportManifest:
                           len(observations) - len(vehicles), source_schema)
 
 
-def _db_snapshot(db: _Sql) -> dict[str, list[tuple[Any, ...]]]:
+def _db_snapshot(db: _Sql, source_file_id: str) -> dict[str, list[tuple[Any, ...]]]:
     vehicle_rows = db.execute(
         "SELECT vehicle_instance_id, source_row, source_snapshot FROM vehicle_record ORDER BY source_row"
     ).fetchall()
     observation_rows = db.execute(
         "SELECT source_observation_id, source_row, source_file_id, source_sha256, "
         "source_snapshot, vehicle_instance_id, "
-        "company_source_state, ai_usage_state FROM vehicle_source_observation ORDER BY source_row"
+        "company_source_state, ai_usage_state FROM vehicle_source_observation "
+        "WHERE source_file_id = ? ORDER BY source_row", (source_file_id,),
     ).fetchall()
     from global_hybrid_v2.transactional_vehicle_store import _load_json
 
@@ -181,14 +182,15 @@ def import_fixed_preimage(store: TransactionalVehicleStore, preimage: bytes,
             db.execute(
                 "INSERT INTO vehicle_source_observation (source_observation_id, source_file_id, "
                 "source_sha256, source_row, source_snapshot, vehicle_instance_id, "
-                "company_source_state, ai_usage_state, imported_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "company_source_state, ai_usage_state, imported_at, binding_state) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (observation.source_observation_id, manifest.source_file_id,
                  manifest.source_sha256, observation.source_row, db.json(observation.state),
                  observation.vehicle_instance_id, observation.company_source_state,
-                 observation.ai_usage_state, now),
+                 observation.ai_usage_state, now,
+                 "INSTANCE_BOUND" if observation.vehicle_instance_id else "UNBOUND_OBSERVATION"),
             )
-        if _digest(_db_snapshot(db)) != manifest.state_digest:
+        if _digest(_db_snapshot(db, manifest.source_file_id)) != manifest.state_digest:
             raise CanonicalConflict("HOLD_MIGRATION_MISMATCH")
         db.execute(
             "INSERT INTO canonical_cutover (singleton, source_file_id, source_sha256, "
@@ -217,7 +219,7 @@ def verify_import(store: TransactionalVehicleStore, manifest: ImportManifest) ->
             "source_vehicle_count, source_observation_count, bound_vehicle_count, "
             "unbound_observation_count FROM canonical_cutover WHERE singleton = ?", (True,),
         ).fetchone()
-        imported = _db_snapshot(db)
+        imported = _db_snapshot(db, manifest.source_file_id)
         digest = _digest(imported)
         expected_cutover = (
             manifest.source_file_id, manifest.source_sha256, manifest.topology_digest,

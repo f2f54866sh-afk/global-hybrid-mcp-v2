@@ -636,11 +636,28 @@ def sqlite_contract_schema(connection: sqlite3.Connection) -> None:
             state TEXT NOT NULL, declared_at TEXT);
         CREATE TABLE vehicle_source_observation (
             source_observation_id TEXT PRIMARY KEY, source_file_id TEXT NOT NULL,
-            source_sha256 TEXT NOT NULL, source_row INTEGER NOT NULL UNIQUE,
+            source_sha256 TEXT NOT NULL, source_row INTEGER NOT NULL,
             source_snapshot TEXT NOT NULL, vehicle_instance_id TEXT,
             company_source_state TEXT NOT NULL, ai_usage_state TEXT NOT NULL,
-            imported_at TEXT NOT NULL);
+            imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            source_sheet_id INTEGER, source_sheet_name TEXT, source_range TEXT,
+            source_currentness_digest TEXT,
+            binding_state TEXT NOT NULL DEFAULT 'UNBOUND_OBSERVATION',
+            is_current INTEGER NOT NULL DEFAULT 1);
+        CREATE UNIQUE INDEX vehicle_source_observation_snapshot_row_unique
+            ON vehicle_source_observation
+            (source_file_id, source_sheet_id, source_row, source_currentness_digest)
+            WHERE source_sheet_id IS NOT NULL;
+        CREATE UNIQUE INDEX vehicle_source_observation_legacy_row_unique
+            ON vehicle_source_observation (source_file_id, source_row)
+            WHERE source_sheet_id IS NULL;
         CREATE UNIQUE INDEX vehicle_source_observation_bound_vehicle_unique
             ON vehicle_source_observation (vehicle_instance_id)
-            WHERE vehicle_instance_id IS NOT NULL;
+            WHERE vehicle_instance_id IS NOT NULL AND source_sheet_id IS NULL;
+        CREATE UNIQUE INDEX vehicle_source_observation_current_row_unique
+            ON vehicle_source_observation (source_file_id, source_sheet_id, source_row)
+            WHERE is_current AND source_sheet_id IS NOT NULL;
+        CREATE UNIQUE INDEX vehicle_source_observation_current_vehicle_unique
+            ON vehicle_source_observation (source_file_id, vehicle_instance_id)
+            WHERE is_current AND vehicle_instance_id IS NOT NULL;
     """)

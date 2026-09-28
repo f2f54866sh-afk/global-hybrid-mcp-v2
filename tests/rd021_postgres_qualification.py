@@ -102,8 +102,6 @@ def introspect_schema(dsn: str) -> None:
                                    if table == "vehicle_source_observation"]
         assert any(kind == "f" and "vehicle_record(vehicle_instance_id)" in definition
                    for kind, definition in observation_constraints)
-        assert any(kind == "u" and "source_row" in definition
-                   for kind, definition in observation_constraints)
         for field in ("source_row", "source_observation_id", "vehicle_instance_id"):
             assert any(kind == "c" and field in definition
                        for kind, definition in observation_constraints)
@@ -116,7 +114,11 @@ def introspect_schema(dsn: str) -> None:
         )}
         for name in ("vehicle_record_source_row_unique", "vehicle_verified_vin_unique",
                      "vehicle_verified_plate_unique",
-                     "vehicle_source_observation_bound_vehicle_unique"):
+                     "vehicle_source_observation_bound_vehicle_unique",
+                     "vehicle_source_observation_legacy_row_unique",
+                     "vehicle_source_observation_snapshot_row_unique",
+                     "vehicle_source_observation_current_row_unique",
+                     "vehicle_source_observation_current_vehicle_unique"):
             assert "UNIQUE" in indexes[name]
         assert "WHERE" in indexes["vehicle_verified_vin_unique"]
         assert "WHERE" in indexes["vehicle_verified_plate_unique"]
