@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
+from global_hybrid_v2.creative_media import CREATIVE_REFS_COLUMN
 from global_hybrid_v2.transactional_vehicle_store import (
     CanonicalConflict,
     TransactionalVehicleStore,
@@ -60,8 +61,25 @@ class ProjectionReadTransport(Protocol):
 class DeterministicXlsxProjectionBuilder:
     """Changes only one resolved row in a projection preimage; never reads vehicle truth from XLSX."""
 
+    def add_creative_schema(self, preimage: bytes) -> bytes:
+        """Upgrade only an isolated projection copy of a pre-creative source workbook."""
+        book = _Workbook.parse(preimage)
+        ai = book.root(AI_SHEET)
+        header = _header(ai, book.shared)
+        if CREATIVE_REFS_COLUMN in header:
+            return preimage
+        rows = _rows(ai)
+        if not rows:
+            raise CanonicalConflict("HOLD_PROJECTION_SCHEMA_MISSING")
+        max_col = max(_column(cell.get("r") or "") for cell in rows[0].findall("{*}c"))
+        _set_cell(_cell(rows[0], max_col + 1, create=True), CREATIVE_REFS_COLUMN)
+        output = book.render({book.sheets[AI_SHEET]: ai})
+        self._verify_schema_locality(preimage, output)
+        return output
+
     def add_revision_schema(self, preimage: bytes) -> bytes:
         """Candidate-only projection schema addition after DB authority cutover."""
+        preimage = self.add_creative_schema(preimage)
         book = _Workbook.parse(preimage)
         ai = book.root(AI_SHEET)
         header = _header(ai, book.shared)

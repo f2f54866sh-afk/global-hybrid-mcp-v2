@@ -13,7 +13,7 @@ MIGRATIONS = ROOT / "infra" / "vehicle_canonical"
 REQUIRED_TABLES = {
     "vehicle_record", "vehicle_field_evidence", "vehicle_mutation",
     "vehicle_media_link", "projection_outbox", "canonical_cutover",
-    "vehicle_projection_cursor",
+    "vehicle_projection_cursor", "vehicle_source_observation",
 }
 
 
@@ -79,10 +79,16 @@ def introspect_schema(dsn: str) -> None:
             "projection_outbox": ("event_id", "state", "satisfied_by_revision"),
             "vehicle_projection_cursor": ("vehicle_instance_id", "projected_revision",
                                           "projected_row_digest"),
+            "vehicle_source_observation": ("source_observation_id", "source_row",
+                                           "source_snapshot", "vehicle_instance_id"),
+            "canonical_cutover": ("source_observation_count", "bound_vehicle_count",
+                                  "unbound_observation_count"),
         }.items():
             assert all((table, name) in columns for name in names)
         for name in ("source_snapshot", "verified_state", "durable_identity"):
             assert columns["vehicle_record", name] == ("jsonb", "NO")
+        assert columns["vehicle_source_observation", "source_snapshot"] == ("jsonb", "NO")
+        assert columns["vehicle_source_observation", "vehicle_instance_id"][1] == "YES"
         constraints = {(row[0], row[1]): (row[2], row[3]) for row in connection.execute(
             "SELECT c.conrelid::regclass::text, c.conname, c.contype, "
             "pg_get_constraintdef(c.oid) FROM pg_constraint c "
@@ -92,6 +98,15 @@ def introspect_schema(dsn: str) -> None:
             assert any(key[0] == table and value[0] == "p" for key, value in constraints.items())
         assert any(value[0] == "f" for value in constraints.values())
         assert any(value[0] == "c" for value in constraints.values())
+        observation_constraints = [value for (table, _), value in constraints.items()
+                                   if table == "vehicle_source_observation"]
+        assert any(kind == "f" and "vehicle_record(vehicle_instance_id)" in definition
+                   for kind, definition in observation_constraints)
+        assert any(kind == "u" and "source_row" in definition
+                   for kind, definition in observation_constraints)
+        for field in ("source_row", "source_observation_id", "vehicle_instance_id"):
+            assert any(kind == "c" and field in definition
+                       for kind, definition in observation_constraints)
         outbox_checks = [definition for (table, _), (kind, definition) in constraints.items()
                          if table == "projection_outbox" and kind == "c"]
         assert any("SUPERSEDED_BY_LATER_REVISION" in item and "HOLD_CONFLICT" in item
@@ -100,10 +115,12 @@ def introspect_schema(dsn: str) -> None:
             "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'"
         )}
         for name in ("vehicle_record_source_row_unique", "vehicle_verified_vin_unique",
-                     "vehicle_verified_plate_unique"):
+                     "vehicle_verified_plate_unique",
+                     "vehicle_source_observation_bound_vehicle_unique"):
             assert "UNIQUE" in indexes[name]
         assert "WHERE" in indexes["vehicle_verified_vin_unique"]
         assert "WHERE" in indexes["vehicle_verified_plate_unique"]
+        assert "WHERE" in indexes["vehicle_source_observation_bound_vehicle_unique"]
 
 
 def main() -> None:

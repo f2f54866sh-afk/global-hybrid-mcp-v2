@@ -631,5 +631,16 @@ def sqlite_contract_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE canonical_cutover (singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
             source_file_id TEXT NOT NULL, source_sha256 TEXT NOT NULL,
             source_topology_digest TEXT NOT NULL, source_state_digest TEXT NOT NULL,
-            source_vehicle_count INTEGER NOT NULL, state TEXT NOT NULL, declared_at TEXT);
+            source_vehicle_count INTEGER NOT NULL, source_observation_count INTEGER NOT NULL,
+            bound_vehicle_count INTEGER NOT NULL, unbound_observation_count INTEGER NOT NULL,
+            state TEXT NOT NULL, declared_at TEXT);
+        CREATE TABLE vehicle_source_observation (
+            source_observation_id TEXT PRIMARY KEY, source_file_id TEXT NOT NULL,
+            source_sha256 TEXT NOT NULL, source_row INTEGER NOT NULL UNIQUE,
+            source_snapshot TEXT NOT NULL, vehicle_instance_id TEXT,
+            company_source_state TEXT NOT NULL, ai_usage_state TEXT NOT NULL,
+            imported_at TEXT NOT NULL);
+        CREATE UNIQUE INDEX vehicle_source_observation_bound_vehicle_unique
+            ON vehicle_source_observation (vehicle_instance_id)
+            WHERE vehicle_instance_id IS NOT NULL;
     """)

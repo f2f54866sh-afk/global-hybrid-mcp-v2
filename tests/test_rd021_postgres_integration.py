@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Barrier
@@ -39,8 +40,70 @@ from tests.rd021_postgres_qualification import (
 from tests.test_rd021_completion_fence import q
 from tests.test_rd021_creative_schema_migration import edit_sheet
 from tests.test_rd021_media_admission import creative_workbook
+from tests.test_rd021_source_observation import observation_workbook
 
 VEHICLE = "8891:S4806251"
+
+
+def full_observation_contract():
+    from global_hybrid_v2.workbench_mutation import _cell, _set_cell
+
+    def add_bound_rows(root):
+        sheet = root.find(q("sheetData"))
+        existing = {int(row.get("r")) for row in sheet}
+        for number in range(2, 16):
+            if number in existing:
+                continue
+            row = ET.SubElement(sheet, q("row"), {"r": str(number)})
+            _set_cell(_cell(row, 1, create=True), f"contract-vehicle:{number}")
+            _set_cell(_cell(row, 6, create=True), f"source:{number}")
+        sheet[:] = sorted(sheet, key=lambda row: int(row.get("r")))
+
+    return edit_sheet(observation_workbook(), add_bound_rows)
+
+
+@pytest.mark.parametrize("tampered_column", ["source_file_id", "source_sha256"])
+def test_full_observation_import_and_provenance_falsifier(pg, tampered_column):
+    dsn, store, _ = pg
+    raw = full_observation_contract()
+    manifest = compile_import(raw, file_id=CANONICAL_WORKBENCH_FILE_ID)
+    assert (manifest.observation_count, manifest.vehicle_count,
+            manifest.unbound_observation_count) == (14, 11, 3)
+    receipt = import_fixed_preimage(store, raw, manifest)
+    assert verify_import(store, manifest) == receipt
+    assert query(dsn, "SELECT count(*) FROM vehicle_record") == [(11,)]
+    assert query(dsn, "SELECT source_row FROM vehicle_source_observation "
+                      "WHERE vehicle_instance_id IS NULL ORDER BY source_row") == [(3,), (8,), (15,)]
+    assert query(dsn, "SELECT count(*) FROM vehicle_record WHERE source_row IN (3,8,15)") == [(0,)]
+    rows = query(dsn, "SELECT source_observation_id, source_row, source_file_id, source_sha256, "
+                     "source_snapshot, vehicle_instance_id FROM vehicle_source_observation "
+                     "ORDER BY source_row")
+    assert rows == [(o.source_observation_id, o.source_row, manifest.source_file_id,
+                     manifest.source_sha256, o.state, o.vehicle_instance_id)
+                    for o in manifest.observations]
+    with psycopg.connect(dsn) as connection:
+        connection.execute(f"UPDATE vehicle_source_observation SET {tampered_column} = %s "
+                           "WHERE source_row = 3", ("tampered",))
+    assert query(dsn, "SELECT source_file_id, source_sha256 FROM canonical_cutover") == [
+        (manifest.source_file_id, manifest.source_sha256)]
+    with pytest.raises(CanonicalConflict, match="^HOLD_MIGRATION_MISMATCH$"):
+        verify_import(store, manifest)
+
+
+def test_observation_insert_failure_rolls_back_import(pg):
+    dsn, store, _ = pg
+    raw = full_observation_contract()
+    manifest = compile_import(raw, file_id=CANONICAL_WORKBENCH_FILE_ID)
+    with psycopg.connect(dsn) as connection:
+        connection.execute("CREATE FUNCTION fail_observation() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                           "BEGIN IF NEW.source_row = 15 THEN RAISE EXCEPTION 'injected observation'; "
+                           "END IF; RETURN NEW; END; $$")
+        connection.execute("CREATE TRIGGER fail_observation BEFORE INSERT ON vehicle_source_observation "
+                           "FOR EACH ROW EXECUTE FUNCTION fail_observation()")
+    with pytest.raises(psycopg.Error, match="injected observation"):
+        import_fixed_preimage(store, raw, manifest)
+    for table in ("vehicle_record", "vehicle_source_observation", "canonical_cutover"):
+        assert query(dsn, f"SELECT count(*) FROM {table}") == [(0,)]
 
 
 class ServerAdmission:
@@ -155,6 +218,8 @@ def test_import_negative_cases_are_atomic(pg):
     with pytest.raises(CanonicalConflict, match="TARGET_NOT_EMPTY"):
         import_fixed_preimage(store, raw, manifest)
     with psycopg.connect(dsn) as connection:
+        connection.execute("DELETE FROM vehicle_source_observation WHERE "
+                           "vehicle_instance_id = 'gran-turismo'")
         connection.execute("DELETE FROM vehicle_record WHERE vehicle_instance_id = 'gran-turismo'")
     with pytest.raises(CanonicalConflict, match="MIGRATION_MISMATCH"):
         verify_import(store, manifest)
