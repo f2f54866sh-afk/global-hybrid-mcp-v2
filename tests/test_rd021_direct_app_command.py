@@ -32,10 +32,10 @@ PLATE_B = "XYZ-9876"
 def registration_workbook(*, blank_identity=False, unbound=False) -> bytes:
     replacement = sheet(
         ("VEHICLE_INSTANCE_ID", "VIN/車身號碼", "車牌", "排氣量_Canonical", "成本_Canonical",
-         "年分", "品牌", "車型"),
+         "年分", "品牌", "車型", "燃料_Canonical", "出廠年月"),
         {13: ("" if unbound else "8891:S4806251", "" if blank_identity else VIN_A,
-              "" if blank_identity else PLATE_A, "", "", "2018", "BMW", "318I"),
-         14: ("8891:S4806252", VIN_B, PLATE_B, "", "", "2020", "BMW", "320I")},
+              "" if blank_identity else PLATE_A, "", "", "2018", "BMW", "318I", "", ""),
+         14: ("8891:S4806252", VIN_B, PLATE_B, "", "", "2020", "BMW", "320I", "", "")},
     )
     source = io.BytesIO(workbook())
     output = io.BytesIO()
