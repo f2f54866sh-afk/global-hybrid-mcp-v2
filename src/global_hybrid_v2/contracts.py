@@ -42,6 +42,8 @@ class WorkbenchSyncIntent(BaseModel):
     verified_delta: dict[str, Any]
     evidence_refs: tuple[str, ...] = ()
     trusted_evidence_receipt_id: str | None = Field(default=None, min_length=1, frozen=True)
+    preimage_version: str | None = None
+    preimage_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class PersistenceReceipt(BaseModel):

@@ -35,18 +35,21 @@ class CompanyCommercialCompletionHandler:
         *,
         writer: DriveXlsxWorkbenchPort | None = None,
         builder: XlsxWorkbenchMutationBuilder | None = None,
+        target=None,
     ) -> None:
         self.writer = writer
         self.builder = builder
+        self.target = target
 
     def consume(self, *, task_id: str, intent: WorkbenchSyncIntent) -> PersistenceReceipt:
+        target_id = self.target.file_id if self.target is not None else CANONICAL_WORKBENCH_FILE_ID
         def terminal(state: PersistenceDisposition, blocker: str | None = None) -> PersistenceReceipt:
             return PersistenceReceipt(
-                state=state, task_id=task_id, file_id=CANONICAL_WORKBENCH_FILE_ID,
+                state=state, task_id=task_id, file_id=target_id,
                 blocker=blocker,
             )
 
-        if intent.target_file_id != CANONICAL_WORKBENCH_FILE_ID:
+        if intent.target_file_id != target_id:
             return terminal(PersistenceDisposition.HOLD_CONFLICT, "HOLD_TARGET_FILE_ID_MISMATCH")
         if intent.identity_conflict or not intent.safe_attribution:
             return terminal(PersistenceDisposition.HOLD_CONFLICT, "HOLD_VEHICLE_IDENTITY_UNRESOLVED")
@@ -57,7 +60,7 @@ class CompanyCommercialCompletionHandler:
             return terminal(PersistenceDisposition.HOLD_CONFLICT, "HOLD_UNADMITTED_FIELD_MUTATION")
         if not fields:
             return terminal(PersistenceDisposition.NO_DELTA)
-        if self.writer is None or self.writer.file_id != CANONICAL_WORKBENCH_FILE_ID:
+        if self.writer is None or self.writer.file_id != target_id:
             return terminal(
                 PersistenceDisposition.PERSISTENCE_CAPABILITY_DEBT, "WORKBENCH_WRITER_UNAVAILABLE"
             )
@@ -70,12 +73,18 @@ class CompanyCommercialCompletionHandler:
             separators=(",", ":"),
         ).encode()).hexdigest()
         try:
+            preimage_binding = (
+                {"expected_preimage_version": intent.preimage_version,
+                 "expected_preimage_sha256": intent.preimage_sha256}
+                if intent.preimage_version is not None or intent.preimage_sha256 is not None else {}
+            )
             receipt = self.writer.mutate(
                 task_id=task_id,
                 intent_sha256=digest,
                 build_new_bytes=lambda preimage: self.builder.build(preimage, intent),
                 verify_mutation=lambda preimage, output: self.builder.verify(preimage, output, intent)
                 if preimage != output else None,
+                **preimage_binding,
             )
         except (WorkbenchConflict, WorkbenchPostwriteMismatch) as exc:
             return terminal(PersistenceDisposition.HOLD_CONFLICT, str(exc))

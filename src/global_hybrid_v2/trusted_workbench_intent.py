@@ -53,6 +53,9 @@ class TrustedWorkbenchEvidenceReceipt(BaseModel):
     signature: str = Field(min_length=64, max_length=64)
     request_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     evidence_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    workbench_file_id: str | None = None
+    workbench_preimage_version: str | None = None
+    workbench_preimage_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_window(self):
@@ -103,8 +106,9 @@ class EvidenceReceiptSigner:
 class TrustedWorkbenchIntentProducer:
     """Only compiles an intent from a currently valid server-issued receipt."""
 
-    def __init__(self, verifier: EvidenceReceiptSigner) -> None:
+    def __init__(self, verifier: EvidenceReceiptSigner, *, target=None) -> None:
         self.verifier = verifier
+        self.target = target
 
     def compile(
         self,
@@ -118,7 +122,7 @@ class TrustedWorkbenchIntentProducer:
             raise TrustBoundaryError("WORKBENCH_EVIDENCE_SCOPE_MISMATCH")
         conflict = receipt.binding_state is EvidenceBindingState.HOLD_CONFLICT
         return WorkbenchSyncIntent(
-            target_file_id=CANONICAL_WORKBENCH_FILE_ID,
+            target_file_id=self.target.file_id if self.target is not None else CANONICAL_WORKBENCH_FILE_ID,
             vehicle_instance_id=receipt.vehicle_instance_id,
             ai_row=receipt.ai_row,
             safe_attribution=not conflict,
@@ -126,6 +130,8 @@ class TrustedWorkbenchIntentProducer:
             verified_delta=receipt.verified_delta,
             evidence_refs=receipt.evidence_refs,
             trusted_evidence_receipt_id=receipt.receipt_id,
+            preimage_version=receipt.workbench_preimage_version,
+            preimage_sha256=receipt.workbench_preimage_sha256,
         )
 
 

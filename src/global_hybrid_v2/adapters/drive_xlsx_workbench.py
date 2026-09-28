@@ -218,6 +218,8 @@ class DriveXlsxWorkbenchPort:
         intent_sha256: str,
         build_new_bytes: Callable[[bytes], bytes],
         verify_mutation: Callable[[bytes, bytes], None] | None = None,
+        expected_preimage_version: str | None = None,
+        expected_preimage_sha256: str | None = None,
     ) -> WorkbenchWriteReceipt:
         """Build against this transaction's exact preimage, then claim and read back."""
         meta = self.drive.metadata(self.file_id)
@@ -226,6 +228,9 @@ class DriveXlsxWorkbenchPort:
             raise WorkbenchCapabilityDebt("DRIVE_VERSION_UNAVAILABLE")
         pre_bytes = self.drive.download(self.file_id)
         pre_sha = sha256_hex(pre_bytes)
+        if ((expected_preimage_version is not None and pre_version != expected_preimage_version)
+            or (expected_preimage_sha256 is not None and pre_sha != expected_preimage_sha256)):
+            raise WorkbenchConflict("HOLD_STALE_PREIMAGE")
         new_bytes = build_new_bytes(pre_bytes)
         if not isinstance(new_bytes, (bytes, bytearray)):
             raise WorkbenchCapabilityDebt("WORKBENCH_MUTATION_BUILDER_INVALID_OUTPUT")
