@@ -32,6 +32,15 @@ class EntryToolResult(BaseModel):
     result_text: str
 
 
+class VehicleCandidate(BaseModel):
+    display_label: str
+    opaque_selection_token: str
+
+
+class VehicleCandidateList(BaseModel):
+    candidates: list[VehicleCandidate]
+
+
 def _public_https_url(url: str) -> str:
     parsed = urlsplit(url)
     if (parsed.scheme != "https" or parsed.hostname != "files.oaiusercontent.com"
@@ -89,7 +98,9 @@ def _blocked(reason: str, *, debt: bool = False) -> EntryResult:
 
 class ControlledCommandPort(Protocol):
     def execute(self, *, request_text: str, evidence_bytes: bytes,
-                mime_type: str) -> EntryResult: ...
+                mime_type: str, target_selection_token: str) -> EntryResult: ...
+
+    def list_candidates(self) -> list[dict[str, str]]: ...
 
 
 class ControlledSalesEntry:
@@ -100,9 +111,17 @@ class ControlledSalesEntry:
         self._command_handler = command_handler
         self._downloader = downloader
 
-    def execute(self, *, request_text: str, evidence_file: list[OpenAIFile] | None) -> EntryResult:
+    def list_candidates(self) -> list[dict[str, str]]:
+        if self._command_handler is None:
+            raise ValueError("CONTROLLED_ENTRY_BINDING_UNAVAILABLE")
+        return self._command_handler.list_candidates()
+
+    def execute(self, *, request_text: str, evidence_file: list[OpenAIFile] | None,
+                target_selection_token: str | None = None) -> EntryResult:
         if not isinstance(request_text, str) or not request_text.strip():
             return _blocked("TASK_TEXT_REQUIRED")
+        if not target_selection_token:
+            return _blocked("TARGET_VEHICLE_SELECTION_REQUIRED")
         if not evidence_file:
             return _blocked("EVIDENCE_FILE_REQUIRED")
         if len(evidence_file) != 1:
@@ -127,6 +146,7 @@ class ControlledSalesEntry:
                 return _blocked("DOCUMENT_PREIMAGE_INVALID")
             result = self._command_handler.execute(
                 request_text=request_text, evidence_bytes=raw, mime_type="application/pdf",
+                target_selection_token=target_selection_token,
             )
         except Exception:
             return _blocked("CONTROLLED_EXECUTION_FAILED")

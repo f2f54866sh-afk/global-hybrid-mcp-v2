@@ -9,7 +9,7 @@
     main { max-width: 560px; margin: auto; }
     h1 { font-size: 21px; }
     label { display: block; margin: 18px 0 6px; font-weight: 600; }
-    textarea, input, button { box-sizing: border-box; width: 100%; font: inherit; }
+    textarea, input, select, button { box-sizing: border-box; width: 100%; font: inherit; }
     textarea { min-height: 120px; padding: 10px; }
     input { padding: 8px 0; }
     button { margin-top: 18px; padding: 11px; border: 0; border-radius: 7px;
@@ -22,11 +22,15 @@
 <body>
 <main>
   <h1>AI 車源表</h1>
+  <label for="vehicle-select">選擇既有公司車輛</label>
+  <select id="vehicle-select" aria-label="TARGET_VEHICLE_SELECTION">
+    <option value="">請明確選擇車輛</option>
+  </select>
   <label for="task-text">公司車任務</label>
   <textarea id="task-text" aria-label="TASK_TEXT"></textarea>
   <label for="evidence-file">證據檔案</label>
-  <input id="evidence-file" aria-label="EVIDENCE_FILE" type="file" multiple
-         accept="image/jpeg,image/png,image/webp,application/pdf">
+  <input id="evidence-file" aria-label="EVIDENCE_FILE" type="file"
+         accept="application/pdf">
   <button id="submit" type="button">送出並同步 AI 車源表</button>
   <p id="execution" role="status" aria-label="EXECUTION_STATE">尚未送出</p>
   <p id="terminal" aria-label="TERMINAL_DISPOSITION"></p>
@@ -34,6 +38,7 @@
 </main>
 <script type="module">
   const task = document.querySelector('#task-text');
+  const vehicleSelect = document.querySelector('#vehicle-select');
   const fileInput = document.querySelector('#evidence-file');
   const button = document.querySelector('#submit');
   const execution = document.querySelector('#execution');
@@ -58,7 +63,18 @@
   const ready = request('ui/initialize', {
     appInfo: {name:'ai-workbench-entry', version:'0.1.0'},
     appCapabilities: {}, protocolVersion:'2026-01-26'
-  }).then(() => notify('ui/notifications/initialized', {}));
+  }).then(async () => {
+    notify('ui/notifications/initialized', {});
+    const response = await request('tools/call', {
+      name:'list_ai_workbench_vehicle_candidates', arguments:{}
+    });
+    for (const candidate of response?.structuredContent?.candidates || []) {
+      const option = document.createElement('option');
+      option.value = candidate.opaque_selection_token;
+      option.textContent = candidate.display_label;
+      vehicleSelect.appendChild(option);
+    }
+  });
   const show = (truth) => {
     const state = truth?.terminal_disposition;
     const allowed = ['WRITE_AND_READBACK_PASS','NO_DELTA',
@@ -86,6 +102,11 @@
     result.textContent = '';
     try {
       await ready;
+      if (!vehicleSelect.value) {
+        execution.textContent = 'EXECUTION_FAIL';
+        result.textContent = 'TARGET_VEHICLE_SELECTION_REQUIRED';
+        return;
+      }
       const evidence_file = [];
       for (const file of fileInput.files) {
         if (!window.openai?.uploadFile || !window.openai?.getFileDownloadUrl)
@@ -97,7 +118,8 @@
       }
       const response = await request('tools/call', {
         name:'execute_controlled_sales_turn',
-        arguments:{request_text:task.value, evidence_file}
+        arguments:{request_text:task.value, evidence_file,
+          target_selection_token:vehicleSelect.value}
       });
       const truth = response?.structuredContent;
       show(truth);

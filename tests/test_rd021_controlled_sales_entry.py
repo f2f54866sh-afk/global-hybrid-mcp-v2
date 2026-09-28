@@ -33,6 +33,9 @@ class Command:
         self.calls.append(kwargs)
         return self.result
 
+    def list_candidates(self):
+        return [{"display_label": "2018 BMW 318I", "opaque_selection_token": "signed-token"}]
+
 
 @pytest.mark.parametrize("url", [
     "http://files.oaiusercontent.com/file-test",
@@ -48,10 +51,12 @@ def test_file_download_rejects_untrusted_origin(url):
 def test_pdf_calls_direct_command_with_exact_bytes():
     command = Command()
     entry = ControlledSalesEntry(command_handler=command, downloader=lambda _: PDF)
-    outcome = entry.execute(request_text="update this company vehicle", evidence_file=[file()])
+    outcome = entry.execute(request_text="update this company vehicle", evidence_file=[file()],
+                            target_selection_token="signed-token")
     assert outcome.terminal_disposition == "WRITE_AND_READBACK_PASS"
     assert command.calls == [{"request_text": "update this company vehicle",
-                              "evidence_bytes": PDF, "mime_type": "application/pdf"}]
+                              "evidence_bytes": PDF, "mime_type": "application/pdf",
+                              "target_selection_token": "signed-token"}]
 
 
 @pytest.mark.parametrize("files,expected", [
@@ -62,7 +67,7 @@ def test_pdf_calls_direct_command_with_exact_bytes():
 def test_invalid_input_never_reaches_command(files, expected):
     command = Command()
     outcome = ControlledSalesEntry(command_handler=command).execute(
-        request_text="update", evidence_file=files,
+        request_text="update", evidence_file=files, target_selection_token="signed-token",
     )
     assert outcome.result_text == expected and not command.calls
 
@@ -71,6 +76,7 @@ def test_photo_is_explicit_later_capability_debt():
     command = Command()
     outcome = ControlledSalesEntry(command_handler=command, downloader=lambda _: b"photo").execute(
         request_text="update", evidence_file=[file("image/png")],
+        target_selection_token="signed-token",
     )
     assert outcome.terminal_disposition == CAPABILITY_DEBT and not command.calls
 
@@ -82,7 +88,7 @@ def test_photo_is_explicit_later_capability_debt():
 def test_download_failure_and_oversize_fail_closed(downloader, expected):
     command = Command()
     outcome = ControlledSalesEntry(command_handler=command, downloader=downloader).execute(
-        request_text="update", evidence_file=[file()],
+        request_text="update", evidence_file=[file()], target_selection_token="signed-token",
     )
     assert outcome.execution_state == EXECUTION_FAIL and outcome.result_text == expected
     assert not command.calls
@@ -90,7 +96,7 @@ def test_download_failure_and_oversize_fail_closed(downloader, expected):
 
 def test_missing_command_is_capability_debt():
     outcome = ControlledSalesEntry(command_handler=None).execute(
-        request_text="update", evidence_file=[file()],
+        request_text="update", evidence_file=[file()], target_selection_token="signed-token",
     )
     assert outcome.terminal_disposition == CAPABILITY_DEBT
 
@@ -102,11 +108,13 @@ def test_mcp_schema_app_visibility_and_resource():
     server = create_mcp_server(application, controlled_sales_entry=entry)
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
     assert {"dispatch_verified_host_task", "open_ai_workbench_entry",
-            "execute_controlled_sales_turn"} <= tools.keys()
+            "execute_controlled_sales_turn", "list_ai_workbench_vehicle_candidates"} <= tools.keys()
     execution = tools["execute_controlled_sales_turn"]
     assert execution.meta["ui"]["visibility"] == ["app"]
     assert execution.meta["openai/fileParams"] == ["evidence_file"]
-    assert set(execution.input_schema["properties"]) == {"request_text", "evidence_file"}
+    assert set(execution.input_schema["properties"]) == {
+        "request_text", "evidence_file", "target_selection_token",
+    }
     file_schema = execution.input_schema["$defs"]["OpenAIFile"]
     assert set(file_schema["required"]) == {"download_url", "file_id"}
     assert set(file_schema["properties"]) == {
@@ -115,8 +123,11 @@ def test_mcp_schema_app_visibility_and_resource():
     resource_uri = tools["open_ai_workbench_entry"].meta["ui"]["resourceUri"]
     resource = list(asyncio.run(server.read_resource(resource_uri)))
     assert "execute_controlled_sales_turn" in resource[0].content
+    listing = asyncio.run(server.call_tool("list_ai_workbench_vehicle_candidates", {}))
+    assert listing.structured_content["candidates"][0]["display_label"] == "2018 BMW 318I"
     response = asyncio.run(server.call_tool("execute_controlled_sales_turn", {
         "request_text": "update", "evidence_file": [file().model_dump(mode="json")],
+        "target_selection_token": "signed-token",
     }))
     assert response.structured_content["terminal_disposition"] == "WRITE_AND_READBACK_PASS"
     assert command.calls[0]["evidence_bytes"] == PDF

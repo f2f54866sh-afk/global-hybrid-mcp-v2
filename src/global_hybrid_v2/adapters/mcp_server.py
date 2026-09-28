@@ -18,6 +18,7 @@ from global_hybrid_v2.adapters.controlled_sales_entry import (
     ControlledSalesEntry,
     EntryToolResult,
     OpenAIFile,
+    VehicleCandidateList,
 )
 from global_hybrid_v2.application import Application
 from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
@@ -332,6 +333,15 @@ def create_mcp_server(
             return {"entry": "READY"}
 
         @server.tool(
+            name="list_ai_workbench_vehicle_candidates", title="選擇公司車輛",
+            description="Read current AI workbench vehicle candidates for explicit selection.",
+            meta={"ui": {"visibility": ["app"]}}, structured_output=True,
+        )
+        def list_ai_workbench_vehicle_candidates() -> VehicleCandidateList:
+            """Return safe labels and server-issued preimage-bound selection tokens."""
+            return VehicleCandidateList(candidates=controlled_sales_entry.list_candidates())
+
+        @server.tool(
             name="execute_controlled_sales_turn", title="送出並同步 AI 車源表",
             description="Execute exactly one company-vehicle evidence task through the controlled fence.",
             meta={"ui": {"visibility": ["app"]}, "openai/fileParams": ["evidence_file"]},
@@ -339,10 +349,12 @@ def create_mcp_server(
         )
         def execute_controlled_sales_turn(
             request_text: str, evidence_file: list[OpenAIFile],
+            target_selection_token: str | None = None,
         ) -> EntryToolResult:
             """The UI calls this tool directly; task and turn authority stay server-owned."""
             result = controlled_sales_entry.execute(
                 request_text=request_text, evidence_file=evidence_file,
+                target_selection_token=target_selection_token,
             )
             return EntryToolResult(**result.as_dict())
 
