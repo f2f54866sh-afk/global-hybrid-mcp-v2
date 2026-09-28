@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -25,6 +25,7 @@ from global_hybrid_v2.media_admission import (
 class ForcedDispatchPlan:
     responses_request: dict[str, Any]
     task_scope: str
+    task_class: IngressTaskClass | None = None
 
 
 class ForcedHostDispatchAdapter:
@@ -67,7 +68,11 @@ class ForcedHostDispatchAdapter:
                     if media_inputs else user_input
                 ),
                 "tools": [tool],
-                "tool_choice": "required",
+                "tool_choice": {
+                    "type": "mcp",
+                    "server_label": "global_hybrid_v2",
+                    "name": "dispatch_verified_host_task",
+                },
             },
         )
 
@@ -144,9 +149,10 @@ class ControlledSalesIngress:
             evidence_digest=evidence_digest,
             media_asset_id=admitted.asset.media_asset_id if admitted else None,
         )
-        return self.responses_adapter.plan(
+        plan = self.responses_adapter.plan(
             user_input=request_text,
             task_scope=f"conversation:{turn.conversation_id}:turn:{turn.turn_id}",
             authorization=token,
             media_inputs=media_inputs,
         )
+        return replace(plan, task_class=task_class)

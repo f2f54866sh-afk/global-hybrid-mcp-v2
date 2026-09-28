@@ -1,4 +1,5 @@
 """Controlled providers only; these never certify the natural ChatGPT consumer."""
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -6,10 +7,20 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import SecretStr
 
+from global_hybrid_v2.adapters.controlled_responses import (
+    ControlledSalesIngress,
+    ForcedHostDispatchAdapter,
+    ServerTurnContext,
+)
+from global_hybrid_v2.adapters.controlled_sales_executor import (
+    FAILURE,
+    ControlledSalesCompletionExecutor,
+)
 from global_hybrid_v2.adapters.mcp_server import dispatch_verified_host_task_from_headers
 from global_hybrid_v2.canonical_cutover import compile_import, declare_db_canonical, import_fixed_preimage
 from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
 from global_hybrid_v2.contracts import DomainResult, Owner
+from global_hybrid_v2.ingress_admission import IngressTaskClass
 from global_hybrid_v2.runtime_composition import (
     ConsumerBindings,
     binding_readback,
@@ -25,10 +36,11 @@ from global_hybrid_v2.transactional_vehicle_store import (
 )
 from global_hybrid_v2.trusted_workbench_intent import TrustedHostTaskCompiler
 from tests.test_mcp_server import _copy_authority_repo, _test_settings
-from tests.test_rd021_ingress_admission import issue
+from tests.test_rd021_ingress_admission import Classifier, issue
 from tests.test_rd021_media_admission import creative_workbook
 from tests.test_rd021_postgres_integration import pg as pg
 from tests.test_rd021_trusted_host_binding import (
+    EVIDENCE_BYTES,
     EvidenceProvider,
     HostResolver,
     compiler,
@@ -148,6 +160,45 @@ def dispatch(app, b, *, token=None, task=None):
     return dispatch_verified_host_task_from_headers(
         app, {"task": task or {"request_text": TEXT, "intent": "sales_human"}},
         {"Authorization": "Bearer " + (token or issue(b.ingress, request_text=TEXT))})
+
+
+@pytest.mark.parametrize("drop_terminal", [False, True])
+def test_controlled_executor_consumes_actual_dispatcher_result(composed, monkeypatch, drop_terminal):
+    app, bindings_set, _ = composed
+    if drop_terminal:
+        monkeypatch.setattr(app.dispatcher, "_complete_company_commercial", lambda _contract: None)
+
+    class InProcessResponses:
+        def create(self, **request):
+            tool = request["tools"][0]
+            payload = {"task": {"request_text": TEXT, "intent": "sales_human"}}
+            actual = dispatch_verified_host_task_from_headers(
+                app, payload, {"Authorization": "Bearer " + tool["authorization"]},
+            )
+            if not drop_terminal:
+                assert actual.get("persistence_receipt"), actual
+            self.actual = actual
+            return {"output": [{"type": "mcp_call", "server_label": "global_hybrid_v2",
+                                "name": "dispatch_verified_host_task", "error": None,
+                                "arguments": json.dumps({"payload": payload}),
+                                "output": json.dumps(actual)}],
+                    "output_text": "Sales task completed after persistence."}
+
+    ingress = ControlledSalesIngress(
+        classifier=Classifier(IngressTaskClass.COMPANY_COMMERCIAL_MATCHING),
+        token_codec=bindings_set.ingress,
+        responses_adapter=ForcedHostDispatchAdapter(mcp_server_url="https://mcp.example/mcp"),
+    )
+    transport = InProcessResponses()
+    outcome = ControlledSalesCompletionExecutor(ingress=ingress, responses=transport).execute(
+        turn=ServerTurnContext("c1", "7"), request_text=TEXT, intent="sales_human",
+        raw_evidence=EVIDENCE_BYTES,
+    )
+    if drop_terminal:
+        assert outcome.state == FAILURE and outcome.user_visible_text is None
+    else:
+        assert outcome.state == "WRITE_AND_READBACK_PASS"
+        assert outcome.user_visible_text == "Sales task completed after persistence."
 
 
 @pytest.mark.parametrize("no_delta", [False, True])

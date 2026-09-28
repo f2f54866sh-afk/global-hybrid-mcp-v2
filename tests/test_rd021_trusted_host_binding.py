@@ -158,7 +158,8 @@ def test_forced_dispatch_only_allows_required_dispatch_host_task():
     tool = plan.responses_request["tools"][0]
     choice = plan.responses_request["tool_choice"]
     assert tool["allowed_tools"] == ["dispatch_verified_host_task"]
-    assert choice == "required"
+    assert choice == {"type": "mcp", "server_label": "global_hybrid_v2",
+                      "name": "dispatch_verified_host_task"}
 
 
 def test_forced_dispatch_rejects_non_https_remote_mcp():

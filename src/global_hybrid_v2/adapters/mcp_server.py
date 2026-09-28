@@ -117,6 +117,14 @@ def dispatch_verified_host_task_from_headers(
                 "PERSISTENCE_TERMINAL_NOT_ELIGIBLE", binding=binding,
                 state=result.persistence_receipt.state,
             )
+        # The MCP result itself must bind the Dispatcher task to the verified Host turn.
+        result = result.model_copy(update={"turn_contract": {
+            **(result.turn_contract or {}),
+            "task_id": result.persistence_receipt.task_id,
+            "conversation_id": binding.conversation_id,
+            "turn_id": binding.turn_id,
+            "request_digest": binding.request_digest,
+        }})
     return result.model_dump(mode="json")
 
 

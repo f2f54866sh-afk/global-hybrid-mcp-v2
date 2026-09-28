@@ -99,7 +99,9 @@ def test_controlled_ingress_classifies_before_model_and_requires_media_gate():
         intent="sales_human", raw_evidence=evidence,
     )
     assert classifier.calls == 1
-    assert plan.responses_request["tool_choice"] == "required"
+    assert plan.responses_request["tool_choice"] == {
+        "type": "mcp", "server_label": "global_hybrid_v2", "name": "dispatch_verified_host_task",
+    }
     tool = plan.responses_request["tools"][0]
     assert tool["allowed_tools"] == ["dispatch_verified_host_task"]
     binding = codec.verify_authorization(
