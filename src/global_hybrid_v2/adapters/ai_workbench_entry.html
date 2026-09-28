@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 車源表</title>
+  <style>
+    body { font: 15px system-ui, sans-serif; margin: 0; padding: 18px; color: #18221d; }
+    main { max-width: 560px; margin: auto; }
+    h1 { font-size: 21px; }
+    label { display: block; margin: 18px 0 6px; font-weight: 600; }
+    textarea, input, button { box-sizing: border-box; width: 100%; font: inherit; }
+    textarea { min-height: 120px; padding: 10px; }
+    input { padding: 8px 0; }
+    button { margin-top: 18px; padding: 11px; border: 0; border-radius: 7px;
+      background: #215b3a; color: white; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    #terminal { font-weight: 700; }
+    #result { white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>AI 車源表</h1>
+  <label for="task-text">公司車任務</label>
+  <textarea id="task-text" aria-label="TASK_TEXT"></textarea>
+  <label for="evidence-file">證據檔案</label>
+  <input id="evidence-file" aria-label="EVIDENCE_FILE" type="file" multiple
+         accept="image/jpeg,image/png,image/webp,application/pdf">
+  <button id="submit" type="button">送出並同步 AI 車源表</button>
+  <p id="execution" role="status" aria-label="EXECUTION_STATE">尚未送出</p>
+  <p id="terminal" aria-label="TERMINAL_DISPOSITION"></p>
+  <p id="result" aria-live="polite" aria-label="RESULT_TEXT"></p>
+</main>
+<script type="module">
+  const task = document.querySelector('#task-text');
+  const fileInput = document.querySelector('#evidence-file');
+  const button = document.querySelector('#submit');
+  const execution = document.querySelector('#execution');
+  const terminal = document.querySelector('#terminal');
+  const result = document.querySelector('#result');
+  let rpcId = 0;
+  const pending = new Map();
+  const notify = (method, params) => window.parent.postMessage({jsonrpc:'2.0', method, params}, '*');
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++rpcId;
+    pending.set(id, {resolve, reject});
+    window.parent.postMessage({jsonrpc:'2.0', id, method, params}, '*');
+  });
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent || event.data?.jsonrpc !== '2.0') return;
+    const item = pending.get(event.data.id);
+    if (!item) return;
+    pending.delete(event.data.id);
+    if (event.data.error) item.reject(event.data.error);
+    else item.resolve(event.data.result);
+  });
+  const ready = request('ui/initialize', {
+    appInfo: {name:'ai-workbench-entry', version:'0.1.0'},
+    appCapabilities: {}, protocolVersion:'2026-01-26'
+  }).then(() => notify('ui/notifications/initialized', {}));
+  const show = (truth) => {
+    const state = truth?.terminal_disposition;
+    const allowed = ['WRITE_AND_READBACK_PASS','NO_DELTA',
+      'PERSISTENCE_CAPABILITY_DEBT','HOLD_CONFLICT'];
+    const debtBeforeExecution = truth?.execution_state === 'PERSISTENCE_CAPABILITY_DEBT'
+      && state === 'PERSISTENCE_CAPABILITY_DEBT';
+    if ((!debtBeforeExecution && truth?.execution_state !== 'TERMINAL')
+        || !allowed.includes(state)) {
+      execution.textContent = 'EXECUTION_FAIL';
+      terminal.textContent = '';
+      result.textContent = 'AI 車源表同步未完成。';
+      return;
+    }
+    execution.textContent = truth.execution_state;
+    terminal.textContent = state;
+    if (state === 'WRITE_AND_READBACK_PASS')
+      result.textContent = `${truth.result_text}\nAI 車源表已完成寫入並讀回確認`;
+    else if (state === 'NO_DELTA') result.textContent = '沒有新的 AI 車源表變更';
+    else result.textContent = truth.result_text || 'AI 車源表同步未完成。';
+  };
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    execution.textContent = '執行中';
+    terminal.textContent = '';
+    result.textContent = '';
+    try {
+      await ready;
+      const evidence_file = [];
+      for (const file of fileInput.files) {
+        if (!window.openai?.uploadFile || !window.openai?.getFileDownloadUrl)
+          throw new Error('FILE_INPUT_CAPABILITY_UNAVAILABLE');
+        const {fileId} = await window.openai.uploadFile(file);
+        const {downloadUrl} = await window.openai.getFileDownloadUrl({fileId});
+        evidence_file.push({download_url:downloadUrl, file_id:fileId,
+          ...(file.type ? {mime_type:file.type} : {}), file_name:file.name});
+      }
+      const response = await request('tools/call', {
+        name:'execute_controlled_sales_turn',
+        arguments:{request_text:task.value, evidence_file}
+      });
+      const truth = response?.structuredContent;
+      show(truth);
+    } catch (_) {
+      show(null);
+    } finally {
+      button.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

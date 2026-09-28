@@ -111,25 +111,37 @@ class ControlledSalesIngress:
         media_attestation: str | None = None,
         media_source_lineage: str | None = None,
         media_parent_asset_id: str | None = None,
+        document_mime: str | None = None,
     ) -> ForcedDispatchPlan:
         if self.classifier is None:
             raise RuntimeError("SERVER_TASK_CLASSIFIER_UNAVAILABLE")
         if media_inputs:
-            if (len(media_inputs) != 1 or self.media_gate is None or media_activity is None
-                or media_attestation is None or media_source_lineage is None):
+            if len(media_inputs) != 1:
                 raise MediaAdmissionError("MEDIA_ADMISSION_REQUIRED")
-            # The model receives bytes built from the exact admitted preimage, never caller media URLs.
-            mime = canonical_image_mime(raw_evidence)
-            admitted = self.media_gate.ingest(
-                raw=raw_evidence, mime=mime, activity=media_activity,
-                source_lineage=media_source_lineage,
-                task_lineage=f"conversation:{turn.conversation_id}:turn:{turn.turn_id}",
-                attestation=media_attestation, parent_asset_id=media_parent_asset_id,
-            )
-            media_inputs = ({
-                "type": "input_image",
-                "image_url": f"data:{mime};base64," + base64.b64encode(raw_evidence).decode(),
-            },)
+            if media_inputs[0].get("type") == "input_file" and document_mime == "application/pdf":
+                if not raw_evidence.startswith(b"%PDF-") or b"%%EOF" not in raw_evidence[-1024:]:
+                    raise MediaAdmissionError("DOCUMENT_PREIMAGE_INVALID")
+                admitted = None
+                media_inputs = ({
+                    "type": "input_file", "filename": "evidence.pdf",
+                    "file_data": "data:application/pdf;base64," + base64.b64encode(raw_evidence).decode(),
+                },)
+            else:
+                if (self.media_gate is None or media_activity is None
+                    or media_attestation is None or media_source_lineage is None):
+                    raise MediaAdmissionError("MEDIA_ADMISSION_REQUIRED")
+                # The model receives bytes built from the exact admitted preimage, never caller media URLs.
+                mime = canonical_image_mime(raw_evidence)
+                admitted = self.media_gate.ingest(
+                    raw=raw_evidence, mime=mime, activity=media_activity,
+                    source_lineage=media_source_lineage,
+                    task_lineage=f"conversation:{turn.conversation_id}:turn:{turn.turn_id}",
+                    attestation=media_attestation, parent_asset_id=media_parent_asset_id,
+                )
+                media_inputs = ({
+                    "type": "input_image",
+                    "image_url": f"data:{mime};base64," + base64.b64encode(raw_evidence).decode(),
+                },)
         else:
             admitted = None
         evidence_digest = hashlib.sha256(raw_evidence).hexdigest()

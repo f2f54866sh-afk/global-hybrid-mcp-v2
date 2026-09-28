@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -13,6 +14,11 @@ from mcp.server.mcpserver.context import Context
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from global_hybrid_v2.adapters.controlled_sales_entry import (
+    ControlledSalesEntry,
+    EntryToolResult,
+    OpenAIFile,
+)
 from global_hybrid_v2.application import Application
 from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
 from global_hybrid_v2.contracts import PersistenceDisposition, PersistenceReceipt, TaskRequest
@@ -177,6 +183,7 @@ def create_mcp_server(
     application: Application,
     *,
     vehicle_reconciliation: Callable[[], dict] | None = None,
+    controlled_sales_entry: ControlledSalesEntry | None = None,
 ) -> MCPServer:
     server = MCPServer("GLOBAL Hybrid v2")
     reconciliation_endpoint = None
@@ -307,6 +314,37 @@ def create_mcp_server(
     def dispatch_verified_host_task(payload: dict, ctx: Context) -> dict:
         """Resolve Host identity and signed vehicle evidence inside the server boundary."""
         return dispatch_verified_host_task_from_headers(application, payload, dict(ctx.headers or {}))
+
+    if controlled_sales_entry is not None:
+        resource_uri = "ui://ai-workbench/controlled-entry-v1.html"
+
+        @server.resource(resource_uri, name="AI 車源表", mime_type="text/html;profile=mcp-app")
+        def ai_workbench_entry_ui() -> str:
+            return (Path(__file__).with_name("ai_workbench_entry.html")).read_text(encoding="utf-8")
+
+        @server.tool(
+            name="open_ai_workbench_entry", title="AI 車源表",
+            description="公司車資料辨識、證據消費、AI 車源表同步與讀回確認。",
+            meta={"ui": {"resourceUri": resource_uri, "visibility": ["model", "app"]}},
+        )
+        def open_ai_workbench_entry() -> dict:
+            """Open the controlled company-vehicle entry UI without executing a task."""
+            return {"entry": "READY"}
+
+        @server.tool(
+            name="execute_controlled_sales_turn", title="送出並同步 AI 車源表",
+            description="Execute exactly one company-vehicle evidence task through the controlled fence.",
+            meta={"ui": {"visibility": ["app"]}, "openai/fileParams": ["evidence_file"]},
+            structured_output=True,
+        )
+        def execute_controlled_sales_turn(
+            request_text: str, evidence_file: list[OpenAIFile],
+        ) -> EntryToolResult:
+            """The UI calls this tool directly; task and turn authority stay server-owned."""
+            result = controlled_sales_entry.execute(
+                request_text=request_text, evidence_file=evidence_file,
+            )
+            return EntryToolResult(**result.as_dict())
 
     return server
 
