@@ -13,13 +13,14 @@ from mcp.server.mcpserver.context import Context
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from global_hybrid_v2.application import Application, create_application
+from global_hybrid_v2.application import Application
 from global_hybrid_v2.company_commercial_completion import CANONICAL_WORKBENCH_FILE_ID
 from global_hybrid_v2.contracts import PersistenceDisposition, PersistenceReceipt, TaskRequest
 from global_hybrid_v2.domains.vehicle_configuration import VehicleConfigurationReadbackProvider
 from global_hybrid_v2.governance.authority import AUTHORITY_ACTIVATION_INVALID, AuthorityError
 from global_hybrid_v2.ingress_admission import IngressAdmissionError, IngressTaskClass, IngressTurnBinding
 from global_hybrid_v2.render_vehicle_control import RenderVehicleReconciliationEndpoint
+from global_hybrid_v2.runtime_composition import configured_application, consumer_readiness
 from global_hybrid_v2.trusted_workbench_intent import (
     CallerTask,
     HostBindingCapabilityDebt,
@@ -191,6 +192,10 @@ def create_mcp_server(
 
     @server.custom_route("/ready", methods=["GET"])
     async def ready(_: Request) -> JSONResponse:
+        consumer = consumer_readiness(application)
+        if not consumer["ready"]:
+            return JSONResponse({**consumer, "failure_code": "CANONICAL_STORE_BINDING_INCOMPLETE"},
+                                status_code=503)
         try:
             snapshot = application.authority.resolve()
         except AuthorityError as exc:
@@ -221,6 +226,7 @@ def create_mcp_server(
                 status_code=503,
             )
         payload = {
+            **consumer,
             "ready": True,
             "resolved_owners": [owner.value for owner in snapshot.entries],
             "runtime": application.runtime_identity.model_dump(),
@@ -297,7 +303,7 @@ def create_mcp_server(
     return server
 
 
-application = create_application()
+application = configured_application()
 vehicle_reconciliation = configured_vehicle_reconciliation(application.settings)
 mcp = create_mcp_server(application, vehicle_reconciliation=vehicle_reconciliation)
 

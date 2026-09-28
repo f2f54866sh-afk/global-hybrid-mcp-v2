@@ -43,7 +43,10 @@ class CanonicalCompanyCommercialCompletionHandler:
                 raise CanonicalConflict("HOLD_TRUSTED_MUTATION_BINDING_MISMATCH")
             if mutation.verified_delta != intent.verified_delta:
                 raise CanonicalConflict("HOLD_TRUSTED_DELTA_MISMATCH")
-            return self.store.commit_verified(mutation)
+            receipt = self.store.commit_verified(mutation)
+            # Bind the store terminal to the already admitted company workbench target.
+            # The existing egress fence still validates task, target and disposition.
+            return receipt.model_copy(update={"file_id": CANONICAL_WORKBENCH_FILE_ID})
         except (CanonicalCapabilityDebt, psycopg.OperationalError, OSError, TimeoutError) as exc:
             return PersistenceReceipt(state=PersistenceDisposition.PERSISTENCE_CAPABILITY_DEBT,
                                       task_id=task_id, blocker=type(exc).__name__)

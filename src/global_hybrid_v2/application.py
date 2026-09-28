@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,6 +64,7 @@ class Application:
     composition_fitness: FitnessReport | None = None
     trusted_host_task_compiler: TrustedHostTaskCompiler | None = None
     ingress_token_codec: IngressTurnTokenCodec | None = None
+    consumer_binding_readback: Callable[[], dict] | None = None
 
 
 def create_application(

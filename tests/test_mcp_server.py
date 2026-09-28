@@ -190,7 +190,11 @@ def test_ready_resolves_current_authority(tmp_path):
         response = client.get("/ready")
 
     assert response.status_code == 200
-    assert response.json() == {
+    payload = response.json()
+    assert payload.pop("canonical_store_mode") == "xlsx_legacy"
+    assert payload.pop("binding_scope") == "UNBOUND"
+    assert all(item["status"] == "UNBOUND" for item in payload.pop("bindings").values())
+    assert payload == {
         "ready": True,
         "resolved_owners": [
             "GLOBAL",
