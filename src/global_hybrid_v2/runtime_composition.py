@@ -8,6 +8,12 @@ from typing import Literal
 from global_hybrid_v2.application import Application, create_application
 from global_hybrid_v2.canonical_completion import ServerVerifiedMutationProvider
 from global_hybrid_v2.ingress_admission import IngressTurnTokenCodec, InMemoryNonceClaimStore
+from global_hybrid_v2.inventory_identity import InventoryIdentityHold
+from global_hybrid_v2.inventory_runtime_binding import (
+    InventoryRuntime,
+    configured_inventory_runtime,
+    inventory_binding_readback,
+)
 from global_hybrid_v2.settings import Settings
 from global_hybrid_v2.transactional_vehicle_store import EvidenceAdmissionPort
 from global_hybrid_v2.trusted_workbench_intent import (
@@ -41,7 +47,8 @@ def _provider(provider, method: str, scope: str) -> dict:
     return {"status": "BOUND" if bound else "UNBOUND", "provider_id": identity if bound else None}
 
 
-def binding_readback(settings: Settings, bindings: ConsumerBindings, scope: str) -> dict:
+def binding_readback(settings: Settings, bindings: ConsumerBindings, scope: str,
+                     inventory_runtime: InventoryRuntime | None = None) -> dict:
     host, ingress = bindings.host, bindings.ingress
     items = {
         "verified_mutation_provider": _provider(bindings.mutation, "compile", scope),
@@ -75,6 +82,7 @@ def binding_readback(settings: Settings, bindings: ConsumerBindings, scope: str)
     items["completion_fence"] = {"status": "BOUND" if canonical else "UNBOUND"}
     return {"canonical_store_mode": settings.canonical_vehicle_store_mode,
             "binding_scope": scope, "bindings": items,
+            "inventory": inventory_binding_readback(settings, inventory_runtime),
             "ready": settings.canonical_vehicle_store_mode != "postgres" or complete}
 
 
@@ -89,7 +97,11 @@ def configured_application(*, settings: Settings | None = None,
                 "trusted_host_task_compiler", "ingress_token_codec", "company_commercial_completion_handler"}
     if reserved & application_options.keys():
         raise RuntimeError("COMPOSITION_BINDING_OVERRIDE_FORBIDDEN")
-    report = binding_readback(settings, bindings, binding_scope)
+    try:
+        inventory_runtime = configured_inventory_runtime(settings)
+    except InventoryIdentityHold:
+        inventory_runtime = None
+    report = binding_readback(settings, bindings, binding_scope, inventory_runtime)
     if not report["ready"]:
         raise RuntimeError("CANONICAL_STORE_BINDING_INCOMPLETE")
     app = create_application(
@@ -97,7 +109,9 @@ def configured_application(*, settings: Settings | None = None,
         canonical_evidence_admission=bindings.evidence, trusted_host_task_compiler=bindings.host,
         ingress_token_codec=bindings.ingress, **application_options,
     )
-    return replace(app, consumer_binding_readback=lambda: binding_readback(settings, bindings, binding_scope))
+    return replace(app, inventory_runtime=inventory_runtime,
+                   consumer_binding_readback=lambda: binding_readback(
+                       settings, bindings, binding_scope, inventory_runtime))
 
 
 def consumer_readiness(application: Application) -> dict:

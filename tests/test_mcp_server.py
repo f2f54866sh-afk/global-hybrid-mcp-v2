@@ -194,6 +194,12 @@ def test_ready_resolves_current_authority(tmp_path):
     assert payload.pop("canonical_store_mode") == "xlsx_legacy"
     assert payload.pop("binding_scope") == "UNBOUND"
     assert all(item["status"] == "UNBOUND" for item in payload.pop("bindings").values())
+    inventory = payload.pop("inventory")
+    assert inventory["inventory_source"] == "UNBOUND"
+    assert inventory["trusted_referent_issuer"] == "UNBOUND"
+    assert inventory["durable_identity_evidence"] == "UNBOUND"
+    assert inventory["root_a"] == "UNBOUND"
+    assert inventory["credential_present"] is False
     assert payload == {
         "ready": True,
         "resolved_owners": [

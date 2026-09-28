@@ -169,6 +169,10 @@ class TrustedTurnReferent:
     model_year: str
     model: str
     source_owner: str
+    request_digest: str = ""
+    source_currentness_token: str = ""
+    source_observation_id: str = ""
+    issuer_seal: str = ""
 
 
 @dataclass(frozen=True)
@@ -213,6 +217,11 @@ class AuthoritativeInventoryResolver:
         if not all((referent.conversation_id, referent.turn_id, referent.source_owner,
                     referent.make, referent.model_year, referent.model)):
             raise InventoryIdentityHold("HOLD_TRUSTED_REFERENT_MISSING")
+        if referent.source_owner != "LIBRARY":
+            raise InventoryIdentityHold("HOLD_TRUSTED_REFERENT_SCOPE_MISMATCH")
+        if (referent.source_currentness_token and
+                referent.source_currentness_token != snapshot.currentness_token):
+            raise InventoryIdentityHold("HOLD_TRUSTED_REFERENT_SCOPE_MISMATCH")
         self.binding.record_snapshot(snapshot)
         matches = [observation for observation in snapshot.observations
                    if self._matches(observation, referent)]
@@ -221,6 +230,9 @@ class AuthoritativeInventoryResolver:
                                        snapshot.currentness_token, len(matches), (),
                                        "HOLD_IDENTITY_CONFLICT")
         observation = matches[0]
+        if (referent.source_observation_id and
+                referent.source_observation_id != observation.observation_id):
+            raise InventoryIdentityHold("HOLD_TRUSTED_REFERENT_SCOPE_MISMATCH")
         prior = self.binding.current_binding(observation)
         evidence = self.evidence.resolve(observation)
         ids = {item.vehicle_instance_id for item in evidence}

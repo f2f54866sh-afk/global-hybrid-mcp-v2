@@ -37,6 +37,7 @@ from global_hybrid_v2.governance.authority import AuthorityResolver
 from global_hybrid_v2.governance.fitness import FitnessReport, SystemFitnessFunctions
 from global_hybrid_v2.governance.host_projection import HostCurrentStateVerifier, HostProjectionGate
 from global_hybrid_v2.ingress_admission import IngressTurnTokenCodec
+from global_hybrid_v2.inventory_runtime_binding import InventoryRuntime
 from global_hybrid_v2.observer.witness import ReadOnlyWitness
 from global_hybrid_v2.research import (
     ResearchExecutor,
@@ -65,6 +66,7 @@ class Application:
     trusted_host_task_compiler: TrustedHostTaskCompiler | None = None
     ingress_token_codec: IngressTurnTokenCodec | None = None
     consumer_binding_readback: Callable[[], dict] | None = None
+    inventory_runtime: InventoryRuntime | None = None
 
 
 def create_application(
