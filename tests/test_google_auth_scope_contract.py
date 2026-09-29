@@ -1,5 +1,6 @@
 import pytest
 
+from global_hybrid_v2.adapters.drive_xlsx_workbench import DRIVE_WORKBENCH_SCOPE
 from global_hybrid_v2.google_auth import (
     GoogleAuthUnavailable,
     ServiceAccountAccessTokenProvider,
@@ -10,6 +11,7 @@ def test_default_scope_remains_spreadsheets_only():
     provider = ServiceAccountAccessTokenProvider(object())
     assert provider.scopes == ("https://www.googleapis.com/auth/spreadsheets",)
     assert all("drive.file" not in scope for scope in provider.scopes)
+    assert DRIVE_WORKBENCH_SCOPE not in provider.scopes
 
 
 def test_explicit_scope_is_preserved_without_widening():

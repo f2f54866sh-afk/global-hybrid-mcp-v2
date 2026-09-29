@@ -15,6 +15,9 @@ class WorkbenchConflict(RuntimeError): ...
 class WorkbenchPostwriteMismatch(RuntimeError): ...
 
 
+DRIVE_WORKBENCH_SCOPE = "https://www.googleapis.com/auth/drive"
+
+
 class DriveTransport(Protocol):
     def metadata(self, file_id: str) -> dict: ...
     def download(self, file_id: str) -> bytes: ...
@@ -95,6 +98,29 @@ class GoogleDriveRestTransport:
             raise WorkbenchConflict("WORKBENCH_FILE_ID_REQUIRED")
         return urllib.parse.quote(file_id, safe="")
 
+    def _assert_only_visible_file(self, file_id: str) -> None:
+        self._quoted(file_id)
+        query = urllib.parse.urlencode(
+            {
+                "q": "trashed=false",
+                "spaces": "drive",
+                "corpora": "user",
+                "pageSize": "2",
+                "fields": "files(id),nextPageToken",
+            }
+        )
+        result = self._request(f"{self.FILES_BASE}?{query}", expect_json=True)
+        assert isinstance(result, dict)
+        files = result.get("files")
+        if (
+            result.get("nextPageToken")
+            or not isinstance(files, list)
+            or len(files) != 1
+            or not isinstance(files[0], dict)
+            or files[0].get("id") != file_id
+        ):
+            raise WorkbenchConflict("HOLD_VISIBLE_CORPUS_NOT_EXACTLY_ONE_TARGET")
+
     def metadata(self, file_id: str) -> dict:
         quoted = self._quoted(file_id)
         result = self._request(
@@ -121,6 +147,7 @@ class GoogleDriveRestTransport:
     def replace(self, file_id: str, payload: bytes, mime_type: str) -> dict:
         if mime_type != self.XLSX_MIME:
             raise WorkbenchConflict("WORKBENCH_TARGET_MIME_MISMATCH")
+        self._assert_only_visible_file(file_id)
         quoted = self._quoted(file_id)
         result = self._request(
             f"{self.UPLOAD_BASE}/{quoted}?uploadType=media&fields=id,version,mimeType,modifiedTime",

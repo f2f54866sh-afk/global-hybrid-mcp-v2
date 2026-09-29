@@ -40,6 +40,8 @@ def test_drive_transport_binds_exact_file_id_mime_and_bearer():
         calls.append((request, timeout))
         if request.full_url.endswith("alt=media"):
             return Response(b"xlsx")
+        if request.full_url.startswith(f"{GoogleDriveRestTransport.FILES_BASE}?"):
+            return Response({"files": [{"id": "drive-file-1"}]})
         return Response(
             {
                 "id": "drive-file-1",
@@ -56,6 +58,29 @@ def test_drive_transport_binds_exact_file_id_mime_and_bearer():
     assert all(call[0].headers["Authorization"] == "Bearer token" for call in calls)
     assert calls[-1][0].method == "PATCH"
     assert "/drive-file-1?" in calls[-1][0].full_url
+
+
+@pytest.mark.parametrize(
+    "visible",
+    [
+        {"files": []},
+        {"files": [{"id": "drive-file-1"}, {"id": "other"}]},
+        {"files": [{"id": "other"}]},
+        {"files": [{"id": "drive-file-1"}], "nextPageToken": "next"},
+    ],
+)
+def test_drive_replace_requires_exact_single_visible_target(visible):
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(request)
+        return Response(visible)
+
+    transport = GoogleDriveRestTransport(lambda: "token", opener=opener)
+    with pytest.raises(WorkbenchConflict, match="VISIBLE_CORPUS_NOT_EXACTLY_ONE_TARGET"):
+        transport.replace("drive-file-1", b"new", GoogleDriveRestTransport.XLSX_MIME)
+    assert calls
+    assert all(request.method != "PATCH" for request in calls)
 
 
 def test_drive_transport_rejects_target_and_mime_mismatch():
