@@ -274,12 +274,23 @@ def test_missing_policy_requirements_fail_closed(tmp_path, update, blocker):
     assert blocker in acceptance_witness(snapshot, value, sha256_json(value)).hard_gate_blockers
 
 
-def test_unrecognized_semantics_are_debt_even_if_no_keyword_matches(tmp_path):
+def test_low_risk_unresolved_semantics_remain_debt_without_hard_blocker(tmp_path):
     store, snapshot = setup(tmp_path)
-    value = candidate("全台唯一，動力提升百分之五十，優雅奔馳的哲學。")
+    value = candidate("一起慢慢感受日常。")
     receipt = AppOwnedPublicCopyFinalizer(store=store, guard=ExistingCopyPolicyBridge()).finalize(
         snapshot.task_handle, value,
     )
     assert receipt.guard_receipt.deterministic_hard_gates is GuardCheck.PASS
     assert "FREE_FORM_FACTUAL_ENTAILMENT" in receipt.guard_receipt.capability_debt
+    assert receipt.final_output is None
+
+
+def test_high_risk_unresolved_semantics_have_explicit_hard_blocker(tmp_path):
+    store, snapshot = setup(tmp_path)
+    value = candidate("動力提升百分之五十。")
+    receipt = AppOwnedPublicCopyFinalizer(store=store, guard=ExistingCopyPolicyBridge()).finalize(
+        snapshot.task_handle, value,
+    )
+    assert receipt.guard_receipt.deterministic_hard_gates is GuardCheck.FAIL
+    assert "TYPED_EVIDENCE_UNPARSED_REMAINDER" in receipt.guard_receipt.blocker_codes
     assert receipt.final_output is None

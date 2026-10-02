@@ -1,0 +1,487 @@
+{
+  "evidence_packet": [
+    {
+      "entity_id": "tiguan_2021",
+      "predicate": "vehicle_model",
+      "value": "Volkswagen Tiguan R",
+      "polarity": true,
+      "evidence_state": "CONFIRMED_TRUE",
+      "publication_policy": "ALLOW",
+      "source_ref": "confirmed_packet:tiguan_2021:vehicle_model"
+    },
+    {
+      "entity_id": "tiguan_2021",
+      "predicate": "vehicle_year",
+      "value": "2021",
+      "polarity": true,
+      "evidence_state": "CONFIRMED_TRUE",
+      "publication_policy": "ALLOW",
+      "source_ref": "confirmed_packet:tiguan_2021:vehicle_year"
+    },
+    {
+      "entity_id": "tiguan_2021",
+      "predicate": "mst_intake",
+      "value": "PRESENT",
+      "polarity": true,
+      "evidence_state": "CONFIRMED_TRUE",
+      "publication_policy": "ALLOW",
+      "source_ref": "confirmed_packet:tiguan_2021:mst_intake"
+    },
+    {
+      "entity_id": "tiguan_2021",
+      "predicate": "bilstein_suspension",
+      "value": "PRESENT",
+      "polarity": true,
+      "evidence_state": "CONFIRMED_TRUE",
+      "publication_policy": "ALLOW",
+      "source_ref": "confirmed_packet:tiguan_2021:bilstein_suspension"
+    },
+    {
+      "entity_id": "golf_2020",
+      "predicate": "vehicle_model",
+      "value": "Volkswagen Golf GTI",
+      "polarity": true,
+      "evidence_state": "CONFIRMED_TRUE",
+      "publication_policy": "ALLOW",
+      "source_ref": "confirmed_packet:golf_2020:vehicle_model"
+    },
+    {
+      "entity_id": "golf_2020",
+      "predicate": "vehicle_year",
+      "value": "2020",
+      "polarity": true,
+      "evidence_state": "CONFIRMED_TRUE",
+      "publication_policy": "ALLOW",
+      "source_ref": "confirmed_packet:golf_2020:vehicle_year"
+    },
+    {
+      "entity_id": "golf_2020",
+      "predicate": "ecu_tune",
+      "value": "STAGE2",
+      "polarity": true,
+      "evidence_state": "CONFIRMED_TRUE",
+      "publication_policy": "ALLOW",
+      "source_ref": "confirmed_packet:golf_2020:ecu_tune"
+    },
+    {
+      "entity_id": "golf_2020",
+      "predicate": "horsepower",
+      "value": "300hp",
+      "polarity": true,
+      "evidence_state": "CONFIRMED_TRUE",
+      "publication_policy": "ALLOW",
+      "source_ref": "confirmed_packet:golf_2020:horsepower"
+    },
+    {
+      "entity_id": "tiguan_2021",
+      "predicate": "ecu_tune",
+      "value": "UNSPECIFIED",
+      "polarity": true,
+      "evidence_state": "UNKNOWN",
+      "publication_policy": "HOLD",
+      "source_ref": "confirmed_packet:tiguan_2021:ecu_tune"
+    },
+    {
+      "entity_id": "tiguan_2021",
+      "predicate": "horsepower_gain",
+      "value": "UNSPECIFIED",
+      "polarity": true,
+      "evidence_state": "UNKNOWN",
+      "publication_policy": "HOLD",
+      "source_ref": "confirmed_packet:tiguan_2021:horsepower_gain"
+    },
+    {
+      "entity_id": "tiguan_2021",
+      "predicate": "bilstein_exact_model",
+      "value": "UNSPECIFIED",
+      "polarity": true,
+      "evidence_state": "UNKNOWN",
+      "publication_policy": "HOLD",
+      "source_ref": "confirmed_packet:tiguan_2021:bilstein_exact_model"
+    },
+    {
+      "entity_id": "tiguan_2021",
+      "predicate": "handling_improvement",
+      "value": "UNSPECIFIED",
+      "polarity": true,
+      "evidence_state": "UNKNOWN",
+      "publication_policy": "HOLD",
+      "source_ref": "confirmed_packet:tiguan_2021:handling_improvement"
+    }
+  ],
+  "cases": [
+    {
+      "id": "P01",
+      "candidate": "2021 Volkswagen Tiguan R，配有MST Performance進氣。",
+      "expected": "ALLOW",
+      "source": "user_handoff"
+    },
+    {
+      "id": "P02",
+      "candidate": "這台Tiguan R配有BILSTEIN避震。",
+      "expected": "ALLOW",
+      "source": "user_handoff"
+    },
+    {
+      "id": "P03",
+      "candidate": "MST Performance進氣與BILSTEIN避震都已在車上。",
+      "expected": "ALLOW",
+      "source": "user_handoff"
+    },
+    {
+      "id": "P04",
+      "candidate": "這是一台2021 Volkswagen Tiguan R，車上有MST Performance進氣與BILSTEIN避震。",
+      "expected": "ALLOW",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N01",
+      "candidate": "這台車已完成二階ECU調校。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N02",
+      "candidate": "ECU已經寫程式。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N03",
+      "candidate": "這台車馬力已經提升。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N04",
+      "candidate": "MST進氣讓這台車動力明顯提升。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N05",
+      "candidate": "BILSTEIN避震讓操控明顯提升。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N06",
+      "candidate": "這台車沒有做二階程式。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N07",
+      "candidate": "ECU維持原廠程式。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N08",
+      "candidate": "這台車沒有改電腦。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N09",
+      "candidate": "馬力維持原廠。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N10",
+      "candidate": "這台車沒刷程式。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N11",
+      "candidate": "這台車配有MST Performance排氣系統。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N12",
+      "candidate": "這台車配有BILSTEIN彈簧。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N13",
+      "candidate": "這台車使用BILSTEIN B16。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N14",
+      "candidate": "這台車使用BILSTEIN PSS10。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N15",
+      "candidate": "這是一台2020 Volkswagen Tiguan R。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N16",
+      "candidate": "這是一台2021 Volkswagen Golf GTI。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N17",
+      "candidate": "另外一台2020 Golf GTI已完成二階程式並有300匹馬力。這台2021 Tiguan R也已完成二階程式。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N18",
+      "candidate": "Golf GTI有300匹馬力，因此這台Tiguan R也是300匹。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N19",
+      "candidate": "這台車有MST Performance進氣，而且已完成二階ECU調校。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N20",
+      "candidate": "這台車有BILSTEIN避震，操控也明顯提升。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N21",
+      "candidate": "2021 Tiguan R配有MST進氣，馬力也已經提升。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N22",
+      "candidate": "進排氣都處理好了，開起來更有力。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N23",
+      "candidate": "電腦部分不用再處理，動力已經到位。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "N24",
+      "candidate": "這組升級讓整體性能更完整。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "SC01",
+      "candidate": "有MST Performance進氣，二階也完成。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "SC02",
+      "candidate": "BILSTEIN避震已在車上，原廠程式沒有動。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "SC03",
+      "candidate": "2021 Tiguan R，MST進氣，約300匹。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "SC04",
+      "candidate": "MST進氣＋BILSTEIN避震，整體動力比原廠更好。",
+      "expected": "HOLD",
+      "source": "user_handoff"
+    },
+    {
+      "id": "REG_QWEN",
+      "candidate": "二階電腦搭配MST進氣，馬力升級有感\nECU已完成二階調校，動力明顯提升。",
+      "original_candidate": {
+        "surface": "8891",
+        "fields": [
+          {
+            "label": "廣告副標題",
+            "value": "二階電腦搭配MST進氣，馬力升級有感"
+          },
+          {
+            "label": "特色說明",
+            "value": "ECU已完成二階調校，動力明顯提升。"
+          }
+        ]
+      },
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-local-semantic-reviewer-probe\\low-memory-negative.json"
+    },
+    {
+      "id": "REG_NLI_01",
+      "candidate": "這台車沒有做二階程式。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "original_case": "U04",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_02",
+      "candidate": "這台車的馬力已經提升。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "original_case": "U05",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_03",
+      "candidate": "這台車配有MST Performance排氣系統。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "original_case": "U14",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_04",
+      "candidate": "這台車是2020 Volkswagen Tiguan R。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "original_case": "U16",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_05",
+      "candidate": "這台車沒有做二階程式。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "original_case": "U04",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_06",
+      "candidate": "這台車的馬力已經提升。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "original_case": "U05",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_07",
+      "candidate": "這台車配有MST Performance排氣系統。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "original_case": "U14",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_08",
+      "candidate": "這台車是2020 Volkswagen Tiguan R。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "original_case": "U16",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_09",
+      "candidate": "馬力提升已確認。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "original_case": "L03",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_10",
+      "candidate": "2021 Volkswagen Tiguan R已完成二階ECU調校。",
+      "original_premise": "目標車輛是2021 Volkswagen Tiguan R。\n目標車輛已確認配有MST Performance進氣與BILSTEIN避震。\n目標車輛ECU是否寫程式未知。\n\n另有一台參考車輛是2020 Volkswagen Golf GTI。\n該Golf GTI已確認完成二階ECU調校。\n該Golf GTI已確認輸出為300匹馬力。",
+      "original_case": "E01",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_NLI_11",
+      "candidate": "2021 Volkswagen Tiguan R已完成二階ECU調校。",
+      "original_premise": "另有一台參考車輛是2020 Volkswagen Golf GTI。\n該Golf GTI已確認完成二階ECU調校。\n該Golf GTI已確認輸出為300匹馬力。\n\n目標車輛是2021 Volkswagen Tiguan R。\n目標車輛已確認配有MST Performance進氣與BILSTEIN避震。\n目標車輛ECU是否寫程式未知。",
+      "original_case": "E01",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-nli-probe\\atomic-adversarial-calibration.json"
+    },
+    {
+      "id": "REG_GUARD_01",
+      "candidate": "這台車沒有做二階程式。",
+      "original_source": "目標車輛是2021 Volkswagen Tiguan R。\n已確認車上配有MST Performance進氣。\n已確認車上配有BILSTEIN避震。\nECU是否寫程式未知。\n沒有已確認的馬力提升資料。\nBILSTEIN確切型號未知。\n沒有已確認的操控改善資料。",
+      "expected": "HOLD",
+      "source": "C:\\Users\\user\\AppData\\Local\\Temp\\rd013-hallucination-guard-probe\\counterexample-replay.json"
+    }
+  ],
+  "additional_coverage_checks": {
+    "suffix_remainder_checks": [
+      {
+        "positive": "P01",
+        "suffix": "，二階也完成。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P01",
+        "suffix": "，約300匹。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P01",
+        "suffix": "，這組升級讓整體性能更完整。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P02",
+        "suffix": "，二階也完成。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P02",
+        "suffix": "，約300匹。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P02",
+        "suffix": "，這組升級讓整體性能更完整。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P03",
+        "suffix": "，二階也完成。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P03",
+        "suffix": "，約300匹。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P03",
+        "suffix": "，這組升級讓整體性能更完整。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P04",
+        "suffix": "，二階也完成。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P04",
+        "suffix": "，約300匹。",
+        "disposition": "HOLD"
+      },
+      {
+        "positive": "P04",
+        "suffix": "，這組升級讓整體性能更完整。",
+        "disposition": "HOLD"
+      }
+    ],
+    "all_pass": true,
+    "P03_two_atoms": true,
+    "N19_supported_and_unknown_atoms": true
+  }
+}

@@ -19,6 +19,7 @@ from global_hybrid_v2.public_copy_finalizer import (
     SnapshotState,
     sha256_json,
 )
+from global_hybrid_v2.typed_evidence_gate import evaluate, snapshot_evidence
 
 SEMANTIC_DEBT = (
     "NATIVE_TAIWAN_SELLER_VOICE",
@@ -67,6 +68,7 @@ class AcceptanceWitness(BaseModel):
     current_state_digest: str
     hard_gate_blockers: tuple[str, ...]
     consumed_proof_refs: tuple[str, ...]
+    unresolved_remainders: tuple[str, ...] = ()
     capability_debt: tuple[str, ...] = SEMANTIC_DEBT
 
 
@@ -128,10 +130,23 @@ def acceptance_witness(
         block("SUPPORTING_PROOF_NOT_SERIALIZED", full_body and
               (not policy.supporting_proofs or len(consumed) != len(policy.supporting_proofs)))
         block("MAX_SUPPORTING_POINTS", len(consumed) > data.max_supporting_points)
+    evidence = snapshot_evidence(snapshot)
+    incumbent_literals = (*data.verified_public_facts, *data.required_material_disclosures)
+    if policy is not None:
+        incumbent_literals += (policy.primary_reason_literal, *policy.required_literals,
+                               *(item for proof in policy.supporting_proofs
+                                 for item in (proof.claim, proof.proof_payload)))
+    unresolved_remainders = []
+    for value in values:
+        typed_result = evaluate(value, evidence=evidence, target_entity=snapshot.task_handle,
+                                incumbent_literals=incumbent_literals)
+        blockers.extend(typed_result.hard_blockers)
+        unresolved_remainders.extend(span.text for span in typed_result.unresolved_remainders)
     return AcceptanceWitness(
         candidate_digest=sha256_json(candidate), snapshot_digest=snapshot.snapshot_digest,
         current_state_digest=state_digest(snapshot), hard_gate_blockers=tuple(dict.fromkeys(blockers)),
         consumed_proof_refs=consumed,
+        unresolved_remainders=tuple(unresolved_remainders),
     )
 
 
