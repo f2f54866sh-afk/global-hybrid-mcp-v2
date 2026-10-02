@@ -231,7 +231,8 @@ def test_default_app_uses_bridge_even_if_credential_exists_and_returns_hold(tmp_
 
     monkeypatch.setattr("global_hybrid_v2.public_copy_finalizer.OpenAI", no_paid_guard)
     settings = FinalizerSettings(db_path=str(tmp_path / "app.sqlite"), base_url="https://fixture",
-                                 model="unused", openai_api_key="synthetic-not-a-key")
+                                 model="unused", openai_api_key="synthetic-not-a-key",
+                                 allow_ephemeral_canary=True)
     app = create_finalizer_app(settings=settings)
     client = TestClient(app)
     assert client.get("/health").json()["evaluator_configured"] is False
