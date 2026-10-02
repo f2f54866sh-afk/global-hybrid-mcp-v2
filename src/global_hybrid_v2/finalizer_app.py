@@ -20,10 +20,10 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Route
 
+from global_hybrid_v2.existing_copy_policy_bridge import ExistingCopyPolicyBridge
 from global_hybrid_v2.public_copy_finalizer import (
     AppOwnedPublicCopyFinalizer,
     GuardDecision,
-    OpenAIPublicCopyGuard,
     PublicCopyCandidate,
     PublicCopyField,
     PublicCopySnapshotInput,
@@ -58,14 +58,7 @@ def _build_finalizer(settings: FinalizerSettings) -> AppOwnedPublicCopyFinalizer
     if str(path).startswith("/tmp/") and not settings.allow_ephemeral_canary:
         raise RuntimeError("EPHEMERAL_FINALIZER_STORE_REQUIRES_EXPLICIT_CANARY_MODE")
     store = SQLitePublicCopyFinalizerStore(path)
-    if settings.model and settings.openai_api_key is not None:
-        guard = OpenAIPublicCopyGuard(
-            model=settings.model,
-            api_key=settings.openai_api_key,
-        )
-    else:
-        guard = UnavailablePublicCopyGuard()
-    return AppOwnedPublicCopyFinalizer(store=store, guard=guard)
+    return AppOwnedPublicCopyFinalizer(store=store, guard=ExistingCopyPolicyBridge())
 
 
 def create_finalizer_app(
@@ -83,7 +76,10 @@ def create_finalizer_app(
                 "ok": True,
                 "service": "app-owned-public-copy-finalizer",
                 "ephemeral_canary": str(Path(cfg.db_path)).startswith("/tmp/"),
-                "evaluator_configured": not isinstance(service.guard, UnavailablePublicCopyGuard),
+                "evaluator_configured": not isinstance(
+                    service.guard, (UnavailablePublicCopyGuard, ExistingCopyPolicyBridge)
+                ),
+                "deterministic_policy_bridge": isinstance(service.guard, ExistingCopyPolicyBridge),
             }
         )
 
@@ -222,6 +218,8 @@ def create_finalizer_app(
                 "snapshot_digest": receipt.snapshot_digest,
                 "blocker_codes": list(receipt.guard_receipt.blocker_codes),
                 "reasons": list(receipt.guard_receipt.reasons),
+                "deterministic_hard_gates": receipt.guard_receipt.deterministic_hard_gates,
+                "capability_debt": list(receipt.guard_receipt.capability_debt),
             },
             status_code=422,
         )

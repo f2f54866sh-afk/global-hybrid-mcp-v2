@@ -55,6 +55,38 @@ class PublicCopyCandidate(BaseModel):
         return self
 
 
+class AdmittedSupportingProof(BaseModel):
+    """Literal serialization subset of incumbent PublicCopySupportingProof."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    proof_id: str = Field(min_length=1)
+    claim: str = Field(min_length=1)
+    proof_payload: str = Field(min_length=1)
+    evidence_refs: tuple[str, ...] = Field(min_length=1)
+
+
+class ExistingCopyPolicyInput(BaseModel):
+    """App-confirmed bounded policy data; revision references are not authority verification."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    policy_revision: str = Field(min_length=1)
+    source_refs: tuple[str, ...] = Field(min_length=1)
+    supporting_proofs: tuple[AdmittedSupportingProof, ...] = ()
+    required_literals: tuple[str, ...] = ()
+    field_max_chars: tuple[int, ...] = Field(min_length=1)
+    field_max_lines: tuple[int, ...] = Field(min_length=1)
+    primary_reason_literal: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> ExistingCopyPolicyInput:
+        if any(value < 1 for value in (*self.field_max_chars, *self.field_max_lines)):
+            raise ValueError("surface bounds must be positive")
+        ids = [proof.proof_id for proof in self.supporting_proofs]
+        if len(ids) != len(set(ids)):
+            raise ValueError("supporting proof IDs must be unique")
+        return self
+
+
 class PublicCopySnapshotInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     target_surface: str = Field(min_length=1)
@@ -72,6 +104,7 @@ class PublicCopySnapshotInput(BaseModel):
     authority_revisions: dict[str, str] = Field(default_factory=dict)
     evidence_refs: tuple[str, ...] = ()
     generation: int = Field(default=1, ge=1)
+    existing_copy_policy: ExistingCopyPolicyInput | None = None
 
     @model_validator(mode="after")
     def validate_requested_fields(self) -> PublicCopySnapshotInput:
@@ -107,6 +140,10 @@ class PublicCopyGuardReceipt(BaseModel):
     reasons: tuple[str, ...] = ()
     evaluator_run_id: str | None = None
     evaluator_model: str | None = None
+    deterministic_hard_gates: GuardCheck | None = None
+    capability_debt: tuple[str, ...] = ()
+    acceptance_witness_digest: str | None = None
+    copy_egress_audit_digest: str | None = None
 
     @model_validator(mode="after")
     def validate_decision_consistency(self) -> PublicCopyGuardReceipt:
@@ -122,7 +159,7 @@ class PublicCopyGuardReceipt(BaseModel):
         if self.decision is GuardDecision.PASS:
             if any(item is not GuardCheck.PASS for item in checks):
                 raise ValueError("PASS requires every guard check to PASS")
-            if self.blocker_codes or self.reasons:
+            if self.blocker_codes or self.reasons or self.capability_debt:
                 raise ValueError("PASS may not carry blockers or unresolved reasons")
         elif not self.blocker_codes:
             raise ValueError("FAIL requires at least one blocker code")
@@ -285,6 +322,17 @@ class SQLitePublicCopyFinalizerStore:
 
     def save_receipt(self, receipt: PublicCopyFinalizationReceipt) -> None:
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload, snapshot_digest, state FROM public_copy_task_snapshot WHERE task_handle = ?",
+                (receipt.task_handle,),
+            ).fetchone()
+            if (
+                row is None or row[2] != SnapshotState.CONFIRMED.value
+                or row[1] != receipt.snapshot_digest or sha256_json(json.loads(row[0])) != row[1]
+            ):
+                raise RuntimeError("PUBLIC_COPY_COMMIT_FENCE_STATE_MISMATCH")
+            validate_receipt_binding(receipt)
             connection.execute(
                 "INSERT INTO public_copy_finalization VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -539,6 +587,7 @@ def confirmation_page(snapshot: AppOwnedPublicCopySnapshot) -> str:
 <h2>Required material disclosures</h2><ul>{rows(data.required_material_disclosures)}</ul>
 <h2>Internal-only unknowns</h2><ul>{rows(data.internal_only_unknowns)}</ul>
 <h2>Voice contract</h2><ul>{rows(data.voice_contract)}</ul>
+<h2>Existing Copy policy input</h2><pre>{html.escape(canonical_json(data.existing_copy_policy))}</pre>
 <form method='post'><input type='hidden' name='confirmation_nonce' value='{nonce}'>
 <button type='submit'>Confirm and lock this task</button></form></body></html>"""
 
@@ -546,6 +595,7 @@ def confirmation_page(snapshot: AppOwnedPublicCopySnapshot) -> str:
 def result_page(receipt: PublicCopyFinalizationReceipt) -> str:
     if receipt.decision is not GuardDecision.PASS or receipt.final_output is None:
         raise PermissionError("PUBLIC_COPY_RESULT_NOT_AVAILABLE")
+    validate_receipt_binding(receipt)
     blocks = "".join(
         f"<h2>{html.escape(item.label)}</h2><pre>{html.escape(item.value)}</pre>"
         for item in receipt.final_output.fields
@@ -554,3 +604,15 @@ def result_page(receipt: PublicCopyFinalizationReceipt) -> str:
         "<!doctype html><html><meta charset='utf-8'><title>Final public Copy</title>"
         f"<body><h1>Final public Copy</h1>{blocks}</body></html>"
     )
+
+
+def validate_receipt_binding(receipt: PublicCopyFinalizationReceipt) -> None:
+    guard = PublicCopyGuardReceipt.model_validate(receipt.guard_receipt.model_dump())
+    if (
+        guard.decision != receipt.decision
+        or guard.snapshot_digest != receipt.snapshot_digest
+        or guard.candidate_digest != receipt.candidate_digest
+        or (receipt.final_output is not None
+            and sha256_json(receipt.final_output) != receipt.candidate_digest)
+    ):
+        raise RuntimeError("PUBLIC_COPY_COMMIT_FENCE_BINDING_MISMATCH")
