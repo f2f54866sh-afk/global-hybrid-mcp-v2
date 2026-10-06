@@ -6,6 +6,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
+from global_hybrid_v2.governance.public_claim_coverage import (
+    ClaimCoveragePayloadV1,
+    TaskBoundEvidenceManifestV1,
+    evaluate_claim_coverage,
+)
 from global_hybrid_v2.governance.sales_final_commit import (
     AuthoritativeSalesTaskSnapshotV1,
     Disposition,
@@ -34,6 +39,7 @@ class _EvaluationPayload(BaseModel):
     candidate_digest: str = Field(min_length=64, max_length=64)
     disposition: Disposition
     reason_codes: list[str] = Field(default_factory=list)
+    claim_coverage: ClaimCoveragePayloadV1
 
     model_config = ConfigDict(extra="forbid")
 
@@ -43,6 +49,7 @@ class _EvaluationResult:
     disposition: Disposition
     result_ref: str
     binding_ok: bool
+    claim_coverage: ClaimCoveragePayloadV1 | None
 
 
 def _default_client(api_key: SecretStr) -> Any:
@@ -116,7 +123,7 @@ class OpenAISalesCandidateGenerator:
 
 
 class OpenAISalesProductEvaluator:
-    """N1B dual evaluator. Model outputs are child evidence, never terminal commit authority."""
+    """N1C dual evaluator plus app-owned closed-world public-claim coverage."""
 
     def __init__(
         self,
@@ -151,6 +158,7 @@ class OpenAISalesProductEvaluator:
         candidate: str,
     ) -> list[ProductCheckResultV1]:
         candidate_digest = sha256_text(candidate)
+        manifest = snapshot.task_bound_evidence_manifest
         production = self._evaluate_one(
             role="production",
             model=self._production_model,
@@ -158,6 +166,7 @@ class OpenAISalesProductEvaluator:
             snapshot=snapshot,
             candidate=candidate,
             candidate_digest=candidate_digest,
+            manifest=manifest,
         )
         detached = self._evaluate_one(
             role="detached",
@@ -166,6 +175,7 @@ class OpenAISalesProductEvaluator:
             snapshot=snapshot,
             candidate=candidate,
             candidate_digest=candidate_digest,
+            manifest=None,
         )
 
         context_isolation: Disposition = "PASS" if detached.binding_ok else "HOLD"
@@ -182,7 +192,19 @@ class OpenAISalesProductEvaluator:
         serialization: Disposition = (
             "PASS" if candidate.encode("utf-8").decode("utf-8") == candidate else "HOLD"
         )
-        witness = self._witness_disposition(production.disposition, detached.disposition, invariance)
+        claim_coverage = evaluate_claim_coverage(
+            candidate=candidate,
+            manifest=manifest,
+            production=production.claim_coverage,
+            detached=detached.claim_coverage,
+        )
+        claim_disposition: Disposition = claim_coverage.disposition
+        witness = self._witness_disposition(
+            production.disposition,
+            detached.disposition,
+            invariance,
+            claim_disposition,
+        )
 
         refs = {
             "PRODUCTION_PRODUCT": production.result_ref,
@@ -199,12 +221,14 @@ class OpenAISalesProductEvaluator:
             ),
             "COPY_EGRESS": f"app:copy-egress:{candidate_digest}",
             "PUBLIC_SERIALIZATION": f"app:serialization:{candidate_digest}",
+            "PUBLIC_CLAIM_COVERAGE": f"app:claim-coverage:{claim_coverage.coverage_digest}",
             "PUBLIC_ACCEPTANCE_WITNESS": "app:witness:"
             + sha256_json(
                 {
                     "production": production.disposition,
                     "detached": detached.disposition,
                     "invariance": invariance,
+                    "claim_coverage": claim_disposition,
                     "candidate_digest": candidate_digest,
                 }
             ),
@@ -216,6 +240,7 @@ class OpenAISalesProductEvaluator:
             "DISPOSITION_INVARIANCE": invariance,
             "COPY_EGRESS": copy_egress,
             "PUBLIC_SERIALIZATION": serialization,
+            "PUBLIC_CLAIM_COVERAGE": claim_disposition,
             "PUBLIC_ACCEPTANCE_WITNESS": witness,
         }
         return [
@@ -238,6 +263,7 @@ class OpenAISalesProductEvaluator:
         snapshot: AuthoritativeSalesTaskSnapshotV1,
         candidate: str,
         candidate_digest: str,
+        manifest: TaskBoundEvidenceManifestV1 | None,
     ) -> _EvaluationResult:
         prompt = self._evaluation_prompt(
             role=role,
@@ -245,6 +271,7 @@ class OpenAISalesProductEvaluator:
             snapshot=snapshot,
             candidate=candidate,
             candidate_digest=candidate_digest,
+            manifest=manifest,
         )
         try:
             response = self._client.responses.create(
@@ -273,6 +300,7 @@ class OpenAISalesProductEvaluator:
             disposition=payload.disposition,
             result_ref=result_ref,
             binding_ok=True,
+            claim_coverage=payload.claim_coverage,
         )
 
     @staticmethod
@@ -283,6 +311,7 @@ class OpenAISalesProductEvaluator:
         snapshot: AuthoritativeSalesTaskSnapshotV1,
         candidate: str,
         candidate_digest: str,
+        manifest: TaskBoundEvidenceManifestV1 | None,
     ) -> dict[str, Any]:
         task = {
             "task_class": snapshot.task_class,
@@ -291,8 +320,36 @@ class OpenAISalesProductEvaluator:
             "direct_user_hard_requirements": snapshot.direct_user_hard_requirements,
             "vehicle_instance_id": snapshot.vehicle_instance_id,
         }
+        claim_constraints = [
+            "Claim coverage must cover every alphanumeric or CJK character in the exact candidate.",
+            "Each coverage segment must use exact start/end offsets and exact candidate text.",
+            "Classify materially testable assertions as FACTUAL and style/opinion only as NON_FACTUAL.",
+        ]
         if role == "production":
             task["evidence_refs"] = snapshot.evidence_refs
+            task["task_bound_evidence_manifest"] = (
+                None if manifest is None else manifest.model_dump(mode="json")
+            )
+            claim_constraints.extend(
+                [
+                    "Each FACTUAL segment must be one atomic claim bound to exactly one manifest fact.",
+                    "Split year and model into separate hidden segments without changing public Copy.",
+                    "FACTUAL text must match a public_safe_form of that exact fact after NFC and "
+                    "whitespace normalization. The application verifies this match.",
+                    "support is diagnostic only and cannot grant authority or override application checks.",
+                    "authority_fact_ids may name only fact_id values present in the supplied manifest.",
+                    "For NON_FACTUAL segments use support NOT_APPLICABLE and no authority_fact_ids.",
+                ]
+            )
+        else:
+            claim_constraints.extend(
+                [
+                    "Do not infer support or inspect production evidence.",
+                    "For FACTUAL segments use support null and no authority_fact_ids.",
+                    "For NON_FACTUAL segments use support NOT_APPLICABLE and no authority_fact_ids.",
+                    "claim_coverage.manifest_digest must be null.",
+                ]
+            )
         return {
             "purpose": f"{role.upper()}_PRODUCT_EVALUATION_ONLY",
             "policy_ref": snapshot.sales_execution_policy_ref,
@@ -306,12 +363,28 @@ class OpenAISalesProductEvaluator:
                 "Do not return or decide FINAL_OUTPUT_COMMIT.",
                 "Do not invent evidence, authority, receipts, or result references.",
                 "Disposition must be PASS, FAIL, or HOLD.",
+                *claim_constraints,
             ],
             "response_schema": {
                 "snapshot_digest": "exact supplied snapshot_digest",
                 "candidate_digest": "exact supplied candidate_digest",
                 "disposition": "PASS | FAIL | HOLD",
                 "reason_codes": ["bounded machine-readable reason codes"],
+                "claim_coverage": {
+                    "manifest_digest": (
+                        "exact supplied manifest digest for production; null for detached"
+                    ),
+                    "segments": [
+                        {
+                            "start": "0-based candidate start offset",
+                            "end": "0-based exclusive candidate end offset",
+                            "text": "exact candidate substring",
+                            "kind": "FACTUAL | NON_FACTUAL",
+                            "authority_fact_ids": ["manifest fact_id values or empty list"],
+                            "support": "SUPPORTED | UNSUPPORTED | AMBIGUOUS | NOT_APPLICABLE | null",
+                        }
+                    ],
+                },
             },
         }
 
@@ -321,16 +394,13 @@ class OpenAISalesProductEvaluator:
             disposition="HOLD",
             result_ref=f"app:{role}-hold:{blocker}:{sha256_text(detail)}",
             binding_ok=False,
+            claim_coverage=None,
         )
 
     @staticmethod
-    def _witness_disposition(
-        production: Disposition,
-        detached: Disposition,
-        invariance: Disposition,
-    ) -> Disposition:
-        if production == "FAIL" or detached == "FAIL" or invariance == "FAIL":
+    def _witness_disposition(*values: Disposition) -> Disposition:
+        if "FAIL" in values:
             return "FAIL"
-        if production == "HOLD" or detached == "HOLD" or invariance == "HOLD":
+        if "HOLD" in values:
             return "HOLD"
         return "PASS"

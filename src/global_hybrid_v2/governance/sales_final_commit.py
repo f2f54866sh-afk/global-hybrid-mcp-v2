@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from global_hybrid_v2.governance.public_claim_coverage import TaskBoundEvidenceManifestV1
+
 Disposition = Literal["PASS", "FAIL", "HOLD"]
 WorkbenchDisposition = Literal[
     "NOT_REQUIRED",
@@ -24,6 +26,7 @@ REQUIRED_PRODUCT_CHECKS: tuple[str, ...] = (
     "DISPOSITION_INVARIANCE",
     "COPY_EGRESS",
     "PUBLIC_SERIALIZATION",
+    "PUBLIC_CLAIM_COVERAGE",
     "PUBLIC_ACCEPTANCE_WITNESS",
 )
 
@@ -70,6 +73,7 @@ class AuthoritativeSalesTaskSnapshotV1(BaseModel):
     workbench_sha256: str | None = None
     evidence_refs: list[str] = Field(default_factory=list)
     evidence_set_digest: str = Field(min_length=64, max_length=64)
+    task_bound_evidence_manifest: TaskBoundEvidenceManifestV1 | None = None
     generation: int = Field(ge=1)
     issued_at: datetime
     valid_until: datetime
@@ -88,6 +92,14 @@ class AuthoritativeSalesTaskSnapshotV1(BaseModel):
             raise ValueError("HARD_REQUIREMENTS_DIGEST_MISMATCH")
         if self.evidence_set_digest != sha256_json(self.evidence_refs):
             raise ValueError("EVIDENCE_SET_DIGEST_MISMATCH")
+        if self.task_bound_evidence_manifest is not None:
+            manifest = self.task_bound_evidence_manifest
+            if manifest.task_id != self.task_id:
+                raise ValueError("EVIDENCE_MANIFEST_TASK_MISMATCH")
+            if manifest.evidence_set_digest != self.evidence_set_digest:
+                raise ValueError("EVIDENCE_MANIFEST_SET_MISMATCH")
+            if manifest.recompute_digest() != manifest.manifest_digest:
+                raise ValueError("EVIDENCE_MANIFEST_DIGEST_MISMATCH")
         if self.workbench_sha256 is not None and len(self.workbench_sha256) != 64:
             raise ValueError("WORKBENCH_SHA256_INVALID")
         return self

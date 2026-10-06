@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
 
+from global_hybrid_v2.governance.public_claim_coverage import TaskBoundEvidenceManifestV1
 from global_hybrid_v2.governance.sales_final_commit import (
     AuthoritativeSalesTaskSnapshotV1,
     CommitOutcomeV1,
@@ -28,6 +29,10 @@ class ProductEvaluator(Protocol):
     ) -> list[ProductCheckResultV1]: ...
 
 
+class EvidenceMaterializer(Protocol):
+    def materialize(self, snapshot: AuthoritativeSalesTaskSnapshotV1) -> TaskBoundEvidenceManifestV1: ...
+
+
 class WorkbenchTerminalPort(Protocol):
     def terminal_disposition(self, snapshot: AuthoritativeSalesTaskSnapshotV1) -> WorkbenchDisposition: ...
 
@@ -47,6 +52,7 @@ class ControlledSalesServiceV1:
         sales_authority_revision: str,
         library_authority_revision: str,
         real_car_authority_revision: str,
+        evidence_materializer: EvidenceMaterializer | None = None,
         workbench_terminal_port: WorkbenchTerminalPort | None = None,
         now: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
@@ -60,6 +66,7 @@ class ControlledSalesServiceV1:
         self.sales_authority_revision = sales_authority_revision
         self.library_authority_revision = library_authority_revision
         self.real_car_authority_revision = real_car_authority_revision
+        self.evidence_materializer = evidence_materializer
         self.workbench_terminal_port = workbench_terminal_port
         self._now = now or (lambda: datetime.now(UTC))
         self._id_factory = id_factory or (lambda: str(uuid4()))
@@ -109,6 +116,27 @@ class ControlledSalesServiceV1:
             snapshot_digest="0" * 64,
         )
         snapshot = snapshot.model_copy(update={"snapshot_digest": sha256_json(snapshot.digest_payload())})
+
+        if self.evidence_materializer is not None:
+            try:
+                manifest = self.evidence_materializer.materialize(snapshot)
+            except Exception:
+                manifest = None
+            if (
+                manifest is not None
+                and manifest.task_id == snapshot.task_id
+                and manifest.evidence_set_digest == snapshot.evidence_set_digest
+                and manifest.recompute_digest() == manifest.manifest_digest
+            ):
+                snapshot = snapshot.model_copy(
+                    update={
+                        "task_bound_evidence_manifest": manifest,
+                        "snapshot_digest": "0" * 64,
+                    }
+                )
+                snapshot = snapshot.model_copy(
+                    update={"snapshot_digest": sha256_json(snapshot.digest_payload())}
+                )
 
         candidate = self.candidate_generator.generate(snapshot)
         results = self.product_evaluator.evaluate(snapshot, candidate)

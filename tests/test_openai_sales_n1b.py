@@ -10,13 +10,17 @@ from global_hybrid_v2.adapters.openai_sales import (
     OpenAISalesCandidateGenerator,
     OpenAISalesProductEvaluator,
 )
+from global_hybrid_v2.governance.public_claim_coverage import (
+    TaskBoundEvidenceFactV1,
+    TaskBoundEvidenceManifestV1,
+)
 from global_hybrid_v2.governance.sales_final_commit import FinalOutputCommitGateV1, sha256_text
 from global_hybrid_v2.sales_controlled_service import ControlledSalesServiceV1
 
 NOW = datetime(2026, 10, 2, 13, 0, tzinfo=UTC)
 POLICY = "SALES_VISUAL_EXECUTION_PROFILE_20261002_V99_FINAL_CONSUMER_AUDIT_RESULT_IDENTITY_BINDING_GUARD"
 PRODUCER = "controlled-sales-app-v1"
-RUNTIME = "n1b-local-candidate"
+RUNTIME = "n1c-local-candidate"
 SECRET = "sk-test-secret-never-serialize"
 V99_BAD = (
     "如果你本來就偏好車上有進氣與懸吊改裝，這台的重點很直接："
@@ -24,6 +28,31 @@ V99_BAD = (
 )
 V98_BAD = "這台的賣點不用繞：MST Performance 進氣、BILSTEIN B8、全景天窗與音響一次到位。"
 V97_GOOD = "如果你就是在找已裝 MST Performance 進氣、BILSTEIN B8 前避震的 Tiguan R，這台符合這個條件。"
+FIXTURE_ATOMS = [
+    ("fixture-intake", "MST Performance 進氣"),
+    ("fixture-suspension", "BILSTEIN B8 前避震"),
+    ("fixture-model", "Tiguan R"),
+]
+
+
+class FixtureMaterializer:
+    def materialize(self, snapshot):
+        facts = [
+            TaskBoundEvidenceFactV1(
+                fact_id=fact_id,
+                authority_ref="workbench:AXT-8911",
+                statement=text,
+                public_safe_forms=[text],
+                provenance="WORKBENCH",
+            )
+            for fact_id, text in FIXTURE_ATOMS
+        ]
+        return TaskBoundEvidenceManifestV1.build(
+            task_id=snapshot.task_id,
+            evidence_set_digest=snapshot.evidence_set_digest,
+            producer_id="fixture-materializer",
+            facts=facts,
+        )
 
 
 class FakeResponses:
@@ -48,12 +77,63 @@ def response(output_text: str, *, response_id: str, status: str = "completed") -
     return {"id": response_id, "status": status, "output_text": output_text}
 
 
-def evaluation(snapshot_digest: str, candidate: str, disposition: str, **extra: Any) -> str:
+def claim_coverage(candidate: str, *, manifest_digest: str | None, production: bool) -> dict[str, Any]:
+    if candidate == V97_GOOD:
+        segments = []
+        cursor = 0
+        for fact_id, text in FIXTURE_ATOMS:
+            start = candidate.index(text, cursor)
+            if start > cursor:
+                segments.append({
+                    "start": cursor, "end": start, "text": candidate[cursor:start],
+                    "kind": "NON_FACTUAL", "authority_fact_ids": [], "support": "NOT_APPLICABLE",
+                })
+            end = start + len(text)
+            segments.append({
+                "start": start, "end": end, "text": text, "kind": "FACTUAL",
+                "authority_fact_ids": [fact_id] if production else [],
+                "support": "SUPPORTED" if production else None,
+            })
+            cursor = end
+        segments.append({
+            "start": cursor, "end": len(candidate), "text": candidate[cursor:],
+            "kind": "NON_FACTUAL", "authority_fact_ids": [], "support": "NOT_APPLICABLE",
+        })
+        return {"manifest_digest": manifest_digest if production else None, "segments": segments}
+    return {
+        "manifest_digest": manifest_digest if production else None,
+        "segments": [
+            {
+                "start": 0,
+                "end": len(candidate),
+                "text": candidate,
+                "kind": "FACTUAL",
+                "authority_fact_ids": ["fixture-fact-1"] if production else [],
+                "support": "SUPPORTED" if production else None,
+            }
+        ],
+    }
+
+
+def evaluation(
+    snapshot_digest: str,
+    candidate: str,
+    disposition: str,
+    *,
+    manifest_digest: str | None,
+    production: bool,
+    **extra: Any,
+) -> str:
     payload = {
         "snapshot_digest": snapshot_digest,
         "candidate_digest": sha256_text(candidate),
         "disposition": disposition,
         "reason_codes": ["fixture"],
+        "claim_coverage": claim_coverage(
+            candidate,
+            manifest_digest=manifest_digest,
+            production=production,
+        ),
     }
     payload.update(extra)
     return json.dumps(payload)
@@ -90,6 +170,7 @@ def service(client: FakeClient) -> ControlledSalesServiceV1:
         sales_authority_revision="SALES-current",
         library_authority_revision="LIBRARY-current",
         real_car_authority_revision="REAL_CAR-current",
+        evidence_materializer=FixtureMaterializer(),
         now=lambda: NOW,
         id_factory=lambda: "task-n1b",
     )
@@ -107,10 +188,21 @@ def run(client: FakeClient):
     )
 
 
-def client_for(candidate: str, production: str, detached: str) -> FakeClient:
-    snapshot_digest = "DYNAMIC"
-    client = FakeClient([])
+def _evaluation_from_prompt(prompt: dict[str, Any], candidate: str, disposition: str) -> str:
+    manifest = prompt["task"].get("task_bound_evidence_manifest")
+    production = manifest is not None
+    manifest_digest = None if manifest is None else manifest["manifest_digest"]
+    return evaluation(
+        prompt["snapshot_digest"],
+        candidate,
+        disposition,
+        manifest_digest=manifest_digest,
+        production=production,
+    )
 
+
+def client_for(candidate: str, production: str, detached: str) -> FakeClient:
+    client = FakeClient([])
     original_create = client.responses.create
 
     def dynamic_create(**kwargs: Any) -> Any:
@@ -119,12 +211,9 @@ def client_for(candidate: str, production: str, detached: str) -> FakeClient:
         if index == 1:
             return response(candidate, response_id="resp-candidate")
         prompt = json.loads(kwargs["input"])
-        digest = prompt["snapshot_digest"]
-        if snapshot_digest != "DYNAMIC":
-            digest = snapshot_digest
         disposition = production if index == 2 else detached
         return response(
-            evaluation(digest, candidate, disposition),
+            _evaluation_from_prompt(prompt, candidate, disposition),
             response_id="resp-production" if index == 2 else "resp-detached",
         )
 
@@ -165,7 +254,7 @@ def test_evaluator_timeout_holds_and_withholds_candidate():
         if index == 2:
             raise TimeoutError("provider timeout")
         return response(
-            evaluation(prompt["snapshot_digest"], V97_GOOD, "PASS"),
+            _evaluation_from_prompt(prompt, V97_GOOD, "PASS"),
             response_id="resp-detached",
         )
 
@@ -184,7 +273,7 @@ def test_schema_invalid_holds_and_model_cannot_supply_final_commit():
         if index == 1:
             return response(V97_GOOD, response_id="resp-candidate")
         prompt = json.loads(kwargs["input"])
-        payload = json.loads(evaluation(prompt["snapshot_digest"], V97_GOOD, "PASS"))
+        payload = json.loads(_evaluation_from_prompt(prompt, V97_GOOD, "PASS"))
         if index == 2:
             payload["final_output_commit"] = "PASS"
         return response(
@@ -207,7 +296,7 @@ def test_candidate_digest_echo_mismatch_holds_and_withholds():
         if index == 1:
             return response(V97_GOOD, response_id="resp-candidate")
         prompt = json.loads(kwargs["input"])
-        payload = json.loads(evaluation(prompt["snapshot_digest"], V97_GOOD, "PASS"))
+        payload = json.loads(_evaluation_from_prompt(prompt, V97_GOOD, "PASS"))
         if index == 2:
             payload["candidate_digest"] = "f" * 64
         return response(
@@ -233,7 +322,9 @@ def test_same_snapshot_exact_candidate_all_typed_results_pass_returns_public_cop
     assert detached_prompt["candidate_digest"] == sha256_text(V97_GOOD)
     assert production_prompt["snapshot_digest"] == detached_prompt["snapshot_digest"]
     assert "evidence_refs" in production_prompt["task"]
+    assert "task_bound_evidence_manifest" in production_prompt["task"]
     assert "evidence_refs" not in detached_prompt["task"]
+    assert "task_bound_evidence_manifest" not in detached_prompt["task"]
     assert "FINAL_OUTPUT_COMMIT" in production_prompt["constraints"][1]
     assert SECRET not in json.dumps(client.responses.calls, ensure_ascii=False)
 
@@ -254,7 +345,7 @@ def test_incomplete_evaluator_response_holds_and_withholds():
             return response(V97_GOOD, response_id="resp-candidate")
         prompt = json.loads(kwargs["input"])
         return response(
-            evaluation(prompt["snapshot_digest"], V97_GOOD, "PASS"),
+            _evaluation_from_prompt(prompt, V97_GOOD, "PASS"),
             response_id="resp-production" if index == 2 else "resp-detached",
             status="in_progress" if index == 2 else "completed",
         )
